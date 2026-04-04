@@ -284,6 +284,15 @@ CREATE TABLE metadata_cache (
 );
 CREATE UNIQUE INDEX metadata_cache_query_source ON metadata_cache (query, source);
 CREATE INDEX metadata_cache_expires ON metadata_cache (expires_at);
+
+-- Scheduled task state (persists across restarts)
+-- One row per scheduled task; upserted at start and end of each run.
+CREATE TABLE task_state (
+    task        TEXT PRIMARY KEY,  -- 'library_sync' | 'cache_refresh' | 'auto_search'
+    running     INTEGER NOT NULL DEFAULT 0,  -- 1 while task is executing
+    last_run    TEXT,              -- ISO timestamp of last completed run
+    last_result TEXT               -- 'ok' | 'error: <message>'
+);
 ```
 
 ### Request State Machine
@@ -402,8 +411,14 @@ async def startup():
     asyncio.create_task(cache_refresh_task())  # schedule.cache_refresh cron
     asyncio.create_task(auto_search_task())    # schedule.auto_search cron
 
+# GET /healthz
+# Runs SELECT 1 against the database. Returns 200 { ok: true } if reachable,
+# 503 { ok: false, error: "..." } if not. Used by Docker HEALTHCHECK.
+# Must not require authentication or any service configuration to respond.
+
 # GET /api/status
-# Returns: { books: int, requests: { requested: int, monitored: int, snatched: int,
+# Returns: { books: int, authors: int, series: int,
+#            requests: { requested: int, monitored: int, snatched: int,
 #            downloading: int, downloaded: int, merging: int, organizing: int,
 #            in_library: int, failed: int } }
 ```
@@ -443,6 +458,28 @@ async def library_sync_task():
 
 All three scheduled tasks (`library_sync_task`, `cache_refresh_task`, `auto_search_task`) follow this exact pattern. None run on startup — they wait for their first scheduled time.
 
+Each scheduled task upserts `task_state` at the start and end of every run:
+
+```python
+# On run start:
+await db.execute(
+    "INSERT OR REPLACE INTO task_state (task, running) VALUES (?, 1)",
+    (task_name,)
+)
+# On run end (success):
+await db.execute(
+    "INSERT OR REPLACE INTO task_state (task, running, last_run, last_result) VALUES (?, 0, ?, 'ok')",
+    (task_name, datetime.utcnow().isoformat())
+)
+# On run end (error):
+await db.execute(
+    "INSERT OR REPLACE INTO task_state (task, running, last_run, last_result) VALUES (?, 0, ?, ?)",
+    (task_name, datetime.utcnow().isoformat(), f"error: {e}")
+)
+```
+
+`download_monitor` is continuous and not tracked in `task_state`.
+
 **`_download_monitor_tick()`** — called every 15 seconds
 1. Get all requests with status in `[snatched, downloading]`
 2. For each, poll the download client (qBittorrent or SABnzbd) using `download.download_id`
@@ -466,7 +503,7 @@ The organize sequence is designed to be **idempotent** — safe to re-run after 
 7. Set `merge_jobs.organized_path` (if merge job exists)
 8. Trigger ABS library scan
 9. Poll ABS for match (title + author + type) — up to 10 retries with 5s delay
-10. On match: `UPDATE requests SET status='in_library', abs_id=?`; upsert `book_links`
+10. On match: `UPDATE requests SET status='in_library', abs_id=?`; upsert `book_links`; delete any `merge_jobs` row for this request (merge details no longer needed once in library)
 11. On retries exhausted: `UPDATE requests SET status='failed'`; log reason
 
 `POST /api/requests/{id}/organize` (manual retry) calls `_auto_organize(request_id, path)` as a new task, where `path` is the body param if supplied, otherwise the path from the most recent `downloads` record. Idempotency in step 6 handles the already-moved case.
@@ -501,7 +538,7 @@ The organize sequence is designed to be **idempotent** — safe to re-run after 
 
 **Dockerfile requirement:**
 ```dockerfile
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
 ```
 
 **`library_sync_task()`** — cron schedule: `schedule.library_sync`
@@ -514,6 +551,11 @@ Refreshes stale HC data for all linked entities (books, series, authors). Time-s
 Priority order: entries with `expires_at` closest to now (or already expired) first.
 Cache TTL: 14 days from `created_at`. Entries are overwritten on refresh, not deleted.
 On cache miss at read time (page load): fetch live from HC, store result immediately — don't wait for the nightly run.
+At the start of each run, purge orphaned/old entries:
+```sql
+DELETE FROM metadata_cache WHERE expires_at < datetime('now', '-7 days')
+```
+This retains expired entries for 7 days after expiry (21 days total) before removing them.
 Manual trigger: `POST /api/sync/cache-refresh`.
 
 **`auto_search_task()`** — cron schedule: `schedule.auto_search`
@@ -709,7 +751,9 @@ PUT    /api/settings
   Backend deep-merges received sections into the existing YAML, then writes atomically
   (write to settings.yaml.tmp, then rename). Unknown top-level keys rejected with 400.
   Example: { "prowlarr": { "api_key": "abc" } } updates only prowlarr.api_key.
-  Validates that path values (output_dir, download_dir) exist in the container. Returns { ok: true }.
+  Validates that path values (output_dir, download_dir) exist in the container.
+  Validates cron expressions under schedule.*: attempt croniter(value, datetime.now()) and return
+  400 { error: "Invalid cron expression: <field>" } if it raises. Returns { ok: true } on success.
 
 POST   /api/settings/test/abs
   Tests ABS connection, returns server info and library list.
@@ -748,9 +792,12 @@ POST   /api/sync/cache-refresh
   Returns { ok: true } immediately.
 
 GET    /api/sync/status
-  Returns status of all background sync tasks:
-  { library_sync: { running, last_run, last_result },
-    cache_refresh: { running, last_run, processed, total } }
+  Reads from task_state table. Returns:
+  { library_sync:  { running, last_run, last_result },
+    cache_refresh: { running, last_run, last_result },
+    auto_search:   { running, last_run, last_result } }
+  All fields present even if task has never run (running: false, last_run: null, last_result: null).
+  Persists across restarts.
 ```
 
 ---
@@ -1044,7 +1091,9 @@ Think a developer tool, not a consumer app.
 └──────────────────────────────────────┘
 ```
 
-Nav items: Dashboard | Search | Library ▾ | Requests | Downloads | Settings
+Nav items: [logo → home] | Library ▾ | Requests | Downloads | Dashboard | Settings
+
+The logo (left side of nav) navigates to `/#/`. There is no "Search" nav item — the home page is search.
 
 Library dropdown: Books · Authors · Series
 
@@ -1125,12 +1174,14 @@ Single file `static/app.js`. No build step. No imports. Everything is functions.
 const routes = {};
 function route(pattern, handler) { ... }
 function navigate(path) { location.hash = '#' + path; }
-function render() { /* match hash → call handler → set #app.innerHTML */ }
+function render() { /* match hash → call handler → set #app.innerHTML; fallback to 404 if no match */ }
 window.addEventListener('hashchange', render);
 window.addEventListener('DOMContentLoaded', render);
 ```
 
 Route params: `/library/series/:id` parsed into `{ id: "..." }`.
+
+If no route matches, render a centred "Page not found." message in `--text-dim`. No retry link.
 
 **API helper:**
 ```javascript
@@ -1203,33 +1254,111 @@ function renderDetailStats(name, stats) { ... }
 // stats: { inLibrary: N, total: N, requested: N, missing: N, loadingMissing: bool }
 ```
 
+**Loading and error states (applies to all pages):**
+
+Every page that fetches data follows this pattern — no exceptions:
+
+- **Loading:** render `ICON_SPINNER` centred in the content area while the fetch is in flight. No partial renders.
+- **Error:** on any thrown error from `api()`, render a centred message: "Failed to load. [Retry]" where Retry re-runs the same fetch. Use `--text-dim` for the message, `--accent` for the link.
+
+These are the only two states needed. Implement as two small helper functions:
+
+```javascript
+function renderLoading(container) {
+  container.innerHTML = `<div class="state-loading">${ICON_SPINNER}</div>`;
+}
+
+function renderError(container, retryFn) {
+  container.innerHTML = `<div class="state-error">Failed to load. <a href="#" class="retry">Retry</a></div>`;
+  container.querySelector('.retry').onclick = (e) => { e.preventDefault(); retryFn(); };
+}
+```
+
+Every route handler calls `renderLoading(app)` before its first `api()` call, then `renderError(app, render)` in the catch block.
+
 **`expandRequestForm(slot, result, onSuccess = null)`:**
-- Shows format selection (audiobook/ebook), disabled if already have it
-- Checks `result.existing_requests` AND `result.library_formats` for each format
-- On submit: POST /api/books (creates book + requests), then POST /api/requests if book already existed
+- Shows format selection: Audiobook button and Ebook button
+- For each format, checks `result.library_formats` (what ABS has) and `result.existing_requests` (what's in flight):
+  - Format not present anywhere: button enabled, normal label
+  - Format in `library_formats`: button label shows "have (Narrator Name)" if narrator known, or "have" if not — button remains **enabled** so a different narrator can be requested
+  - Format in `existing_requests` with non-failed status: button disabled, label shows current status (e.g. "downloading")
+- When Audiobook is selected, a narrator input appears below the format buttons:
+  - Placeholder: "Narrator (optional)"
+  - Optional — leaving blank submits a null narrator
+  - Not shown when only Ebook is selected
+- The "already have it" check for the submit button is narrator-aware: if the entered narrator matches an existing `in_library` request narrator (case-insensitive), that format is blocked with "already have this narrator"
+- On submit: `POST /api/books` (creates book + requests), then `POST /api/requests` if book already existed
 - On success: call `onSuccess(createdBook, result, selectedTypes)` or navigate to book detail
 
 ### Frontend Routes
 
 ```
-/#/                          Dashboard
-/#/search                    Search page (quick + advanced)
+/#/                          Home / Search
 /#/library/books             Books list (table/grid, filterable)
 /#/library/authors           Authors list (table/grid)
 /#/library/authors/:id       Author detail
 /#/library/series            Series list (table/grid)
 /#/library/series/:id        Series detail
 /#/library/book?book_id=...  Book detail
+/#/requests                  Requests list (filterable by status/type)
 /#/requests/:id              Request detail
 /#/downloads                 Active downloads
+/#/dashboard                 Stats dashboard
 /#/settings                  Settings
 ```
 
 ### Key Page Behaviours
 
-**Search page (`/#/search`):**
-- Quick search: single query field, search Hardcover
-- Advanced search: title + author + series fields
+**Home / Search page (`/#/`):**
+
+The home page is the search page. On first load (no query), it shows only the search input centred vertically in the content area — nothing else.
+
+```
+┌──────────────────────────────────────────────────┐
+│  nav                                             │
+├──────────────────────────────────────────────────┤
+│                                                  │
+│                                                  │
+│    ┌──────────────────────────────────┬──┐       │
+│    │  Search for a book...            │⚙ │       │
+│    └──────────────────────────────────┴──┘       │
+│                                                  │
+│                                                  │
+└──────────────────────────────────────────────────┘
+```
+
+The search input is wider than standard (max-width ~600px), rounded (`border-radius: 24px`), and centred both horizontally and vertically (flexbox column, justify-content: center on the page). It stands alone with generous whitespace above and below — no heading, no subtext.
+
+The `⚙` (or sliders/filter icon) sits inside the right edge of the input as an icon button. Clicking it expands the advanced fields inline below the input:
+
+```
+┌──────────────────────────────────────┬──┐
+│  Search...                           │⚙ │  ← icon is highlighted/active
+└──────────────────────────────────────┴──┘
+┌──────────────────┐ ┌───────────────┐
+│  Title...        │ │  Author...    │
+└──────────────────┘ └───────────────┘
+┌──────────────────┐
+│  Series...       │
+└──────────────────┘
+```
+
+Advanced fields appear with a smooth CSS transition (height/opacity). When advanced is open, the main input is used as the title field — they are the same input. Author and series fields appear below. The advanced icon is visually active (accent colour) while expanded.
+
+Search state is persisted in URL hash params so navigation and back/forward work correctly:
+- `/#/?q=dune` — basic search
+- `/#/?q=dune&author=herbert&advanced=1` — advanced search (expanded)
+
+On route render: read params, pre-fill inputs, re-run search automatically if `q` is present. `advanced=1` expands the advanced fields on load.
+
+A clear button (`✕`) appears inside the search input (right side, inside the border, left of the advanced icon) whenever any input has a value. Clicking it clears all fields, removes all search params from the URL, hides results, and returns the page to its initial centred state. The clear button is hidden when all inputs are empty.
+
+Submitting (Enter or a search icon button): calls the appropriate API endpoint:
+- Advanced closed: `GET /api/search/metadata?q=...`
+- Advanced open: `GET /api/search/advanced?title=...&author=...&series=...`
+
+Results render below the search input, pushing it toward the top of the page. The page no longer vertically centres the input once results are shown (input stays at top, results fill below).
+
 - Results rendered with `renderSearchResults(container, results, onSearchRequestSuccess(container))`
 - `onSearchRequestSuccess`: stays on page, updates card in-place (no navigation)
 - Card updates: shows new request badge, disables format button with "(have)" label
@@ -1241,10 +1370,10 @@ function renderDetailStats(name, stats) { ... }
 - Stats card updates when missing done: `N/Total in library | X requested | Y missing | Z%`
 - Requesting from missing books: updates in-place, moves from missing to library table
 - All stats update live as requests are added
+- If response includes `truncated: true`, show a note below the missing books list: "Showing first 50 entries — this series is too large to display in full."
 
 **Book detail (`/#/library/book?book_id=...`):**
 - Shows book metadata (from DB + Hardcover if linked)
-- Shows ABS items: the linked item + potential matches
 - Shows all requests with expandable dropdown
 - Request dropdown has: Search Prowlarr button + Delete Request button
 - For `failed` requests that passed through `merging` or `organizing`: also shows "Retry Organize" button
@@ -1252,6 +1381,35 @@ function renderDetailStats(name, stats) { ... }
   - User can correct the path before submitting
   - Submits `POST /api/requests/{id}/organize` with the (possibly corrected) path
 - Delete: click once → "Click again to confirm" (orange) → click again → deleted, removed from DOM
+
+**Book detail — ABS linking section:**
+
+Appears below the book metadata. Three states:
+
+1. **Linked** — shows the current ABS item: title, cover thumbnail, format badges (audiobook/ebook). An "Unlink" button calls `DELETE /api/metadata-links/{id}` and transitions to state 2 or 3.
+
+2. **Unlinked, potential matches found** — on page load, if `book_links.abs_id` is null, automatically calls `GET /api/abs/search?title=...&author=...` using the book's title and primary author. Renders each candidate as a row: cover thumbnail, title, author, format badges, and a "Link" button. Clicking Link calls `POST /api/metadata-links` with `{ book_id, abs_id }` and transitions to state 1.
+
+3. **Unlinked, no matches** — if the auto-search returns zero results, shows a manual search input ("Search AudiobookShelf…") that calls `GET /api/abs/search?title=...` on submit. Results render the same candidate row format as state 2. A "No match" label is shown if the manual search also returns nothing.
+
+**Requests list (`/#/requests`):**
+
+Filterable table of all requests. Columns: Book title, Author, Type (audiobook/ebook icon), Status (badge), Narrator (if set), Created date.
+
+Filter controls above the table:
+- Status dropdown: All | requested | monitored | snatched | downloading | organizing | in_library | failed
+- Type toggle: All | Audiobook | Ebook
+
+URL hash params carry filter state (same `renderTable` pattern):
+`?requests_status=failed&requests_type=audiobook`
+
+The Dashboard `failed` count card links to `/#/requests?requests_status=failed`.
+
+Empty state per filter:
+- No filter active: "No requests yet. [Search for a book] to get started."
+- Status filter active: "No [status] requests." (no action link)
+
+Row actions (inline, per row): Delete (with confirm pattern). For `failed` requests: also a "Retry" button that calls `POST /api/requests/{id}/organize` directly if the request has a download path, otherwise navigates to request detail.
 
 **Request detail (`/#/requests/:id`):**
 - Full request info, status history
@@ -1262,12 +1420,49 @@ function renderDetailStats(name, stats) { ... }
 - Polls every 5 seconds
 - Shows speed, ETA, progress bar for each active download
 
+**First-run banner:**
+
+On every page load, the frontend checks `GET /api/settings`. If `audiobookshelf.url` is empty, render a yellow banner directly below the nav (not dismissible):
+
+```
+⚠ AudiobookShelf is not configured. Go to Settings to get started.
+```
+
+"Go to Settings" links to `/#/settings`. The banner disappears automatically once the ABS URL is saved (the next settings fetch will see it populated). No other services block the banner — ABS is the only required one.
+
+**Empty states:**
+
+Every list page renders a centred empty state when its data returns zero rows. Style: dimmed text (`--text-dim`), no icon, action links use the standard `--accent` colour.
+
+| Page | Message | Action link |
+|------|---------|-------------|
+| Books | "Your library is empty." | "Sync from AudiobookShelf" → triggers `POST /api/sync/library`; or "Search for a book" → `/#/` |
+| Authors | "No authors yet. Authors are added automatically when books are synced." | "Sync library" → triggers `POST /api/sync/library` |
+| Series | "No series yet. Series are added automatically when books with series data are synced." | "Sync library" → triggers `POST /api/sync/library` |
+| Requests | "No requests yet." | "Search for a book" → `/#/` |
+| Downloads | "Nothing downloading right now." | — (no action; this is a normal state) |
+
+The Books empty state shows both links (sync existing library OR search for something new) since a new user might not have ABS set up yet.
+
+After a sync is triggered from an empty state, show a toast: "Library sync started — check back in a moment."
+
+**Dashboard (`/#/dashboard`):**
+- Calls `GET /api/status` and `GET /api/sync/status` on load
+- Shows library totals (books, authors, series) as large stat numbers in a row of cards
+- Shows request pipeline counts as a second row: one card per status
+  (`requested`, `monitored`, `snatched`, `downloading`, `organizing`, `in_library`, `failed`)
+- `failed` count card uses `--red` accent and links to `/#/requests?requests_status=failed`
+- Shows a third row: scheduled task status for `library_sync`, `cache_refresh`, `auto_search`.
+  Each card shows: task name, `running` indicator (spinner if true), `last_run` timestamp, `last_result` (green "ok" or red "error: ..."). If never run: "Never run" in `--text-dim`.
+- No auto-refresh — user refreshes manually or navigates away and back
+
 **Settings (`/#/settings`):**
-- Split into tabs: General | ABS | Prowlarr | qBittorrent | SABnzbd | Hardcover | Pushover
+- Split into tabs: General | ABS | Prowlarr | qBittorrent | SABnzbd | Hardcover | Pushover | Sync
 - Each tab has its own Save button — saves only that section (`PUT /api/settings` with the tab's key)
 - ABS, Prowlarr, qBittorrent, SABnzbd tabs each have a Test Connection button (calls the relevant `/api/settings/test/*` endpoint)
 - Sensitive fields (api_key, password) are returned as `"********"` by GET; if PUT receives `"********"` for a sensitive field, the backend leaves the existing value unchanged
 - On save: show inline success/error feedback next to the Save button
+- **Sync tab:** shows cron schedule inputs for `library_sync`, `cache_refresh`, `auto_search` with a single Save button. Below the form, shows current task state (last run, last result) read from `GET /api/sync/status`. Manual trigger buttons: "Run now" for each task — calls `POST /api/sync/library` or `POST /api/sync/cache-refresh`. After triggering, button disables and shows "Running…" until the next status poll confirms `running: false`.
 
 ---
 
@@ -1390,7 +1585,7 @@ croniter
 ```dockerfile
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
@@ -1399,6 +1594,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8743
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8743/healthz || exit 1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8743"]
 ```
 
@@ -1408,7 +1605,7 @@ No version-pinning in requirements.txt during development — pin to known-good 
 4. `app/main.py` — bare FastAPI app, static file serving, DB init on startup
 5. `static/index.html` — HTML shell with nav, `<div id="app">`, script tag
 6. `static/style.css` — full design system (variables, cards, badges, buttons, layout, tables, grid)
-7. `static/app.js` — router, api(), toast(), all icon constants, shared render functions skeleton
+7. `static/app.js` — router, api(), toast(), all icon constants, shared render functions skeleton, home/search page
 
 ### Phase 2: Settings & ABS
 8. `app/services/audiobookshelf.py` — all methods
@@ -1425,7 +1622,8 @@ No version-pinning in requirements.txt during development — pin to known-good 
 15. `app/routes/books.py` (complete) — search endpoints, series missing, book detail
 16. Search page frontend — quick + advanced, in-place request success
 17. `app/routes/requests.py` — CRUD, sync-library
-18. Request-related UI on book cards and detail pages
+18. Requests list page (`/#/requests`) — filterable table, row actions
+19. Request-related UI on book cards and detail pages
 
 ### Phase 5: Downloads
 19. `app/routes/requests.py` — search-indexers, download, organize endpoints
@@ -1442,11 +1640,18 @@ No version-pinning in requirements.txt during development — pin to known-good 
 28. `app/routes/sync.py`
 
 ### Phase 7: Polish
-28. Dashboard stats
+28. Dashboard stats page (`/#/dashboard`)
 29. Active download polling
-30. Library sync progress
-31. Enrichment progress
-32. Mobile/responsive CSS fixes
+30. Library sync progress (task_state display in UI)
+31. Mobile/responsive CSS fixes
+
+---
+
+## Future Work
+
+Features deliberately deferred — not in scope for initial build but worth implementing later:
+
+- **Bulk actions on Requests list** — checkbox selection per row, bulk toolbar for monitor/unmonitor/delete. Most useful for clearing a batch of failed requests or monitoring a large import.
 
 ---
 
@@ -1504,8 +1709,14 @@ services:
       - "8743:8743"
     volumes:
       - ./data:/data
-      - /path/to/output:/output
+      - /path/to/output:/output  # Replace with your actual library path
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8743/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 ```
 
 **`.gitignore`:**
@@ -1518,6 +1729,8 @@ venv/
 ```
 
 `data/` contains `settings.yaml` (real API keys) and `athenaeum.db`. Never commit it.
+
+**Backups:** Before any upgrade, back up `./data/` — it contains both the database and your API keys. A simple `cp -r ./data ./data.bak` before `docker compose up -d --build` is sufficient.
 
 ```bash
 # Build and start
