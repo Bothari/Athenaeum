@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Athenaeum</title>
+  <link rel="stylesheet" href="/static/style.css?v=1">
+</head>
+<body>
+  <nav id="nav">
+    <div class="nav-inner">
+      <a href="#/" class="nav-logo">Athenaeum</a>
+      <div class="nav-links">
+        <div class="nav-dropdown">
+          <button class="nav-btn nav-dropdown-trigger" id="library-menu-btn">
+            Library
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="nav-dropdown-menu" id="library-menu">
+            <a href="#/library/books" class="nav-dropdown-item">Books</a>
+            <a href="#/library/authors" class="nav-dropdown-item">Authors</a>
+            <a href="#/library/series" class="nav-dropdown-item">Series</a>
+          </div>
+        </div>
+        <a href="#/requests" class="nav-btn">Requests</a>
+        <a href="#/downloads" class="nav-btn">Downloads</a>
+        <a href="#/dashboard" class="nav-btn">Dashboard</a>
+        <a href="#/settings" class="nav-btn">Settings</a>
+      </div>
+    </div>
+  </nav>
+
+  <div id="banner" class="banner-abs hidden"></div>
+
+  <main id="main">
+    <div id="app"></div>
+  </main>
+
+  <div id="toast-container"></div>
+
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>
