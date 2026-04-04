@@ -45,12 +45,13 @@ Athenaeum/
 │   │   ├── requests.py          # Request CRUD, search-indexers, download, organize
 │   │   ├── downloads.py         # Active downloads list
 │   │   ├── settings.py          # Settings CRUD and connection tests
-│   │   ├── metadata_links.py    # ABS↔Hardcover linking
-│   │   └── enrichment.py        # Background Hardcover enrichment
+│   │   ├── book_links.py        # ABS↔Hardcover linking
+│   │   └── sync.py              # Manual sync triggers + status
 │   └── services/
 │       ├── audiobookshelf.py    # ABS API client
 │       ├── book_search.py       # Hardcover GraphQL client
-│       └── library_sync.py      # ABS → DB sync logic
+│       ├── library_sync.py      # ABS → DB sync logic
+│       └── pushover.py          # Pushover notification client
 ├── static/
 │   ├── app.js                   # Frontend SPA
 │   ├── index.html               # HTML shell (contains cache buster on script tag)
@@ -66,12 +67,64 @@ Athenaeum/
 
 ## Database Schema
 
+### Database Connection
+
+Never call `aiosqlite.connect()` directly. Always use the `get_db()` helper, which sets required PRAGMAs on every connection:
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def get_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA journal_mode=WAL")   # concurrent readers + one writer
+        await db.execute("PRAGMA busy_timeout=5000")  # retry up to 5s before raising
+        await db.execute("PRAGMA foreign_keys=ON")    # enforce FK constraints
+        yield db
+
+# Usage everywhere:
+async with get_db() as db:
+    ...
+```
+
+WAL mode allows concurrent reads alongside writes instead of exclusive locking. `busy_timeout` retries on contention before raising `OperationalError: database is locked`. `foreign_keys=ON` must be set per-connection in SQLite — it does not persist.
+
+### Migration Strategy
+
+`database.py` uses a `PRAGMA user_version`-based migration system. **Never use bare `CREATE TABLE IF NOT EXISTS`** — all schema lives inside versioned migration blocks.
+
+```python
+SCHEMA_VERSION = 1  # bump when adding migrations
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _run_migrations(db)
+
+async def _run_migrations(db):
+    row = await (await db.execute("PRAGMA user_version")).fetchone()
+    current = row[0]
+
+    if current < 1:
+        await db.executescript(SCHEMA_V1)  # all CREATE TABLE statements
+        await db.execute("PRAGMA user_version = 1")
+
+    # Future migrations go here:
+    # if current < 2:
+    #     await db.executescript("ALTER TABLE books ADD COLUMN foo TEXT")
+    #     await db.execute("PRAGMA user_version = 2")
+
+    await db.commit()
+```
+
+`SCHEMA_V1` is a string constant containing all `CREATE TABLE` and `CREATE INDEX` statements. Future schema changes are additive `ALTER TABLE` blocks in numbered `if current < N` guards. Never edit past migration blocks.
+
 ### Design Principles
 
 - **Normalised:** authors and series are separate tables with junction tables
 - **No denormalised strings:** `books` has NO `author`, `series`, or `series_id` columns
 - **All queries use JOINs** with `book_authors` and `book_series`
-- **Explicit ID links:** `metadata_links` maps internal `book_id` → `abs_id` and/or `hardcover_id`
+- **Explicit ID links:** `book_links` maps internal `book_id` → `abs_id` and/or `hardcover_id`
 - **Author and series links** (`author_links`, `series_links`) map internal IDs to external IDs
 
 ### Tables
@@ -84,7 +137,7 @@ CREATE TABLE books (
     cover_url    TEXT,
     metadata_source TEXT,   -- 'hardcover' | 'abs' | null
     metadata_url TEXT,
-    abs_checked_at TEXT,
+    abs_checked_at TEXT,  -- set by library_sync on every run; NULL means never synced
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -98,6 +151,7 @@ CREATE TABLE authors (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE INDEX idx_authors_name ON authors(name);
 
 -- Author external IDs
 CREATE TABLE author_links (
@@ -153,18 +207,18 @@ CREATE TABLE book_series (
 CREATE INDEX idx_book_series_book   ON book_series(book_id);
 CREATE INDEX idx_book_series_series ON book_series(series_id);
 
--- ABS ↔ Hardcover ↔ internal book
-CREATE TABLE metadata_links (
+-- ABS ↔ Hardcover ↔ internal book (mirrors author_links / series_links pattern)
+CREATE TABLE book_links (
     id             TEXT PRIMARY KEY,
     book_id        TEXT UNIQUE REFERENCES books(id),
-    abs_id         TEXT UNIQUE,       -- ABS item ID
+    abs_id         TEXT UNIQUE,       -- ABS item ID (one per book — see separate_type_dirs note)
     hardcover_id   TEXT UNIQUE,       -- Hardcover book ID
     hardcover_slug TEXT,
     linked_at      TEXT NOT NULL
 );
-CREATE INDEX idx_metadata_links_book      ON metadata_links(book_id);
-CREATE INDEX idx_metadata_links_hardcover ON metadata_links(hardcover_id);
-CREATE INDEX idx_metadata_links_abs       ON metadata_links(abs_id);
+CREATE INDEX idx_book_links_book      ON book_links(book_id);
+CREATE INDEX idx_book_links_hardcover ON book_links(hardcover_id);
+CREATE INDEX idx_book_links_abs       ON book_links(abs_id);
 
 -- Download/request tracking
 CREATE TABLE requests (
@@ -188,69 +242,87 @@ CREATE INDEX idx_requests_status ON requests(status);
 -- Individual download attempts
 CREATE TABLE downloads (
     id              TEXT PRIMARY KEY,
-    request_id      TEXT NOT NULL REFERENCES requests(id),
+    request_id      TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
     title           TEXT,
     indexer         TEXT,
-    guid            TEXT,
+    guid            TEXT UNIQUE,
     info_url        TEXT,
     protocol        TEXT,   -- 'torrent' | 'usenet'
     size            INTEGER,
     download_client TEXT,
-    download_id     TEXT,
     download_id     TEXT,
     download_path   TEXT,
     status          TEXT,   -- 'snatched' | 'downloading' | 'completed' | 'failed'
     grabbed_at      TEXT NOT NULL
 );
 
--- File processing after download
-CREATE TABLE ingested_files (
-    id                TEXT PRIMARY KEY,
-    request_id        TEXT REFERENCES requests(id),
-    status            TEXT,
-    file_path         TEXT,
-    file_type         TEXT,
-    original_name     TEXT,
-    is_multi_file     INTEGER,
-    file_count        INTEGER,
-    extracted_title   TEXT,
-    extracted_author  TEXT,
-    extracted_narrator TEXT,
-    title             TEXT,
-    author            TEXT,
-    narrator          TEXT,
-    metadata_source   TEXT,
-    merged_file_path  TEXT,
-    merge_error       TEXT,
-    organized_path    TEXT,
-    created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL
+-- Merge job tracking (only created when multi-file merge is performed)
+-- Lifecycle is tracked via requests.status — this table stores file-system details only
+CREATE TABLE merge_jobs (
+    id             TEXT PRIMARY KEY,
+    request_id     TEXT REFERENCES requests(id) ON DELETE CASCADE,
+    download_id    TEXT REFERENCES downloads(id) ON DELETE CASCADE,
+    source_path    TEXT NOT NULL,  -- original download folder
+    file_count     INTEGER NOT NULL,
+    merged_path    TEXT,           -- path to output .m4b (set on success)
+    organized_path TEXT,           -- final destination path (set after move)
+    merge_error    TEXT,           -- ffmpeg stderr on failure
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
 );
 
--- Search result cache
+-- HC data cache: books, series, authors
+-- query = hardcover ID, source = 'hardcover_book' | 'hardcover_series' | 'hardcover_author'
+-- TTL: 14 days (expires_at = created_at + 14 days)
 CREATE TABLE metadata_cache (
-    id          TEXT PRIMARY KEY,
-    query       TEXT,
-    source      TEXT,
-    results_json TEXT,
-    created_at  TEXT NOT NULL
+    id           TEXT PRIMARY KEY,
+    query        TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL
 );
+CREATE UNIQUE INDEX metadata_cache_query_source ON metadata_cache (query, source);
+CREATE INDEX metadata_cache_expires ON metadata_cache (expires_at);
 ```
 
 ### Request State Machine
 
 ```
-requested → monitored → snatched → downloading → downloaded → organizing → completed → in_library
-                                                            → failed
-Any state → cancelled (except in_library)
+requested → monitored → snatched → downloading → downloaded → merging (optional) → organizing → in_library
+                                                                              ↘ (no merge)  ↑
+                                                                                organizing → failed
 monitored → requested (can go back)
 ```
+
+`merging` — ffmpeg m4b merge in progress (only for multi-file audiobooks when `merge_multifile_audiobooks` is enabled)
+`organizing` — file move in progress, ABS scan triggered, polling for match
+
+Valid terminal states: `in_library`, `failed`.
+`failed` can be retried: `POST /api/requests/{id}/organize` re-runs `_auto_organize`, transitioning back through `merging` or `organizing` as appropriate.
+There is no `cancelled` state — always hard-delete the row (see Request Deletion below).
 
 ---
 
 ## Settings
 
 Settings live in `/data/settings.yaml`. Read/written by `app/settings.py`.
+
+`app/settings.py` exposes two async functions — `get_settings()` and `save_settings(partial)` — and a module-level `asyncio.Lock` that both acquire before touching the file. This serialises concurrent reads (background tasks at startup) and writes (user saving a settings tab).
+
+```python
+_settings_lock = asyncio.Lock()
+
+async def get_settings() -> dict:
+    async with _settings_lock:
+        # load and return yaml
+
+async def save_settings(partial: dict) -> None:
+    async with _settings_lock:
+        # load current, deep-merge partial, write to settings.yaml.tmp, rename to settings.yaml
+```
+
+No other module reads or writes the YAML directly — all access goes through these two functions.
 
 ```yaml
 prowlarr:
@@ -271,7 +343,7 @@ sabnzbd:
 audiobookshelf:
   url: ""
   api_key: ""
-  library_id: ""      # comma-separated if multiple
+  library_id: []      # list of library IDs (single or multiple)
 
 hardcover:
   api_key: ""
@@ -282,13 +354,17 @@ pushover:
   user_key: ""
 
 general:
-  auto_search_interval_hours: 6
-  auto_sync_interval_hours: 12
   group_series_in_search: true
   output_dir: "/output"
   separate_type_dirs: true
   audiobook_prefix: ""
   ebook_prefix: ""
+  merge_multifile_audiobooks: false
+
+schedule:
+  library_sync:    "0 2 * * *"   # ABS → DB upsert + inline HC linking
+  cache_refresh:   "0 3 * * *"   # refresh stale HC data (books, series, authors) — 1hr time slice
+  auto_search:     "0 */6 * * *" # search Prowlarr for pending requests
 ```
 
 ---
@@ -305,47 +381,145 @@ app.include_router(books_router, prefix="/api")
 app.include_router(requests_router, prefix="/api")
 app.include_router(downloads_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
-app.include_router(metadata_links_router, prefix="/api")
-app.include_router(enrichment_router, prefix="/api")
+app.include_router(book_links_router, prefix="/api")
+app.include_router(sync_router, prefix="/api")
 
-# Serve static files
-app.mount("/", StaticFiles(directory="static", html=True))
+# Serve index.html with Cache-Control: no-cache so browsers always revalidate
+# (prevents stale HTML caching the old ?v=N script tag)
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_spa(full_path: str):
+    return FileResponse("static/index.html", headers={"Cache-Control": "no-cache"})
+
+# Serve other static assets (CSS, JS) — these can be cached by the browser
+app.mount("/static", StaticFiles(directory="static"))
 
 # On startup: init DB, start background tasks
 @app.on_event("startup")
 async def startup():
     await init_db()
     asyncio.create_task(download_monitor())      # polls every 15s
-    asyncio.create_task(library_sync_task())     # syncs on interval
-    asyncio.create_task(auto_search_task())      # searches pending requests
+    asyncio.create_task(library_sync_task())   # schedule.library_sync cron
+    asyncio.create_task(cache_refresh_task())  # schedule.cache_refresh cron
+    asyncio.create_task(auto_search_task())    # schedule.auto_search cron
 
 # GET /api/status
-# Returns: { books: int, requests: { requested: int, monitored: int, ... } }
+# Returns: { books: int, requests: { requested: int, monitored: int, snatched: int,
+#            downloading: int, downloaded: int, merging: int, organizing: int,
+#            in_library: int, failed: int } }
 ```
 
 ### Background Tasks
 
-**`download_monitor()`** — runs every 15 seconds
+All background tasks use a supervised loop pattern — the outer loop catches any exception, logs it, and continues. Work logic is separated into a `_tick()` helper to keep the supervisor clean:
+
+```python
+async def download_monitor():
+    while True:
+        try:
+            await _download_monitor_tick()
+        except Exception as e:
+            logger.error(f"download_monitor error: {e}", exc_info=True)
+        await asyncio.sleep(15)
+```
+
+Apply the same pattern to all scheduled tasks. A single run failure never kills the task — it logs and waits until the next scheduled time.
+
+All scheduled tasks use `croniter` (add to requirements.txt) to calculate the next run time from their cron expression in settings:
+
+```python
+async def _wait_until_next(cron_expr: str):
+    now = datetime.now()
+    next_run = croniter(cron_expr, now).get_next(datetime)
+    await asyncio.sleep((next_run - now).total_seconds())
+
+async def library_sync_task():
+    while True:
+        await _wait_until_next((await get_settings())["schedule"]["library_sync"])
+        try:
+            await sync_library()
+        except Exception as e:
+            logger.error(f"library_sync_task error: {e}", exc_info=True)
+```
+
+All three scheduled tasks (`library_sync_task`, `cache_refresh_task`, `auto_search_task`) follow this exact pattern. None run on startup — they wait for their first scheduled time.
+
+**`_download_monitor_tick()`** — called every 15 seconds
 1. Get all requests with status in `[snatched, downloading]`
 2. For each, poll the download client (qBittorrent or SABnzbd) using `download.download_id`
-3. Update `downloads.status` and `requests.status` accordingly
-4. On completion (status = downloaded): trigger `_auto_organize(request_id, download_path)`
+3. Update `downloads.status` and `requests.status` in a single transaction
+4. On completion (status = downloaded): `asyncio.create_task(_auto_organize(request_id, download_path))`
 
-**`_auto_organize(request_id, path)`** — background task
+**`_auto_organize(request_id, path)`** — detached background task (always `asyncio.create_task`, never awaited)
+
+The organize sequence is designed to be **idempotent** — safe to re-run after a partial failure.
+
 1. Read request metadata: title, author, series, series_position, type
-2. Build the correct output path using settings (separate_type_dirs, prefixes)
-3. Move/rename files into the output directory
-4. Trigger ABS library scan
-5. Poll ABS for match (title + author + type) — up to 10 retries with 5s delay
-6. If found: `UPDATE requests SET status='in_library', abs_id=? WHERE id=?`
-7. Also upsert into `metadata_links` (set abs_id, keep existing hardcover_id)
+2. **Detect multi-file:** if `path` is a directory containing audio files, note `file_count=N`
+3. **Merge step** (if `type='audiobook'` AND multi-file AND `settings.merge_multifile_audiobooks`):
+   - Set `requests.status = 'merging'`; create `merge_jobs` row with `source_path`, `file_count`
+   - Run `_merge_to_m4b(source_dir, tmp_path, title, author)` (see M4B Merge below)
+   - On merge failure: set `merge_jobs.merge_error=...`, `requests.status='failed'`; return
+   - On success: set `merge_jobs.merged_path=tmp_path`; use merged file as source for step 4
+4. Set `requests.status = 'organizing'`
+5. Compute destination path from settings (separate_type_dirs, prefixes)
+6. Move file to destination: if source exists → move; if already at destination → skip (idempotent); if neither → `requests.status='failed'`, return
+7. Set `merge_jobs.organized_path` (if merge job exists)
+8. Trigger ABS library scan
+9. Poll ABS for match (title + author + type) — up to 10 retries with 5s delay
+10. On match: `UPDATE requests SET status='in_library', abs_id=?`; upsert `book_links`
+11. On retries exhausted: `UPDATE requests SET status='failed'`; log reason
 
-**`library_sync_task()`** — runs on startup (30s delay) then every N hours
-1. Call `library_sync.sync_library()`
-2. For each new ABS item: create book + authors + series + metadata_link
+`POST /api/requests/{id}/organize` (manual retry) calls `_auto_organize(request_id, path)` as a new task, where `path` is the body param if supplied, otherwise the path from the most recent `downloads` record. Idempotency in step 6 handles the already-moved case.
 
-**`auto_search_task()`** — runs on configured interval
-- For each `requested` request past the search interval, trigger Prowlarr search
+### M4B Merge Algorithm
+
+`_merge_to_m4b(source_dir, output_path, title, author)` — uses `ffmpeg` + `ffprobe` (both required in the Docker image).
+
+```
+1. Collect all audio files in source_dir, sorted by filename (natural/numeric sort)
+2. For each file, run ffprobe to get duration in seconds (ffprobe -v quiet -show_entries
+   format=duration -of csv=p=0 <file>)
+3. Build an ffmetadata chapter file:
+     [CHAPTER]
+     TIMEBASE=1/1000
+     START=<cumulative_ms>
+     END=<cumulative_ms + duration_ms>
+     title=<filename without extension>
+   One chapter per source file, using the filename as chapter title.
+4. Concatenate + re-encode in one ffmpeg pass:
+     ffmpeg -f concat -safe 0 -i filelist.txt \
+            -i chapters.ffmetadata \
+            -map_metadata 1 \
+            -map 0:a \
+            -c:a aac -b:a 128k \
+            -metadata title="<title>" \
+            -metadata artist="<author>" \
+            <output_path>.m4b
+5. On non-zero exit code: raise with stderr as merge_error
+6. Clean up temp filelist and ffmetadata files
+```
+
+**Dockerfile requirement:**
+```dockerfile
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+```
+
+**`library_sync_task()`** — cron schedule: `schedule.library_sync`
+Calls `sync_library()`. Does not run on startup.
+After ingesting each new ABS item, immediately attempts HC linking inline (see HC Linking below).
+Manual trigger: `POST /api/sync/library`.
+
+**`cache_refresh_task()`** — cron schedule: `schedule.cache_refresh`
+Refreshes stale HC data for all linked entities (books, series, authors). Time-sliced to 1 hour max — stops when the hour is up and continues with the next-oldest entries the following night.
+Priority order: entries with `expires_at` closest to now (or already expired) first.
+Cache TTL: 14 days from `created_at`. Entries are overwritten on refresh, not deleted.
+On cache miss at read time (page load): fetch live from HC, store result immediately — don't wait for the nightly run.
+Manual trigger: `POST /api/sync/cache-refresh`.
+
+**`auto_search_task()`** — cron schedule: `schedule.auto_search`
+For each `monitored` request, trigger Prowlarr search. `requested` items are not auto-searched — the user must explicitly monitor a request to opt in to background searching.
+On finding a result and triggering a download: send a Pushover notification via `notify_snatched()`.
+Notification is fire-and-forget — failure to notify must never block the download.
 
 ### API Endpoints
 
@@ -358,11 +532,14 @@ POST   /api/books
   Body: { title, author, cover_url?, series?, series_position?,
           metadata_source?, metadata_id?, metadata_url?,
           requests: [{type, narrator?}] }
+  Creates the book (if not duplicate by title+author), then calls
+  _create_request(book_id, type, narrator) for each entry in requests[].
   Returns: book detail with _created_requests, _skipped_requests counts
 
-GET    /api/books
-  Returns: [{ id, title, cover_url, authors: [...], series: [...],
-              requests: [...], formats: [...] }]
+GET    /api/books?q=...&sort=title&dir=asc&limit=50&offset=0
+  q: filter by title or author (server-side LIKE match)
+  sort: title | author | created_at (default: title)
+  Returns: { items: [{...}], total: int, limit: int, offset: int }
 
 GET    /api/books/{book_id}
   Returns: full book detail (same shape as list item)
@@ -388,23 +565,27 @@ POST   /api/books/{book_id}/check-abs
   "metadata_url": "...",
   "authors": [{"id": "uuid", "name": "...", "position": 1}],
   "series": [{"id": "uuid", "name": "...", "position": "7"}],
-  "requests": [{"id": "uuid", "type": "audiobook", "status": "in_library", ...}],
-  "formats": [{"type": "audiobook", "narrator": "..."}],
+  "requests": [{"id": "uuid", "type": "audiobook", "status": "downloading", "narrator": "..."}],
+  "library_formats": [{"type": "audiobook", "narrator": "..."}],
   "link": {"abs_id": "...", "hardcover_id": "..."}
+  // library_formats: derived from ABS via abs_id (ground truth for what is physically present)
+  // requests: from the requests table (what is pending/in-progress/in_library)
 }
 ```
 
 #### Authors & Series (`app/routes/books.py`)
 
 ```
-GET    /api/authors
-  Returns: [{ id, name, book_count, link: {hardcover_author_id?} }]
+GET    /api/authors?q=...&sort=name&dir=asc&limit=50&offset=0
+  q: filter by name
+  Returns: { items: [{ id, name, book_count, link: {hardcover_author_id?} }], total: int, limit: int, offset: int }
 
 GET    /api/authors/{author_id}/books
   Returns: [book detail shape]
 
-GET    /api/series
-  Returns: [{ id, name, book_count, link: {hardcover_series_id?} }]
+GET    /api/series?q=...&sort=name&dir=asc&limit=50&offset=0
+  q: filter by name
+  Returns: { items: [{ id, name, book_count, link: {hardcover_series_id?} }], total: int, limit: int, offset: int }
 
 GET    /api/series/{series_id}/books
   Returns: [book detail shape + position]
@@ -422,15 +603,16 @@ POST   /api/series/{series_id}/link
 #### Search (`app/routes/books.py`)
 
 ```
-GET    /api/search/metadata?q=...
+GET    /api/search/metadata?q=...&series_id=...
   Search Hardcover, annotate results with local data:
-    - Check metadata_links for hardcover_id match → set book_id, in_library
+    - Check book_links for hardcover_id match → set book_id, in_library
     - Check requests for existing requests by title+author → set existing_requests
     - Fetch ABS item for in_library books → set library_formats (for dupe prevention)
+  Optional series_id: when present, sort that series first in each result's series array.
   Returns: { results: [search result shape] }
 
-GET    /api/search/advanced?title=...&author=...&series=...
-  Same annotation as above
+GET    /api/search/advanced?title=...&author=...&series=...&series_id=...
+  Same annotation and series_id behaviour as above.
   Returns: { results: [search result shape] }
 ```
 
@@ -442,8 +624,7 @@ GET    /api/search/advanced?title=...&author=...&series=...
   "cover_url": "...",
   "metadata_id": "hardcover_book_id",
   "metadata_source": "hardcover",
-  "series": "...",
-  "series_position": "7",
+  "series": [{"id": "local_uuid_or_null", "hardcover_series_id": "...", "name": "...", "position": "7"}],
   "rating": 4.2,
   "rating_count": 82,
   "users_count": 133,
@@ -455,22 +636,29 @@ GET    /api/search/advanced?title=...&author=...&series=...
 }
 ```
 
+`series` is always an array sorted by relevance — context series first, then by HC `users_count` descending.
+Frontend renders only `series[0]` on cards. Full array available for detail views.
+
 #### Requests (`app/routes/requests.py`)
 
 ```
 POST   /api/requests
   Body: { book_id, type, narrator? }
-  Returns: request detail
+  Calls _create_request(book_id, type, narrator).
+  Returns: request detail, or { skipped: true } if dedup rule matched
 
-GET    /api/requests?status=...&type=...&book_id=...
-  Returns: [request detail]
+GET    /api/requests?status=...&type=...&book_id=...&q=...&sort=created_at&dir=desc&limit=50&offset=0
+  q: filter by book title or author
+  Returns: { items: [request detail], total: int, limit: int, offset: int }
 
 GET    /api/requests/{id}
   Returns: request detail with download history
 
-PATCH  /api/requests/{id}
-  Body: { status?, narrator?, isbn?, asin? }
-  Status transitions validated. Returns updated request.
+POST   /api/requests/{id}/monitor
+  Sets status to 'monitored'. No-op if already monitored. Returns { ok: true }.
+
+POST   /api/requests/{id}/unmonitor
+  Sets status back to 'requested'. No-op if not monitored. Returns { ok: true }.
 
 DELETE /api/requests/{id}
   ACTUALLY deletes the row — does NOT set cancelled status.
@@ -486,19 +674,14 @@ POST   /api/requests/{id}/download
   Returns: { ok: true, download_id: "..." }
 
 POST   /api/requests/{id}/organize
-  Manually trigger organize (e.g., if auto-organize failed).
+  Body: { path?: string }
+  Manually trigger organize. If path is provided, use it instead of the stored download path.
   Returns: { ok: true }
 
 POST   /api/requests/sync-library
   For all non-in_library requests, check ABS; promote if found.
   Returns: { ok: true, updated: N }
 ```
-
-#### Downloads (`app/routes/downloads.py`)
-
-```
-
-<!-- NOTE: lines 500-749 of original were not recovered from transcript; the following section is from the reviewed/updated PLAN.md -->
 
 #### Downloads (`app/routes/downloads.py`)
 
@@ -851,7 +1034,6 @@ Think a developer tool, not a consumer app.
 - Narrow gutters: 0.5rem
 
 **Layout:**
-**Layout:**
 ```
 ┌──────────────────────────────────────┐
 │ nav (sticky top, height 48px)        │
@@ -862,7 +1044,7 @@ Think a developer tool, not a consumer app.
 └──────────────────────────────────────┘
 ```
 
-Nav items: logo | Search | Library ▾ | Requests | Downloads | Settings
+Nav items: Dashboard | Search | Library ▾ | Requests | Downloads | Settings
 
 Library dropdown: Books · Authors · Series
 
@@ -976,8 +1158,24 @@ function toast(message, type = 'success') { ... }
 **Shared render functions — define once, use everywhere:**
 
 ```javascript
-// Renders a table with sortable columns and text filter
-// config: { headers: [{label, key, style}], rows: [...html strings] }
+// Renders a paginated table with server-side sort, filter, and infinite scroll.
+// config: {
+//   container: Element,
+//   headers: [{label, key, sortable?, style?}],
+//   fetchFn: (params) => Promise<{items, total}>  // called by renderTable on state changes
+//   renderRow: (row) => html string,
+//   stateKey: string   // URL param prefix, e.g. "books" → ?books_sort=title&books_dir=asc&books_q=...
+// }
+//
+// Sort/filter/pagination state lives in URL hash params (survives navigation and refresh):
+//   ?{stateKey}_sort={key}&{stateKey}_dir=asc|desc&{stateKey}_q={text}&{stateKey}_offset={n}
+//
+// On init: reads state from URL params, calls fetchFn, renders first page.
+// On column header click: reset offset to 0, update URL params, call fetchFn, replace rows.
+// On filter input: debounced 200ms, reset offset to 0, update URL params, call fetchFn, replace rows.
+// On scroll to bottom (IntersectionObserver on last row): increment offset, call fetchFn, append rows.
+// Infinite scroll stops when items.length < limit (last page reached).
+// fetchFn receives { q, sort, dir, limit: 50, offset } — maps directly to API params.
 function renderTable(config) { ... }
 
 // Renders a book card (for grid view)
@@ -993,8 +1191,11 @@ function renderSeriesCard(series) { ... }
 // onRequestSuccess: optional callback, if not provided navigates to book detail
 function renderSearchResults(container, results, onRequestSuccess = null) { ... }
 
-// Returns inline confirmation handler (click once → warning state → click again → action)
-// Used for delete buttons everywhere
+// Inline confirmation: click once → warning state → click again → action
+// State is stored as data-confirming on the button element — not in a JS variable.
+// Re-renders naturally reset confirm state (user navigated away = confirmation cancelled).
+// Multiple buttons can be in confirm state simultaneously — each manages its own state.
+// Usage: btn.onclick = () => confirmAction(btn, 'Delete?', () => doDelete())
 function confirmAction(btn, confirmText, action) { ... }
 
 // Renders a stats header card for author/series detail pages
@@ -1046,6 +1247,10 @@ function renderDetailStats(name, stats) { ... }
 - Shows ABS items: the linked item + potential matches
 - Shows all requests with expandable dropdown
 - Request dropdown has: Search Prowlarr button + Delete Request button
+- For `failed` requests that passed through `merging` or `organizing`: also shows "Retry Organize" button
+  - Clicking opens a text input pre-filled with the last known path from the downloads record
+  - User can correct the path before submitting
+  - Submits `POST /api/requests/{id}/organize` with the (possibly corrected) path
 - Delete: click once → "Click again to confirm" (orange) → click again → deleted, removed from DOM
 
 **Request detail (`/#/requests/:id`):**
@@ -1056,6 +1261,13 @@ function renderDetailStats(name, stats) { ... }
 **Downloads (`/#/downloads`):**
 - Polls every 5 seconds
 - Shows speed, ETA, progress bar for each active download
+
+**Settings (`/#/settings`):**
+- Split into tabs: General | ABS | Prowlarr | qBittorrent | SABnzbd | Hardcover | Pushover
+- Each tab has its own Save button — saves only that section (`PUT /api/settings` with the tab's key)
+- ABS, Prowlarr, qBittorrent, SABnzbd tabs each have a Test Connection button (calls the relevant `/api/settings/test/*` endpoint)
+- Sensitive fields (api_key, password) are returned as `"********"` by GET; if PUT receives `"********"` for a sensitive field, the backend leaves the existing value unchanged
+- On save: show inline success/error feedback next to the Save button
 
 ---
 
@@ -1085,11 +1297,40 @@ If you need ordered authors, subquery or sort in Python after fetching.
 
 ### Preventing Duplicate Requests
 
-`library_formats` is fetched by calling `audiobookshelf.get_item_by_id(abs_id)` for 
-each in-library book when annotating search results. This tells the frontend which
-formats are physically present in ABS, so request form buttons can be disabled.
+**Deduplication key: `(book_id, type, narrator)`**
+
+Narrator is part of the request identity. This allows requesting the same audiobook with a different narrator (e.g. you have narrator A in library, you want narrator B).
+
+A request is **skipped** if a row already exists in `requests` for the same `(book_id, type, narrator)` in any non-failed status. Rules:
+
+- `narrator` comparison is case-insensitive string match
+- `NULL` narrator matches `NULL` narrator only — a null-narrator request and a named-narrator request are considered different
+- `failed` requests do NOT block re-requesting — create a new request (the failed one can be deleted)
+- `in_library` requests DO block re-requesting the same narrator — you already have it
+
+This logic lives in one place: **`_create_request(book_id, type, narrator)`** in `app/routes/requests.py`, called by both `POST /api/books` and `POST /api/requests`.
+
+```
+_create_request(book_id, type, narrator) -> (request_row | None)
+  1. Query: SELECT id FROM requests WHERE book_id=? AND type=? AND
+            (narrator = ? OR (narrator IS NULL AND ? IS NULL))
+            AND status != 'failed'
+  2. If match found: return None (caller counts as skipped)
+  3. If no match: INSERT new request with status='requested', return row
+```
+
+Returns `None` on skip, the new request row on creation. Callers must not duplicate this check.
+
+**Frontend narrator-awareness:**
+
+`library_formats` check must be narrator-aware. Having narrator A `in_library` shows as "have (Narrator A)" next to the audiobook button but does NOT disable requesting a different narrator. The request form should allow specifying a narrator, and the "already have it" check compares against the specific narrator entered.
+
+`library_formats` is always derived from ABS directly via `audiobookshelf.get_item_by_id(abs_id)`.
+For books with no `abs_id`, `library_formats` is an empty array.
+This applies everywhere: search results, book list, book detail — same derivation, same field name.
 
 Do NOT use request status to infer library presence — requests can be stale.
+Do NOT use a `formats` field — always use `library_formats` (what ABS has) alongside `requests` (what is in flight).
 
 ### Request Deletion
 
@@ -1105,8 +1346,8 @@ The correct algorithm is:
    (Hardcover's series endpoint returns unpopular editions; search returns popular ones)
 3. Keep `series_position` from step 1, replace everything else from step 2's best match
 4. `best match` = exact title match with highest `users_count`, then `rating_count`
-5. Filter: skip if `hardcover_id` is in our `metadata_links`, OR if `series_position` matches a book we already have
-6. Sort numerically: `float(position)` for numeric positions, put non-numeric last
+5. Filter: skip if `hardcover_id` is in our `book_links`, OR if the position in this series matches a book we already have
+6. Sort numerically: use `float(position)` where possible; on `ValueError` treat as infinity (sorts last)
 7. Annotate with `library_formats` and `existing_requests`
 
 ### ABS Format Detection
@@ -1132,7 +1373,37 @@ Build in this order. Each phase should be working before starting the next.
 
 ### Phase 1: Foundation
 1. `Dockerfile` and `requirements.txt`
-2. `app/database.py` — full schema, `init_db()` function
+
+**`requirements.txt`:**
+```
+fastapi
+uvicorn[standard]
+aiosqlite
+httpx
+python-multipart
+pyyaml
+rapidfuzz
+croniter
+```
+
+**`Dockerfile`:**
+```dockerfile
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8743
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8743"]
+```
+
+No version-pinning in requirements.txt during development — pin to known-good versions before first stable release.
+2. `app/database.py` — `SCHEMA_V1` constant, `_run_migrations()`, `init_db()`
 3. `app/settings.py` — read/write settings YAML
 4. `app/main.py` — bare FastAPI app, static file serving, DB init on startup
 5. `static/index.html` — HTML shell with nav, `<div id="app">`, script tag
@@ -1163,11 +1434,12 @@ Build in this order. Each phase should be working before starting the next.
 22. Request detail page, Downloads page
 
 ### Phase 6: Detail Pages
-23. Book detail page — metadata, ABS linking, request management
-24. Author detail page — books, stats
-25. Series detail page — books, completion, missing books (async loading)
-26. `app/routes/metadata_links.py`
-27. `app/routes/enrichment.py`
+23. `GET /api/book/detail?book_id=...&abs_id=...` endpoint
+24. Book detail page — metadata, ABS linking, request management
+25. Author detail page — books, stats
+26. Series detail page — books, completion, missing books (async loading)
+27. `app/routes/book_links.py`
+28. `app/routes/sync.py`
 
 ### Phase 7: Polish
 28. Dashboard stats
@@ -1190,8 +1462,9 @@ Build in this order. Each phase should be working before starting the next.
   Define ALL icons as constants at the top of app.js and use them everywhere.
 
 - **Search vs series endpoint returning different editions:** Hardcover's `series_by_pk`
-  returns unpopular editions while `books` search returns popular ones. The workaround
-  (search by title for each book) is correct — don't try to simplify it.
+  returns unpopular editions while `books` search returns popular ones. The per-book
+  title search workaround was correct at time of writing — but before implementing,
+  research whether the Hardcover API now supports batching or a richer series query.
 
 - **request status='cancelled' for deletes:** Caused duplicate prevention to falsely
   block new requests. Always hard-delete.
@@ -1222,6 +1495,30 @@ It contains real API keys and service URLs. The new app should read from the sam
 
 ## Deployment
 
+**`docker-compose.yml`:**
+```yaml
+services:
+  athenaeum:
+    build: .
+    ports:
+      - "8743:8743"
+    volumes:
+      - ./data:/data
+      - /path/to/output:/output
+    restart: unless-stopped
+```
+
+**`.gitignore`:**
+```
+data/
+*.pyc
+__pycache__/
+venv/
+.env
+```
+
+`data/` contains `settings.yaml` (real API keys) and `athenaeum.db`. Never commit it.
+
 ```bash
 # Build and start
 docker compose up -d --build
@@ -1235,4 +1532,5 @@ docker compose up -d --build
 
 Port: **8743** (different from BookOrganizeClaude's 8742, so both can run simultaneously)
 
+**Security note:** No authentication is implemented. Athenaeum is designed for self-hosted use on a trusted network. Do not expose port 8743 to the public internet.
 
