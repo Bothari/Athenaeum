@@ -1,16 +1,32 @@
-/* ── Variables ── */
+/* ── Variables — dark mode (default) ── */
 :root {
-  --bg:        #0f0f0f;
-  --surface:   #1a1a1a;
-  --surface2:  #252525;
-  --border:    #333;
-  --text:      #e0e0e0;
-  --text-dim:  #888;
-  --accent:    #4a9eff;
-  --green:     #4caf50;
-  --yellow:    #ff9800;
-  --orange:    #ff5722;
-  --red:       #f44336;
+  --bg:        #1c1917;
+  --surface:   #252220;
+  --surface2:  #2f2b28;
+  --border:    #3d3830;
+  --text:      #e8e0d5;
+  --text-dim:  #8a7f75;
+  --accent:    #c4622d;
+  --green:     #5a9a5a;
+  --yellow:    #c49a30;
+  --orange:    #c4622d;
+  --red:       #b84545;
+  --radius:    4px;
+}
+
+/* ── Variables — light mode ── */
+html.light {
+  --bg:        #f2ece0;
+  --surface:   #faf6ef;
+  --surface2:  #ede6d9;
+  --border:    #d0c8ba;
+  --text:      #2a2420;
+  --text-dim:  #7a7068;
+  --accent:    #c4622d;
+  --green:     #3a6b3a;
+  --yellow:    #8a6010;
+  --orange:    #a04010;
+  --red:       #9e2c2c;
   --radius:    4px;
 }
 
@@ -72,7 +88,21 @@ input::placeholder { color: var(--text-dim); }
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  flex: 1;
 }
+.theme-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 0.3rem;
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  transition: color 0.15s;
+}
+.theme-toggle:hover { color: var(--text); }
 .nav-btn {
   background: none;
   border: none;
@@ -111,8 +141,8 @@ input::placeholder { color: var(--text-dim); }
 
 /* ── Banner ── */
 .banner-abs {
-  background: #3a2c00;
-  border-bottom: 1px solid #6a4e00;
+  background: #2e2300;
+  border-bottom: 1px solid #4a3800;
   color: var(--yellow);
   padding: 0.5rem 1rem;
   text-align: center;
@@ -265,18 +295,40 @@ input::placeholder { color: var(--text-dim); }
   font-weight: 500;
   white-space: nowrap;
 }
-.badge-requested    { background: #1a3a5c; color: #4a9eff; }
-.badge-monitored    { background: #1a3a5c; color: #7ab8ff; }
-.badge-snatched     { background: #3a2a0a; color: #ff9800; }
-.badge-downloading  { background: #3a2a0a; color: #ffc107; }
-.badge-downloaded   { background: #3a2a0a; color: #ffeb3b; }
-.badge-merging      { background: #2a1a3a; color: #ce93d8; }
-.badge-organizing   { background: #2a1a0a; color: #ff5722; }
-.badge-completed    { background: #1a3a2a; color: #66bb6a; }
-.badge-in_library   { background: #1a3a2a; color: #4caf50; }
-.badge-failed       { background: #3a1a1a; color: #f44336; }
-.badge-audiobook    { background: #1a2a3a; color: #7ab8ff; }
-.badge-ebook        { background: #1a3a2a; color: #66bb6a; }
+/* Dark mode badges */
+.badge-requested    { background: #2a3a4a; color: #8ab8e8; }
+.badge-monitored    { background: #2a3a4a; color: #a8ccf0; }
+.badge-snatched     { background: #3a2a10; color: #d4882a; }
+.badge-downloading  { background: #3a2a10; color: #d4a030; }
+.badge-downloaded   { background: #3a2e10; color: #c8b040; }
+.badge-merging      { background: #2e1e38; color: #b888cc; }
+.badge-organizing   { background: #3a2010; color: #c85520; }
+.badge-completed    { background: #1e3428; color: #68a868; }
+.badge-in_library   { background: #1e3428; color: #5a9a5a; }
+.badge-failed       { background: #3a1e1e; color: #c05050; }
+.badge-audiobook    { background: #1e2e3e; color: #7aaccf; }
+.badge-ebook        { background: #1e3428; color: #68a868; }
+
+/* Light mode badges */
+html.light .badge-requested    { background: #d8eaf8; color: #1a5080; }
+html.light .badge-monitored    { background: #d8eaf8; color: #205898; }
+html.light .badge-snatched     { background: #fdefd8; color: #7a4400; }
+html.light .badge-downloading  { background: #fef5d8; color: #6a5000; }
+html.light .badge-downloaded   { background: #fef8d8; color: #5a5800; }
+html.light .badge-merging      { background: #eeddf8; color: #602880; }
+html.light .badge-organizing   { background: #fce8d8; color: #7a2c00; }
+html.light .badge-completed    { background: #d8eedd; color: #1a5020; }
+html.light .badge-in_library   { background: #d8eedd; color: #1a5020; }
+html.light .badge-failed       { background: #fcd8d8; color: #8a1818; }
+html.light .badge-audiobook    { background: #d8e8f4; color: #1a4068; }
+html.light .badge-ebook        { background: #d8eedd; color: #1a5020; }
+
+/* Light mode banner */
+html.light .banner-abs {
+  background: #fdefd0;
+  border-bottom-color: #e0c880;
+  color: #7a5000;
+}
 
 /* ── Tables ── */
 .table-wrap { overflow-x: auto; }
