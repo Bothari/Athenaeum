@@ -644,6 +644,8 @@ function matchRoute(path) {
 const app = document.getElementById('app');
 
 async function render() {
+  // Remove home-page class before every render; home route re-adds it
+  document.body.classList.remove('home-page');
   const path = getHashPath() || '/';
   const match = matchRoute(path);
   if (!match) {
@@ -699,6 +701,8 @@ document.addEventListener('click', () => {
 
 // Home / Search
 route('/', async (params, qp) => {
+  document.body.classList.add('home-page');
+
   const q = qp.q || '';
   const author = qp.author || '';
   const series = qp.series || '';
@@ -707,6 +711,7 @@ route('/', async (params, qp) => {
 
   app.innerHTML = `
     <div class="search-page ${hasValue ? '' : 'empty'}" id="search-page">
+      <div class="home-title">Athenaeum</div>
       <div class="search-container" id="search-container">
         <div class="search-input-row">
           <input
