@@ -38,6 +38,10 @@ const ICON_REFRESH = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none
 
 const ICON_TRASH = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
 
+const ICON_DASHBOARD = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`;
+
+const ICON_HOME = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
+
 const ICON_CHEVRON_DOWN = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
 
 const ICON_CHEVRON_UP = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`;
@@ -654,26 +658,30 @@ async function render() {
   }
 }
 
-// Highlight active nav link
+// Highlight active nav link (top + bottom)
 function updateActiveNav() {
   const path = getHashPath() || '/';
+
+  // Top nav
   document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-  const map = {
-    '/': '/',
-    '/library': '/library',
-    '/requests': '/requests',
-    '/downloads': '/downloads',
-    '/dashboard': '/dashboard',
-    '/settings': '/settings',
-  };
-  for (const [prefix, _] of Object.entries(map)) {
-    if (path === prefix || (prefix !== '/' && path.startsWith(prefix))) {
-      document.querySelectorAll(`.nav-btn`).forEach(el => {
-        if (el.getAttribute('href') && el.getAttribute('href').includes(prefix)) {
-          el.classList.add('active');
-        }
-      });
+  document.querySelectorAll('.nav-btn[href]').forEach(el => {
+    const href = el.getAttribute('href').replace('#', '');
+    if (href === '/' ? path === '/' : path.startsWith(href)) {
+      el.classList.add('active');
     }
+  });
+
+  // Bottom nav
+  document.querySelectorAll('.nav-bottom-btn').forEach(el => el.classList.remove('active'));
+  const nbMap = {
+    'nb-search':   () => path === '/',
+    'nb-library':  () => path.startsWith('/library'),
+    'nb-queue':    () => path.startsWith('/requests') || path.startsWith('/downloads'),
+    'nb-dashboard':() => path === '/dashboard',
+    'nb-settings': () => path === '/settings',
+  };
+  for (const [id, test] of Object.entries(nbMap)) {
+    if (test()) document.getElementById(id)?.classList.add('active');
   }
 }
 
@@ -1143,13 +1151,32 @@ route('/library/book', async (params, qp) => {
   }
 });
 
-// Requests list
+// Queue (Requests + Downloads tabs)
 route('/requests', async (params, qp) => {
+  const tab = qp.tab === 'downloads' ? 'downloads' : 'requests';
+
   app.innerHTML = `
-    <div class="page-header"><span class="page-title">${ICON_REQUESTS} Requests</span></div>
-    <div id="requests-content"></div>
+    <div class="page-header"><span class="page-title">${ICON_REQUESTS} Queue</span></div>
+    <div class="tabs">
+      <button class="tab-btn${tab === 'requests' ? ' active' : ''}" data-tab="requests">Requests</button>
+      <button class="tab-btn${tab === 'downloads' ? ' active' : ''}" data-tab="downloads">Downloads</button>
+    </div>
+    <div id="queue-content"></div>
   `;
-  const content = document.getElementById('requests-content');
+
+  app.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
+    btn.onclick = () => {
+      const hp = getHashParams();
+      if (btn.dataset.tab === 'downloads') hp.tab = 'downloads';
+      else delete hp.tab;
+      history.replaceState(null, '', buildHash('/requests', hp));
+      render();
+    };
+  });
+
+  const content = document.getElementById('queue-content');
+  if (tab === 'downloads') { renderDownloadsTab(content); return; }
+
   const statusFilter = qp.requests_status || '';
   const typeFilter = qp.requests_type || '';
 
@@ -1323,13 +1350,9 @@ route('/requests/:id', async ({ id }) => {
   }
 });
 
-// Downloads
-route('/downloads', async () => {
-  app.innerHTML = `
-    <div class="page-header"><span class="page-title">${ICON_DOWNLOAD} Downloads</span></div>
-    <div id="downloads-content"></div>
-  `;
-  const content = document.getElementById('downloads-content');
+// Shared: render the downloads tab content into a container element
+function renderDownloadsTab(container) {
+  container.innerHTML = `<div class="state-loading">${ICON_SPINNER}</div>`;
   let pollTimer;
 
   async function loadDownloads() {
@@ -1337,27 +1360,26 @@ route('/downloads', async () => {
       const data = await api('/downloads');
 
       if (data.client_unreachable) {
-        const warn = document.getElementById('dl-warn');
-        if (!warn) {
+        if (!container.querySelector('#dl-warn')) {
           const el = document.createElement('div');
           el.id = 'dl-warn';
           el.className = 'banner-abs';
           el.style.cssText = 'margin-bottom:1rem;border-radius:4px';
           el.textContent = '⚠ Download client unreachable — showing last known status.';
-          content.prepend(el);
+          container.prepend(el);
         }
       }
 
       const items = data.items || data;
       if (!Array.isArray(items) || !items.length) {
-        content.innerHTML = `<div class="state-empty">Nothing downloading right now.</div>`;
+        container.innerHTML = `<div class="state-empty">Nothing downloading right now.</div>`;
         return;
       }
 
-      const listEl = document.getElementById('dl-list') || (() => {
+      const listEl = container.querySelector('#dl-list') || (() => {
         const el = document.createElement('div');
         el.id = 'dl-list';
-        content.appendChild(el);
+        container.appendChild(el);
         return el;
       })();
 
@@ -1382,16 +1404,20 @@ route('/downloads', async () => {
           ` : ''}
         </div>
       `).join('');
-    } catch (err) {
-      content.innerHTML = `<div class="state-error">Failed to load. <a href="#" onclick="location.reload()">Retry</a></div>`;
+    } catch {
+      renderError(container, loadDownloads);
     }
   }
 
-  await loadDownloads();
+  loadDownloads();
   pollTimer = setInterval(loadDownloads, 5000);
-
-  // Clean up on navigation away
   window.addEventListener('hashchange', () => clearInterval(pollTimer), { once: true });
+}
+
+// /#/downloads redirects to Queue > Downloads tab
+route('/downloads', () => {
+  history.replaceState(null, '', '#/requests?tab=downloads');
+  render();
 });
 
 // Dashboard
@@ -1770,10 +1796,35 @@ route('/settings', async () => {
 
 window.addEventListener('hashchange', () => {
   updateActiveNav();
+  // Close library popup on any navigation
+  document.getElementById('nb-library-popup').style.display = 'none';
   render();
 });
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Populate bottom nav icons
+  document.getElementById('nb-search').innerHTML    = ICON_HOME;
+  document.getElementById('nb-library').innerHTML   = ICON_LIBRARY;
+  document.getElementById('nb-queue').innerHTML     = ICON_REQUESTS;
+  document.getElementById('nb-dashboard').innerHTML = ICON_DASHBOARD;
+  document.getElementById('nb-settings').innerHTML  = ICON_SETTINGS;
+
+  // Library popup toggle
+  const nbLibBtn = document.getElementById('nb-library');
+  const nbLibPopup = document.getElementById('nb-library-popup');
+  nbLibBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = nbLibPopup.style.display !== 'none';
+    nbLibPopup.style.display = isOpen ? 'none' : 'block';
+  });
+  document.addEventListener('click', () => {
+    nbLibPopup.style.display = 'none';
+  });
+  nbLibPopup.addEventListener('click', (e) => {
+    e.stopPropagation();
+    nbLibPopup.style.display = 'none';
+  });
+
   updateActiveNav();
   render();
   checkAbsBanner();
