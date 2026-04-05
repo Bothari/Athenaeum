@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Athenaeum</title>
-  <link rel="stylesheet" href="/static/style.css?v=1">
+  <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
   <nav id="nav">
@@ -22,8 +22,7 @@
             <a href="#/library/series" class="nav-dropdown-item">Series</a>
           </div>
         </div>
-        <a href="#/requests" class="nav-btn">Requests</a>
-        <a href="#/downloads" class="nav-btn">Downloads</a>
+        <a href="#/requests" class="nav-btn">Queue</a>
         <a href="#/dashboard" class="nav-btn">Dashboard</a>
         <a href="#/settings" class="nav-btn">Settings</a>
       </div>
@@ -36,8 +35,24 @@
     <div id="app"></div>
   </main>
 
+  <!-- Mobile bottom nav (icons injected by app.js) -->
+  <nav id="nav-bottom">
+    <a href="#/" class="nav-bottom-btn" id="nb-search"></a>
+    <button class="nav-bottom-btn" id="nb-library"></button>
+    <a href="#/requests" class="nav-bottom-btn" id="nb-queue"></a>
+    <a href="#/dashboard" class="nav-bottom-btn" id="nb-dashboard"></a>
+    <a href="#/settings" class="nav-bottom-btn" id="nb-settings"></a>
+  </nav>
+
+  <!-- Library popup for mobile bottom nav -->
+  <div id="nb-library-popup" class="nb-library-popup" style="display:none">
+    <a href="#/library/books" class="nb-library-popup-item">Books</a>
+    <a href="#/library/authors" class="nb-library-popup-item">Authors</a>
+    <a href="#/library/series" class="nb-library-popup-item">Series</a>
+  </div>
+
   <div id="toast-container"></div>
 
-  <script src="/static/app.js?v=1"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>
