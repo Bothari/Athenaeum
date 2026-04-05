@@ -395,6 +395,17 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; display: inline-block; }
 
+/* ── Home inline title (mobile only — desktop keeps the nav logo) ── */
+.home-title {
+  display: none;
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  text-align: center;
+  color: var(--text);
+  margin-bottom: 1.25rem;
+}
+
 /* ── Search page ── */
 .search-page {
   display: flex;
@@ -707,6 +718,10 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   #nav-bottom { display: flex; }
   .nav-links { display: none; }
   #nav { position: sticky; top: 0; }
+
+  /* On home page: hide the nav bar entirely and show the inline title */
+  body.home-page #nav { display: none; }
+  body.home-page .home-title { display: block; }
 
   /* Pad content above bottom nav */
   #main { padding: 1rem 0.75rem calc(56px + env(safe-area-inset-bottom) + 1rem); }
