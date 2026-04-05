@@ -374,7 +374,210 @@ schedule:
   library_sync:    "0 2 * * *"   # ABS → DB upsert + inline HC linking
   cache_refresh:   "0 3 * * *"   # refresh stale HC data (books, series, authors) — 1hr time slice
   auto_search:     "0 */6 * * *" # search Prowlarr for pending requests
+
+auth:
+  mode: "none"              # "none" | "form" | "oidc"
+
+  # Form login (single user)
+  username: "admin"
+  password_hash: ""         # bcrypt hash — set via Settings UI, never store plaintext
+
+  # OIDC
+  oidc_provider_url: ""     # e.g. https://accounts.google.com
+  oidc_client_id: ""
+  oidc_client_secret: ""
+  oidc_scopes: "openid email profile"
+
+  # Session (shared by both form and OIDC)
+  session_secret: ""        # 32-byte random hex — auto-generated on first startup if empty
+  session_days: 7
 ```
+
+---
+
+## Authentication
+
+> WARNING: THIS SECTION NEEDS REVIEW BEFORE IMPLEMENTATION
+>
+> The auth design below is a first draft and has not been adversarially reviewed.
+> Before building Phase 8, treat this section the same as the original PLAN.md
+> went through review — check for security gaps, missing edge cases, and
+> implementation complexity. In particular: session management, OIDC flow
+> correctness, API auth (see below), and whether the single-user form model
+> is sufficient. Do not implement from this spec as-is.
+
+### Overview
+
+Three modes, selected in Settings → Auth. Default is `none` — no change to current behaviour. The mode takes effect immediately on save; no restart needed.
+
+- **none** — all routes are open. Suitable for a trusted local network.
+- **form** — single-user username + bcrypt password. Login form in the SPA.
+- **oidc** — OAuth2 Authorization Code + PKCE flow against any standards-compliant provider (Google, Authentik, Keycloak, etc.). No user management — if OIDC auth succeeds, access is granted.
+
+### Session Strategy
+
+Both `form` and `oidc` use a **signed JWT in an httponly cookie** (`session`):
+
+- Signed with `auth.session_secret` using HS256
+- Payload: `{ sub: "<username or oidc_subject>", iat, exp }`
+- Expiry: `auth.session_days` days from issue
+- Cookie flags: `httponly=True`, `samesite="lax"`, `secure` only when the request came over HTTPS (detected via `X-Forwarded-Proto` header)
+
+`session_secret` is auto-generated (32-byte hex via `secrets.token_hex(32)`) and persisted to settings.yaml on first startup if empty. Changing it invalidates all existing sessions.
+
+### Dependencies
+
+Add to `requirements.txt`:
+```
+python-jose[cryptography]   # JWT sign/verify
+passlib[bcrypt]             # password hashing (form mode)
+```
+
+### FastAPI auth dependency
+
+`app/auth.py` — single file for all auth logic.
+
+```python
+async def require_auth(request: Request) -> str:
+    """Returns subject (username or OIDC sub) or raises 401."""
+    settings = await get_settings()
+    if settings["auth"]["mode"] == "none":
+        return "anonymous"
+    token = request.cookies.get("session")
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    try:
+        payload = jwt.decode(token, settings["auth"]["session_secret"], algorithms=["HS256"])
+        return payload["sub"]
+    except JWTError:
+        raise HTTPException(401, "Invalid session")
+```
+
+Applied via `Depends(require_auth)` on every router. Routes that must be **exempt** from auth:
+- `GET /healthz`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `GET /api/auth/oidc/start`
+- `GET /api/auth/oidc/callback`
+
+Static files (`/static/*`) are never gated — they are just JS/CSS with no sensitive data.
+
+### Auth routes (`app/routes/auth.py`)
+
+```
+POST /api/auth/login
+  Body: { username, password }
+  Form mode only. Verifies password against bcrypt hash.
+  On success: set session cookie, return { ok: true, username }.
+  On failure: 401 { error: "Invalid credentials" } — same message for wrong user or wrong password.
+
+POST /api/auth/logout
+  Clears the session cookie. Returns { ok: true }.
+
+GET  /api/auth/me
+  Returns { username } if session valid, 401 otherwise.
+  Called by frontend on boot to determine auth state.
+
+GET  /api/auth/oidc/start
+  OIDC mode only.
+  Generates state (random 16 bytes hex), nonce, code_verifier, code_challenge (S256).
+  Stores { state, nonce, code_verifier } in a short-lived (10 min) httponly cookie `oidc_state`.
+  Redirects to provider's authorization_endpoint.
+
+GET  /api/auth/oidc/callback?code=...&state=...
+  OIDC mode only.
+  1. Verify state matches oidc_state cookie — 400 if mismatch.
+  2. POST to token_endpoint: exchange code + code_verifier for tokens.
+  3. Verify ID token signature and nonce claim.
+  4. Extract sub (and email if present) as the session subject.
+  5. Set session cookie, clear oidc_state cookie.
+  6. Redirect to /.
+```
+
+### OIDC flow detail
+
+Athenaeum implements the PKCE flow manually using `httpx` — no heavy OIDC library required.
+
+**Discovery:** On first OIDC request, fetch `{oidc_provider_url}/.well-known/openid-configuration` to get `authorization_endpoint`, `token_endpoint`, `jwks_uri`. Cache in memory for the process lifetime (re-fetched on restart).
+
+**PKCE:** `code_verifier` = 32-byte random URL-safe base64. `code_challenge` = base64url(sha256(code_verifier)). Method: `S256`.
+
+**ID token verification:** Fetch JWKS from `jwks_uri`. Verify signature, `iss`, `aud` (must equal `client_id`), `exp`, `nonce`. Use `python-jose` for this.
+
+**Redirect URI:** Always `{request.base_url}api/auth/oidc/callback`. This must be registered with the OIDC provider.
+
+### Password management (form mode)
+
+Setting a password via the Settings UI:
+```
+PUT /api/settings  { "auth": { "password_hash": "<bcrypt hash>" } }
+```
+
+The Settings UI never sends the raw password to the server — it hashes with bcrypt **client-side** before sending... actually no: hashing on the server is correct. The UI sends the raw password to `POST /api/auth/set-password` which hashes it server-side before storing.
+
+```
+POST /api/auth/set-password
+  Body: { password }
+  Requires auth. Hashes with bcrypt (cost 12), saves to settings.
+  Returns { ok: true }.
+```
+
+`GET /api/settings` returns `password_hash` as `"********"` (same as other sensitive fields). A `PUT /api/settings` with `"********"` for `password_hash` leaves it unchanged.
+
+### Frontend changes
+
+**On boot** (`DOMContentLoaded`): call `GET /api/auth/me`.
+- Mode `none` or valid session → proceed normally.
+- 401 → render login page instead of the normal route.
+
+**Login page (`/#/login`):**
+- Form mode: username + password fields, Submit button. `POST /api/auth/login`. On success, re-render the original destination route.
+- OIDC mode: single "Sign in" button. Navigates to `GET /api/auth/oidc/start` (full page navigation, not fetch).
+- Shows which mode is active based on the 401 response body: `{ mode: "form" | "oidc" }`.
+
+**After login:** redirect to whatever route was requested before the 401, or `/#/` if none.
+
+**Logout:** button in Settings page (visible when auth mode is not `none`). Calls `POST /api/auth/logout`, then reloads the page.
+
+**Settings → Auth tab:**
+- Mode selector: None | Form Login | OIDC
+- Form mode fields: Username, New Password, Confirm Password + "Set Password" button
+- OIDC fields: Provider URL, Client ID, Client Secret, Scopes (pre-filled `openid email profile`), Session duration (days)
+- Redirect URI helper: shows the exact URI to register with the provider (non-editable)
+- Save button (saves all auth settings except password — password uses the Set Password button)
+
+### API Authentication
+
+> **TODO — needs investigation before Phase 8.**
+>
+> The current design authenticates the browser SPA via cookie-based sessions. However,
+> if the app ever needs to be called programmatically (scripts, other services, future
+> mobile clients), cookie auth is impractical. Questions to resolve:
+>
+> - Should we support API keys (static tokens in `Authorization: Bearer` header)?
+> - If so: where are they stored (settings.yaml? DB table?), how are they issued/revoked,
+>   and do they carry the same permissions as a browser session?
+> - Should API key auth and session auth share the same `require_auth` dependency, or
+>   be separate?
+> - Does the OIDC mode need a separate machine-to-machine (client_credentials) flow,
+>   or is that out of scope for a single-user self-hosted app?
+>
+> Resolve this before finalising the auth implementation. It may be simplest to defer
+> API keys to a later phase and note it in Future Work.
+
+### Building order
+
+Auth is **Phase 8** — implement after all core functionality is working. The app is assumed to run on a trusted local network until then.
+
+Phase 8 steps:
+1. Add `python-jose[cryptography]` and `passlib[bcrypt]` to `requirements.txt`
+2. Add `auth` section to default settings in `app/settings.py`; auto-generate `session_secret` on startup if empty
+3. `app/auth.py` — `require_auth` dependency, JWT helpers, session cookie helpers
+4. `app/routes/auth.py` — login, logout, me, set-password, oidc/start, oidc/callback
+5. Wire `Depends(require_auth)` onto all existing routers in `main.py`
+6. Frontend: boot auth check, login page (form + OIDC variants), logout button in Settings
+7. Settings → Auth tab
 
 ---
 
@@ -1644,6 +1847,15 @@ No version-pinning in requirements.txt during development — pin to known-good 
 29. Active download polling
 30. Library sync progress (task_state display in UI)
 31. Mobile/responsive CSS fixes
+
+### Phase 8: Authentication
+32. `python-jose[cryptography]` and `passlib[bcrypt]` in `requirements.txt`
+33. `auth.session_secret` auto-generated in `app/settings.py` startup
+34. `app/auth.py` — `require_auth` dependency, JWT + cookie helpers
+35. `app/routes/auth.py` — login, logout, me, set-password, OIDC endpoints
+36. Wire `Depends(require_auth)` onto all routers in `main.py`
+37. Frontend: boot auth check, login page (form + OIDC), logout in Settings
+38. Settings → Auth tab
 
 ---
 
