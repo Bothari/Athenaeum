@@ -2093,6 +2093,8 @@ Features deliberately deferred — not in scope for initial build but worth impl
 
 - **Bulk actions on Requests list** — checkbox selection per row, bulk toolbar for monitor/unmonitor/delete. Most useful for clearing a batch of failed requests or monitoring a large import.
 
+- **End-to-end UI tests (Playwright)** — browser-level smoke tests against a running app instance: home page renders, nav routes work, theme toggle switches `html` class, Library dropdown opens, bottom nav visible at mobile viewport. Run in a separate `e2e.yml` workflow (start uvicorn, wait for ready, run Playwright headless, teardown). Tests live in `tests/e2e/`.
+
 ---
 
 ## What Went Wrong in BookOrganizeClaude (Learn From This)
