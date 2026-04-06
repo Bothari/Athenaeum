@@ -1767,7 +1767,14 @@ def _extract_formats(media, metadata):
 
 ## Building Order
 
-Build in this order. Each phase should be working before starting the next.
+Build in this order. Each phase should be working before starting the next. Write the tests for a phase before moving on to the next.
+
+### Phase 0: CI Setup
+1. `.github/workflows/test.yml` — run pytest on push/PR to main
+2. `.github/workflows/docker.yml` — build + push to ghcr.io on version tags
+3. `requirements-dev.txt` — pytest, pytest-asyncio, pytest-httpx
+4. `tests/conftest.py` — DB fixture (tmp_path), ASGI test client fixture
+5. `tests/test_database.py` — smoke test: `init_db()` runs, correct `user_version`, all tables present
 
 ### Phase 1: Foundation
 1. `Dockerfile` and `requirements.txt`
@@ -1810,15 +1817,21 @@ No version-pinning in requirements.txt during development — pin to known-good 
 6. `static/style.css` — full design system (variables, cards, badges, buttons, layout, tables, grid)
 7. `static/app.js` — router, api(), toast(), all icon constants, shared render functions skeleton, home/search page
 
+**Tests:** `tests/test_settings.py` — get_settings returns defaults on missing file, save + reload round-trip, concurrent saves don't corrupt. `tests/test_routes/test_main.py` — `GET /healthz` returns 200, `GET /api/status` returns expected shape.
+
 ### Phase 2: Settings & ABS
 8. `app/services/audiobookshelf.py` — all methods
 9. `app/routes/settings.py` — GET/PUT settings, 4 connection test endpoints
 10. Settings page in frontend — form groups, test buttons, save
 
+**Tests:** `tests/test_services/test_audiobookshelf.py` — each public method with mocked httpx responses (success + error cases). `tests/test_routes/test_settings.py` — GET returns current settings, PUT persists changes, connection test endpoints return correct structure on mock success/failure.
+
 ### Phase 3: Library Sync
 11. `app/services/library_sync.py` — sync_library(), helpers
 12. `app/routes/books.py` (partial) — GET /api/books, GET /api/authors, GET /api/series
 13. Library pages: Books list, Authors list, Series list (table + grid views)
+
+**Tests:** `tests/test_services/test_library_sync.py` — sync inserts books/authors/series correctly, re-sync updates without duplicating, author_links/series_links use INSERT OR IGNORE + UPDATE (never INSERT OR REPLACE). `tests/test_routes/test_books.py` — list endpoints return correct shape, pagination, empty results.
 
 ### Phase 4: Search & Requests
 14. `app/services/book_search.py` — all search methods
@@ -1828,34 +1841,44 @@ No version-pinning in requirements.txt during development — pin to known-good 
 18. Requests list page (`/#/requests`) — filterable table, row actions
 19. Request-related UI on book cards and detail pages
 
+**Tests:** `tests/test_services/test_book_search.py` — search, series lookup, best-match selection logic (mocked Hardcover). `tests/test_routes/test_requests.py` — `_create_request()` deduplication: new request created, duplicate blocked, narrator-differentiated requests both allowed, failed status allows re-request, DELETE removes row (not sets cancelled).
+
 ### Phase 5: Downloads
-19. `app/routes/requests.py` — search-indexers, download, organize endpoints
-20. `app/routes/downloads.py`
-21. `app/main.py` — download_monitor background task
-22. Request detail page, Downloads page
+20. `app/routes/requests.py` — search-indexers, download, organize endpoints
+21. `app/routes/downloads.py`
+22. `app/main.py` — download_monitor background task
+23. Request detail page, Downloads page
+
+**Tests:** `tests/test_routes/test_downloads.py` — list endpoint shape, status filtering. `tests/test_routes/test_requests.py` (additions) — search-indexers returns mocked results, download endpoint creates download row, organize endpoint transitions status correctly.
 
 ### Phase 6: Detail Pages
-23. `GET /api/book/detail?book_id=...&abs_id=...` endpoint
-24. Book detail page — metadata, ABS linking, request management
-25. Author detail page — books, stats
-26. Series detail page — books, completion, missing books (async loading)
-27. `app/routes/book_links.py`
-28. `app/routes/sync.py`
+24. `GET /api/book/detail?book_id=...&abs_id=...` endpoint
+25. Book detail page — metadata, ABS linking, request management
+26. Author detail page — books, stats
+27. Series detail page — books, completion, missing books (async loading)
+28. `app/routes/book_links.py`
+29. `app/routes/sync.py`
+
+**Tests:** `tests/test_routes/test_books.py` (additions) — book detail returns correct shape, 404 on unknown id, series missing-books list excludes already-owned positions. `tests/test_routes/test_book_links.py` — link/unlink round-trip.
 
 ### Phase 7: Polish
-28. Dashboard stats page (`/#/dashboard`)
-29. Active download polling
-30. Library sync progress (task_state display in UI)
-31. Mobile/responsive CSS fixes
+30. Dashboard stats page (`/#/dashboard`)
+31. Active download polling
+32. Library sync progress (task_state display in UI)
+33. Mobile/responsive CSS fixes
+
+**Tests:** `tests/test_routes/test_main.py` (additions) — `/api/status` counts match seeded data.
 
 ### Phase 8: Authentication
-32. `python-jose[cryptography]` and `passlib[bcrypt]` in `requirements.txt`
-33. `auth.session_secret` auto-generated in `app/settings.py` startup
-34. `app/auth.py` — `require_auth` dependency, JWT + cookie helpers
-35. `app/routes/auth.py` — login, logout, me, set-password, OIDC endpoints
-36. Wire `Depends(require_auth)` onto all routers in `main.py`
-37. Frontend: boot auth check, login page (form + OIDC), logout in Settings
-38. Settings → Auth tab
+34. `python-jose[cryptography]` and `passlib[bcrypt]` in `requirements.txt`
+35. `auth.session_secret` auto-generated in `app/settings.py` startup
+36. `app/auth.py` — `require_auth` dependency, JWT + cookie helpers
+37. `app/routes/auth.py` — login, logout, me, set-password, OIDC endpoints
+38. Wire `Depends(require_auth)` onto all routers in `main.py`
+39. Frontend: boot auth check, login page (form + OIDC), logout in Settings
+40. Settings → Auth tab
+
+**Tests:** `tests/test_routes/test_auth.py` — login with correct password returns token cookie, wrong password returns 401, protected endpoint returns 401 without cookie, returns 200 with valid cookie, logout clears cookie.
 
 ---
 
@@ -2058,18 +2081,9 @@ jobs:
 
 GitHub Actions cache (`type=gha`) speeds up repeated builds significantly by caching Docker layers.
 
-### Building Order Update
+### Building Order
 
-Before Phase 1, set up the CI skeleton:
-
-**Phase 0: CI Setup**
-1. Create `.github/workflows/test.yml` (runs pytest — will pass trivially until tests exist)
-2. Create `.github/workflows/docker.yml` (builds image on push to main)
-3. Create `requirements-dev.txt` with pytest/pytest-asyncio/pytest-httpx
-4. Create `tests/conftest.py` with the DB and client fixtures
-5. Create `tests/test_database.py` with a smoke test that `init_db()` runs without error
-
-This way CI is green from the first commit and every phase adds tests alongside its code.
+Each phase in the Building Order section above includes a **Tests** line specifying exactly what to write before moving on. Phase 0 establishes CI so every subsequent phase starts with a green pipeline.
 
 ---
 
