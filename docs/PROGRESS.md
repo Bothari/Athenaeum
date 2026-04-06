@@ -32,16 +32,28 @@ _Completed 2026-04-04_
 - [x] Nav bar `position: sticky` on mobile
 - [x] Home page hides nav bar on mobile, shows large inline "Athenaeum" title above search
 
+## Desktop UI polish (post-Phase 1)
+_Completed 2026-04-06_
+
+- [x] Library dropdown opens on hover (not click)
+- [x] Library nav item navigates to Books on click
+- [x] Library button highlights on all `/library/*` routes
+- [x] "Search" added as explicit desktop nav item
+- [x] Mobile bottom nav search button uses search icon (not home)
+- [x] Base font size bumped to 16px site-wide
+- [x] Series icon replaced with book-spines-on-shelf SVG
+- [x] Dropdown hover dead-zone gap removed
+
 ---
 
 ## Phase 0: CI Setup
-_Not started_
+_Completed 2026-04-06_
 
-- [ ] `.github/workflows/test.yml`
-- [ ] `.github/workflows/docker.yml`
-- [ ] `requirements-dev.txt`
-- [ ] `tests/conftest.py`
-- [ ] `tests/test_database.py` (smoke test)
+- [x] `.github/workflows/test.yml`
+- [x] `.github/workflows/docker.yml`
+- [x] `requirements-dev.txt`
+- [x] `tests/conftest.py`
+- [x] `tests/test_database.py` (smoke test)
 
 ---
 
