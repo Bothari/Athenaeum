@@ -34,6 +34,17 @@ _Completed 2026-04-04_
 
 ---
 
+## Phase 0: CI Setup
+_Not started_
+
+- [ ] `.github/workflows/test.yml`
+- [ ] `.github/workflows/docker.yml`
+- [ ] `requirements-dev.txt`
+- [ ] `tests/conftest.py`
+- [ ] `tests/test_database.py` (smoke test)
+
+---
+
 ## Phase 2: Settings & ABS
 _Not started_
 
