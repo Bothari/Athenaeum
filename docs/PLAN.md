@@ -1859,6 +1859,220 @@ No version-pinning in requirements.txt during development — pin to known-good 
 
 ---
 
+## Testing
+
+### Goals
+
+- Catch regressions in business logic (request deduplication, library sync merging, download state transitions)
+- Validate API contract (status codes, response shapes) without running a real ABS/Hardcover/Prowlarr
+- Run fast enough to execute on every push (target: under 60 seconds)
+
+### Stack
+
+Add to `requirements.txt` (dev dependencies — keep in a separate `requirements-dev.txt`):
+
+```
+pytest
+pytest-asyncio
+pytest-httpx
+```
+
+`pytest-httpx` intercepts `httpx.AsyncClient` calls so external services are never hit in tests.
+
+### Test Structure
+
+```
+tests/
+├── conftest.py          # shared fixtures: test DB, test settings, app client
+├── test_database.py     # migration correctness, schema integrity
+├── test_settings.py     # get_settings / save_settings round-trips
+├── test_routes/
+│   ├── test_books.py    # GET /api/books, /api/authors, /api/series, search
+│   ├── test_requests.py # request CRUD, deduplication logic
+│   └── test_downloads.py
+└── test_services/
+    ├── test_audiobookshelf.py  # mocked HTTP responses
+    ├── test_book_search.py     # mocked Hardcover responses
+    └── test_library_sync.py   # sync logic against test DB
+```
+
+### Fixtures (`tests/conftest.py`)
+
+```python
+import pytest
+import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
+from app.main import app
+from app.database import init_db
+import aiosqlite
+
+@pytest_asyncio.fixture
+async def db(tmp_path):
+    """In-memory SQLite DB, migrations applied."""
+    db_path = tmp_path / "test.db"
+    import os; os.environ["DATA_DIR"] = str(tmp_path)
+    await init_db()
+    yield db_path
+
+@pytest_asyncio.fixture
+async def client(db):
+    """ASGI test client with real routes, isolated DB."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+```
+
+Use `tmp_path` so each test gets an isolated database — no shared state between tests.
+
+### What to Test Per Layer
+
+**Routes** — test the HTTP contract: correct status codes, required fields in response JSON, error cases (404 when book not found, 409 when request already exists). Do not test internal service logic through route tests.
+
+**Services** — test business logic directly. Use `pytest-httpx` to mock external HTTP calls:
+```python
+async def test_search_returns_best_match(httpx_mock):
+    httpx_mock.add_response(json={"data": {"books": [...]}})
+    svc = BookSearchService(settings)
+    results = await svc.search("Dune")
+    assert results[0]["title"] == "Dune"
+```
+
+**Database / migrations** — assert that `PRAGMA user_version` is correct after `init_db()`, and that all expected tables exist.
+
+**Deduplication** — `_create_request()` is the highest-value test target. Cover: new request created, duplicate blocked, narrator-differentiated requests allowed, failed requests allow re-request.
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=app --cov-report=term-missing
+
+# Run a single file
+pytest tests/test_routes/test_requests.py -v
+```
+
+Tests must pass against a clean `tmp_path` database — never depend on `./data/` existing.
+
+---
+
+## CI/CD
+
+### GitHub Actions — Test CI
+
+File: `.github/workflows/test.yml`
+
+Runs on every push and pull request targeting `main`. Fails the check if any test fails.
+
+```yaml
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest --tb=short
+```
+
+No Docker build in the test job — running pytest directly against the source tree is faster and sufficient.
+
+### GitHub Actions — Docker Image Build
+
+File: `.github/workflows/docker.yml`
+
+Builds and pushes a Docker image to GitHub Container Registry (`ghcr.io`) on version tag pushes only (e.g. `v1.2.0`). To release:
+
+```bash
+git tag v1.2.0
+git push --tags
+```
+
+This produces `ghcr.io/<owner>/athenaeum:v1.2.0` and `ghcr.io/<owner>/athenaeum:latest`.
+
+```yaml
+name: Docker
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+`GITHUB_TOKEN` is automatically available — no extra secrets needed for GHCR.
+
+GitHub Actions cache (`type=gha`) speeds up repeated builds significantly by caching Docker layers.
+
+### Building Order Update
+
+Before Phase 1, set up the CI skeleton:
+
+**Phase 0: CI Setup**
+1. Create `.github/workflows/test.yml` (runs pytest — will pass trivially until tests exist)
+2. Create `.github/workflows/docker.yml` (builds image on push to main)
+3. Create `requirements-dev.txt` with pytest/pytest-asyncio/pytest-httpx
+4. Create `tests/conftest.py` with the DB and client fixtures
+5. Create `tests/test_database.py` with a smoke test that `init_db()` runs without error
+
+This way CI is green from the first commit and every phase adds tests alongside its code.
+
+---
+
 ## Future Work
 
 Features deliberately deferred — not in scope for initial build but worth implementing later:
