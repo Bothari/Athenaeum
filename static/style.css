@@ -32,7 +32,7 @@ html.light {
 
 /* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { font-size: 14px; }
+html { font-size: 16px; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -122,7 +122,7 @@ input::placeholder { color: var(--text-dim); }
 .nav-dropdown-menu {
   display: none;
   position: absolute;
-  top: calc(100% + 4px);
+  top: 100%;
   left: 0;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -131,6 +131,7 @@ input::placeholder { color: var(--text-dim); }
   z-index: 200;
 }
 .nav-dropdown-menu.open { display: block; }
+.nav-dropdown:hover .nav-dropdown-menu { display: block; }
 .nav-dropdown-item {
   display: block;
   padding: 0.5rem 1rem;
@@ -770,6 +771,7 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   #nav-bottom { display: flex; }
   .nav-links { display: none; }
   #nav { position: sticky; top: 0; }
+  .nav-dropdown:hover .nav-dropdown-menu { display: none; }
 
   /* On home page: hide the nav bar entirely and show the inline title */
   body.home-page #nav { display: none; }

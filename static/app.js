@@ -14,7 +14,7 @@ const ICON_SETTINGS = `<svg width="18" height="18" viewBox="0 0 24 24" fill="non
 
 const ICON_AUTHOR = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
 
-const ICON_SERIES = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>`;
+const ICON_SERIES = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="4" height="16" rx="1"/><rect x="8" y="6" width="4" height="14" rx="1"/><rect x="14" y="3" width="4" height="17" rx="1"/><line x1="1" y1="21" x2="22" y2="21"/></svg>`;
 
 const ICON_LIBRARY = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`;
 
@@ -676,6 +676,9 @@ function updateActiveNav() {
       el.classList.add('active');
     }
   });
+  if (path.startsWith('/library')) {
+    document.getElementById('library-menu-btn')?.classList.add('active');
+  }
 
   // Bottom nav
   document.querySelectorAll('.nav-bottom-btn').forEach(el => el.classList.remove('active'));
@@ -690,16 +693,6 @@ function updateActiveNav() {
     if (test()) document.getElementById(id)?.classList.add('active');
   }
 }
-
-// ── Nav dropdown ──────────────────────────────────────────────────────────────
-
-document.getElementById('library-menu-btn').addEventListener('click', (e) => {
-  e.stopPropagation();
-  document.getElementById('library-menu').classList.toggle('open');
-});
-document.addEventListener('click', () => {
-  document.getElementById('library-menu').classList.remove('open');
-});
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -1831,7 +1824,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
   // Populate bottom nav icons
-  document.getElementById('nb-search').innerHTML    = ICON_HOME;
+  document.getElementById('nb-search').innerHTML    = ICON_SEARCH;
   document.getElementById('nb-library').innerHTML   = ICON_LIBRARY;
   document.getElementById('nb-queue').innerHTML     = ICON_REQUESTS;
   document.getElementById('nb-dashboard').innerHTML = ICON_DASHBOARD;
