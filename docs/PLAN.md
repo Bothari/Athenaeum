@@ -298,11 +298,12 @@ CREATE TABLE task_state (
 ### Request State Machine
 
 ```
-requested → monitored → snatched → downloading → downloaded → merging (optional) → organizing → in_library
-                                                                              ↘ (no merge)  ↑
-                                                                                organizing → failed
-monitored → requested (can go back)
+requested → snatched → downloading → downloaded → merging (optional) → organizing → in_library
+                                                                   ↘ (no merge)  ↑
+                                                                     organizing → failed
 ```
+
+`monitored` is not a status. All `requested` items are eligible for auto-search if `schedule.auto_search` is configured and non-empty. To stop auto-searching, clear (disable) the auto_search schedule — not by changing individual request statuses.
 
 `merging` — ffmpeg m4b merge in progress (only for multi-file audiobooks when `merge_multifile_audiobooks` is enabled)
 `organizing` — file move in progress, ABS scan triggered, polling for match
@@ -621,7 +622,7 @@ async def startup():
 
 # GET /api/status
 # Returns: { books: int, authors: int, series: int,
-#            requests: { requested: int, monitored: int, snatched: int,
+#            requests: { requested: int, snatched: int,
 #            downloading: int, downloaded: int, merging: int, organizing: int,
 #            in_library: int, failed: int } }
 ```
@@ -762,7 +763,8 @@ This retains expired entries for 7 days after expiry (21 days total) before remo
 Manual trigger: `POST /api/sync/cache-refresh`.
 
 **`auto_search_task()`** — cron schedule: `schedule.auto_search`
-For each `monitored` request, trigger Prowlarr search. `requested` items are not auto-searched — the user must explicitly monitor a request to opt in to background searching.
+If `schedule.auto_search` is empty, the task is effectively disabled — the scheduler loop skips it. Leave the field blank in settings to disable auto-search globally.
+For each `requested` item (status = 'requested'), trigger a Prowlarr search.
 On finding a result and triggering a download: send a Pushover notification via `notify_snatched()`.
 Notification is fire-and-forget — failure to notify must never block the download.
 
@@ -898,12 +900,6 @@ GET    /api/requests?status=...&type=...&book_id=...&q=...&sort=created_at&dir=d
 
 GET    /api/requests/{id}
   Returns: request detail with download history
-
-POST   /api/requests/{id}/monitor
-  Sets status to 'monitored'. No-op if already monitored. Returns { ok: true }.
-
-POST   /api/requests/{id}/unmonitor
-  Sets status back to 'requested'. No-op if not monitored. Returns { ok: true }.
 
 DELETE /api/requests/{id}
   ACTUALLY deletes the row — does NOT set cancelled status.
@@ -1325,7 +1321,6 @@ No box shadows. Borders only.
 .badge { display: inline-flex; align-items: center; gap: 0.25rem;
          font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: var(--radius); }
 .badge-requested    { background: #1a3a5c; color: #4a9eff; }
-.badge-monitored    { background: #1a3a5c; color: #7ab8ff; }
 .badge-snatched     { background: #3a2a0a; color: #ff9800; }
 .badge-downloading  { background: #3a2a0a; color: #ffc107; }
 .badge-downloaded   { background: #3a2a0a; color: #ffeb3b; }
@@ -1600,7 +1595,7 @@ Appears below the book metadata. Three states:
 Filterable table of all requests. Columns: Book title, Author, Type (audiobook/ebook icon), Status (badge), Narrator (if set), Created date.
 
 Filter controls above the table:
-- Status dropdown: All | requested | monitored | snatched | downloading | organizing | in_library | failed
+- Status dropdown: All | requested | snatched | downloading | organizing | in_library | failed
 - Type toggle: All | Audiobook | Ebook
 
 URL hash params carry filter state (same `renderTable` pattern):
@@ -1652,8 +1647,6 @@ After a sync is triggered from an empty state, show a toast: "Library sync start
 **Dashboard (`/#/dashboard`):**
 - Calls `GET /api/status` and `GET /api/sync/status` on load
 - Shows library totals (books, authors, series) as large stat numbers in a row of cards
-- Shows request pipeline counts as a second row: one card per status
-  (`requested`, `monitored`, `snatched`, `downloading`, `organizing`, `in_library`, `failed`)
 - `failed` count card uses `--red` accent and links to `/#/requests?requests_status=failed`
 - Shows a third row: scheduled task status for `library_sync`, `cache_refresh`, `auto_search`.
   Each card shows: task name, `running` indicator (spinner if true), `last_run` timestamp, `last_result` (green "ok" or red "error: ..."). If never run: "Never run" in `--text-dim`.
@@ -1665,7 +1658,7 @@ After a sync is triggered from an empty state, show a toast: "Library sync start
 - ABS, Prowlarr, qBittorrent, SABnzbd tabs each have a Test Connection button (calls the relevant `/api/settings/test/*` endpoint)
 - Sensitive fields (api_key, password) are returned as `"********"` by GET; if PUT receives `"********"` for a sensitive field, the backend leaves the existing value unchanged
 - On save: show inline success/error feedback next to the Save button
-- **Sync tab:** shows cron schedule inputs for `library_sync`, `cache_refresh`, `auto_search` with a single Save button. Below the form, shows current task state (last run, last result) read from `GET /api/sync/status`. Manual trigger buttons: "Run now" for each task — calls `POST /api/sync/library` or `POST /api/sync/cache-refresh`. After triggering, button disables and shows "Running…" until the next status poll confirms `running: false`.
+- **Tasks tab:** shows cron schedule inputs for `library_sync`, `cache_refresh`, `auto_search` with a single Save button. Leaving a cron field blank disables that task — the scheduler skips it. The UI shows "Disabled" for tasks with an empty schedule. Below the form, shows current task state (last run, last result) read from `GET /api/sync/status`. Manual trigger buttons: "Run now" for each task — calls `POST /api/sync/library` or `POST /api/sync/cache-refresh`. After triggering, button disables and shows "Running…" until the next status poll confirms `running: false`.
 
 ---
 

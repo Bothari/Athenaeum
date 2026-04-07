@@ -5,11 +5,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import get_db, init_db
+from .routes.settings import router as settings_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Athenaeum")
 
+app.include_router(settings_router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
