@@ -36,6 +36,8 @@ const ICON_SPINNER = `<svg class="spin" width="18" height="18" viewBox="0 0 24 2
 
 const ICON_REFRESH = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.67-6.05L23 10"/></svg>`;
 
+const ICON_PLAY = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21"/></svg>`;
+
 const ICON_TRASH = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
 
 const ICON_SUN = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`;
@@ -71,6 +73,12 @@ function formatDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function formatBytes(bytes) {
@@ -603,6 +611,19 @@ function renderSearchResults(container, results, onRequestSuccess = null) {
 
     container.appendChild(card);
   });
+}
+
+// ── Tab scroll hints ──────────────────────────────────────────────────────────
+
+function setupTabScrollHints(wrap) {
+  const tabs = wrap.querySelector('.tabs');
+  if (!tabs) return;
+  function update() {
+    wrap.classList.toggle('tabs-fade-left',  tabs.scrollLeft > 0);
+    wrap.classList.toggle('tabs-fade-right', tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 1);
+  }
+  tabs.addEventListener('scroll', update, { passive: true });
+  update();
 }
 
 // ── First-run banner ───────────────────────────────────────────────────────────
@@ -1431,8 +1452,6 @@ route('/dashboard', async () => {
       api('/sync/status'),
     ]);
 
-    const reqStatuses = ['requested', 'monitored', 'snatched', 'downloading', 'organizing', 'in_library', 'failed'];
-
     app.innerHTML = `
       <div class="page-header"><span class="page-title">Dashboard</span></div>
 
@@ -1452,30 +1471,29 @@ route('/dashboard', async () => {
         </div>
       </div>
 
-      <div class="section-heading">Requests</div>
-      <div class="stats-row">
-        ${reqStatuses.map(s => `
-          <div class="stat-card${s === 'failed' ? ' clickable' : ''}"
-            ${s === 'failed' ? `onclick="location.hash='#/requests?requests_status=failed'"` : ''}>
-            <div class="stat-value${s === 'failed' && status.requests[s] ? ' red' : ''}">${status.requests[s] || 0}</div>
-            <div class="stat-label">${s.replace('_', ' ')}</div>
-          </div>
-        `).join('')}
-      </div>
-
       <div class="section-heading">Scheduled Tasks</div>
       <div class="stats-row">
-        ${['library_sync', 'cache_refresh', 'auto_search'].map(task => {
-          const t = syncStatus[task] || {};
+        ${[
+          { key: 'library_sync',  label: 'Library sync'  },
+          { key: 'cache_refresh', label: 'Cache refresh' },
+          { key: 'auto_search',   label: 'Auto search'   },
+        ].map(({ key, label }) => {
+          const t = syncStatus[key] || {};
+          const disabled = !t.next_run && !t.running;
           const resultClass = t.last_result === 'ok' ? 'text-green' : (t.last_result ? 'text-red' : '');
           return `
-            <div class="stat-card">
-              <div style="font-size:0.9rem;font-weight:600">${task.replace('_', ' ')}</div>
+            <div class="stat-card${disabled ? ' stat-card-disabled' : ''}">
+              <div style="font-size:0.9rem;font-weight:600">${label}</div>
               <div class="text-dim mt-1" style="font-size:0.78rem">
-                ${t.running ? `${ICON_SPINNER} running` : ''}
-                ${t.last_run ? `Last: ${formatDate(t.last_run)}` : `<span class="text-dim">Never run</span>`}
+                ${disabled
+                  ? 'Disabled'
+                  : t.running
+                    ? `${ICON_SPINNER} running`
+                    : t.last_run
+                      ? `Last: ${formatDate(t.last_run)}`
+                      : 'Never run'}
               </div>
-              ${t.last_result ? `<div class="${resultClass}" style="font-size:0.78rem;margin-top:0.2rem">${escapeHtml(t.last_result)}</div>` : ''}
+              ${!disabled && t.last_result ? `<div class="${resultClass}" style="font-size:0.78rem;margin-top:0.2rem">${escapeHtml(t.last_result)}</div>` : ''}
             </div>
           `;
         }).join('')}
@@ -1492,17 +1510,20 @@ route('/settings', async () => {
   try {
     const settings = await api('/settings');
 
-    const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Pushover', 'Sync'];
+    const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Pushover', 'Tasks'];
 
     app.innerHTML = `
       <div class="page-header"><span class="page-title">${ICON_SETTINGS} Settings</span></div>
-      <div class="tabs">
-        ${tabs.map((t, i) => `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t}">${t}</button>`).join('')}
+      <div class="tabs-wrap">
+        <div class="tabs">
+          ${tabs.map((t, i) => `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t}">${t}</button>`).join('')}
+        </div>
       </div>
       <div id="settings-content"></div>
     `;
 
     const content = document.getElementById('settings-content');
+    setupTabScrollHints(app.querySelector('.tabs-wrap'));
 
     function renderFeedback(el, ok, msg) {
       el.className = 'form-feedback ' + (ok ? 'ok' : 'err');
@@ -1518,7 +1539,7 @@ route('/settings', async () => {
         case 'SABnzbd': return buildSabnzbdTab(settings);
         case 'Hardcover': return buildHardcoverTab(settings);
         case 'Pushover': return buildPushoverTab(settings);
-        case 'Sync': return buildSyncTab(settings);
+        case 'Tasks': return buildTasksTab(settings);
         default: return '<div class="text-dim">Coming soon.</div>';
       }
     }
@@ -1573,11 +1594,14 @@ route('/settings', async () => {
 
     function buildGeneralTab(s) {
       const g = s.general || {};
+      const sepDirs = !!g.separate_type_dirs;
       return `
         ${field('Output directory', 'output_dir', g.output_dir)}
-        ${checkbox('Separate directories by type (audiobooks/ebooks)', 'separate_type_dirs', g.separate_type_dirs)}
-        ${field('Audiobook directory prefix', 'audiobook_prefix', g.audiobook_prefix)}
-        ${field('Ebook directory prefix', 'ebook_prefix', g.ebook_prefix)}
+        ${checkbox('Separate directories by type (audiobooks/ebooks)', 'separate_type_dirs', sepDirs)}
+        <div id="prefix-fields" style="${sepDirs ? '' : 'display:none'}">
+          ${field('Audiobook directory prefix', 'audiobook_prefix', g.audiobook_prefix)}
+          ${field('Ebook directory prefix', 'ebook_prefix', g.ebook_prefix)}
+        </div>
         ${checkbox('Group series in search results', 'group_series_in_search', g.group_series_in_search)}
         ${checkbox('Merge multi-file audiobooks into single M4B', 'merge_multifile_audiobooks', g.merge_multifile_audiobooks)}
         ${saveButton('general')}
@@ -1586,9 +1610,19 @@ route('/settings', async () => {
 
     function buildAbsTab(s) {
       const a = s.audiobookshelf || {};
+      const savedIds = Array.isArray(a.library_id) ? a.library_id : [];
       return `
         ${field('URL', 'url', a.url, 'text', 'e.g. http://192.168.1.10:13378')}
         ${field('API Key', 'api_key', a.api_key, 'password')}
+        <div class="form-group">
+          <label class="form-label">Libraries</label>
+          <div id="abs-library-list" data-saved-ids="${escapeHtml(JSON.stringify(savedIds))}" style="margin-top:0.25rem">
+            ${savedIds.length
+              ? `<div class="text-dim" style="font-size:0.85rem">${savedIds.length} library ID${savedIds.length !== 1 ? 's' : ''} saved — click Test Connection to reload.</div>`
+              : `<div class="text-dim" style="font-size:0.85rem">Click Test Connection to load available libraries.</div>`
+            }
+          </div>
+        </div>
         <div class="form-actions">
           ${testButton('abs')}
           <button class="btn btn-primary" data-save="audiobookshelf">Save</button>
@@ -1647,7 +1681,12 @@ route('/settings', async () => {
       return `
         ${field('API Key', 'api_key', h.api_key, 'password')}
         ${field('Preferred language', 'preferred_language', h.preferred_language)}
-        ${saveButton('hardcover')}
+        <div class="form-actions">
+          ${testButton('hardcover')}
+          <button class="btn btn-primary" data-save="hardcover">Save</button>
+          <span class="form-feedback" id="feedback-hardcover"></span>
+        </div>
+        <div id="test-hardcover-result" class="mt-1"></div>
       `;
     }
 
@@ -1660,53 +1699,79 @@ route('/settings', async () => {
       `;
     }
 
-    function buildSyncTab(s) {
+    const TASK_DEFS = [
+      { key: 'library_sync',  label: 'Library sync',  default: '0 2 * * *',    endpoint: '/sync/library' },
+      { key: 'cache_refresh', label: 'Cache refresh', default: '0 3 * * *',    endpoint: '/sync/cache-refresh' },
+      { key: 'auto_search',   label: 'Auto search',   default: '0 */6 * * *',  endpoint: null },
+    ];
+
+    function buildTasksTab(s) {
       const sch = s.schedule || {};
+      const taskRows = TASK_DEFS.map(t => `
+        <div class="task-row">
+          <div class="task-cell-name">
+            <div class="task-cell-name-top">
+              <span style="font-weight:500">${t.label}</span>
+              ${t.endpoint
+                ? `<button class="btn btn-ghost btn-sm" data-run="${t.endpoint}" title="Run now" style="font-size:0.78rem;padding:0.15rem 0.4rem;white-space:nowrap">${ICON_PLAY} Run</button>`
+                : ''
+              }
+            </div>
+            <div class="text-dim" style="font-size:0.75rem">default: ${t.default}</div>
+          </div>
+          <input type="text" class="form-input task-cell-cron" data-key="${t.key}"
+            value="${escapeHtml(sch[t.key] || '')}"
+            style="font-family:var(--font-mono,monospace);font-size:0.85rem">
+          <div id="task-next-${t.key}" class="task-cell-next text-dim" style="font-size:0.82rem;padding-top:0.45rem">${sch[t.key] ? 'Next: —' : 'Disabled'}</div>
+          <div id="task-last-${t.key}" class="task-cell-last text-dim" style="font-size:0.82rem;padding-top:0.45rem">Last: —</div>
+        </div>
+      `).join('');
+
       return `
-        <div class="form-group">
-          <label class="form-label">Library sync cron</label>
-          <input type="text" class="form-input" data-key="library_sync" value="${escapeHtml(sch.library_sync || '')}">
-          <div class="form-hint">Default: 0 2 * * * (2am daily)</div>
+        <div class="tasks-grid">
+          <div class="tasks-header-row">
+            <div class="form-label">Task</div>
+            <div class="form-label">Schedule</div>
+            <div class="form-label">Next run</div>
+            <div class="form-label">Last run</div>
+          </div>
+          ${taskRows}
         </div>
-        <div class="form-group">
-          <label class="form-label">Cache refresh cron</label>
-          <input type="text" class="form-input" data-key="cache_refresh" value="${escapeHtml(sch.cache_refresh || '')}">
-          <div class="form-hint">Default: 0 3 * * * (3am daily)</div>
+        <div class="form-actions" style="margin-top:1rem">
+          <button class="btn btn-primary" data-save="schedule">Save</button>
+          <span class="form-feedback" id="feedback-schedule"></span>
         </div>
-        <div class="form-group">
-          <label class="form-label">Auto search cron</label>
-          <input type="text" class="form-input" data-key="auto_search" value="${escapeHtml(sch.auto_search || '')}">
-          <div class="form-hint">Default: 0 */6 * * * (every 6 hours)</div>
-        </div>
-        ${saveButton('schedule')}
-        <div class="section-heading mt-2">Manual Triggers</div>
-        <div class="flex-gap">
-          <button class="btn btn-secondary" id="run-sync-btn">${ICON_REFRESH} Run library sync now</button>
-          <button class="btn btn-secondary" id="run-cache-btn">${ICON_REFRESH} Run cache refresh now</button>
-        </div>
-        <div id="sync-status-section" class="mt-2"></div>
       `;
     }
 
     async function loadSyncStatus() {
       try {
         const s = await api('/sync/status');
-        const el = document.getElementById('sync-status-section');
-        if (!el) return;
-        el.innerHTML = `
-          <div class="section-heading">Task Status</div>
-          ${['library_sync', 'cache_refresh', 'auto_search'].map(task => {
-            const t = s[task] || {};
-            return `
-              <div class="card mb-1" style="font-size:0.85rem">
-                <strong>${task.replace('_', ' ')}</strong>
-                ${t.running ? `<span class="ml-1">${ICON_SPINNER} running</span>` : ''}
-                <div class="text-dim">${t.last_run ? 'Last run: ' + formatDate(t.last_run) : 'Never run'}</div>
-                ${t.last_result ? `<div class="${t.last_result === 'ok' ? 'text-green' : 'text-red'}">${escapeHtml(t.last_result)}</div>` : ''}
-              </div>
-            `;
-          }).join('')}
-        `;
+        for (const [task, t] of Object.entries(s)) {
+          const nextEl = document.getElementById(`task-next-${task}`);
+          const lastEl = document.getElementById(`task-last-${task}`);
+          if (nextEl) {
+            const cronInput = content.querySelector(`[data-key="${task}"]`);
+            const hasSchedule = cronInput && cronInput.value.trim();
+            nextEl.textContent = t.next_run ? 'Next: ' + formatDateTime(t.next_run) : (hasSchedule ? '—' : 'Disabled');
+          }
+          if (lastEl) {
+            if (t.running) {
+              lastEl.className = '';
+              lastEl.innerHTML = `Last: ${ICON_SPINNER} running`;
+            } else if (t.last_run) {
+              const resultHtml = t.last_result
+                ? ` <span class="${t.last_result === 'ok' ? 'text-green' : 'text-red'}">${escapeHtml(t.last_result)}</span>`
+                : '';
+              lastEl.className = 'text-dim';
+              lastEl.style.fontSize = '0.82rem';
+              lastEl.style.paddingTop = '0.45rem';
+              lastEl.innerHTML = 'Last: ' + formatDateTime(t.last_run) + resultHtml;
+            } else {
+              lastEl.textContent = 'Last: Never';
+            }
+          }
+        }
       } catch { /* ignore */ }
     }
 
@@ -1721,9 +1786,16 @@ route('/settings', async () => {
           inputs.forEach(inp => {
             const key = inp.dataset.key;
             const val = inp.type === 'checkbox' ? inp.checked : inp.value;
-            // Skip masked sentinel
-            if (val !== '********') partial[key] = val;
+            if (val === '********') return;
+            partial[key] = val;
           });
+          // ABS library selection via checkboxes
+          if (section === 'audiobookshelf') {
+            const checks = content.querySelectorAll('.abs-lib-check');
+            if (checks.length > 0) {
+              partial.library_id = Array.from(checks).filter(c => c.checked).map(c => c.value);
+            }
+          }
           btn.disabled = true;
           try {
             await api('/settings', { method: 'PUT', body: { [section]: partial } });
@@ -1744,10 +1816,34 @@ route('/settings', async () => {
           const resultEl = document.getElementById(`test-${svc}-result`);
           btn.disabled = true;
           btn.textContent = 'Testing…';
+          // Collect current (unsaved) form values, including sentinels so the
+          // backend knows to fall back to the saved value for masked fields.
+          const formData = {};
+          content.querySelectorAll('[data-key]').forEach(inp => {
+            formData[inp.dataset.key] = inp.type === 'checkbox' ? inp.checked : inp.value;
+          });
           try {
-            const r = await api(`/settings/test/${svc}`, { method: 'POST' });
-            if (resultEl) {
-              resultEl.innerHTML = `<div class="text-green" style="font-size:0.85rem">✓ Connected: ${escapeHtml(JSON.stringify(r))}</div>`;
+            const r = await api(`/settings/test/${svc}`, { method: 'POST', body: formData });
+            if (svc === 'abs') {
+              const libs = r.libraries || [];
+              const listEl = document.getElementById('abs-library-list');
+              const savedIds = listEl ? JSON.parse(listEl.dataset.savedIds || '[]') : [];
+              if (listEl) {
+                if (libs.length) {
+                  listEl.innerHTML = libs.map(l => `
+                    <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.35rem;cursor:pointer">
+                      <input type="checkbox" class="abs-lib-check" value="${escapeHtml(l.id)}"
+                        ${savedIds.includes(l.id) ? 'checked' : ''}>
+                      <span>${escapeHtml(l.name)}</span>
+                      <span class="text-dim" style="font-size:0.78rem">${escapeHtml(l.id)}</span>
+                    </label>`).join('');
+                } else {
+                  listEl.innerHTML = '<div class="text-dim" style="font-size:0.85rem">No libraries found.</div>';
+                }
+              }
+              if (resultEl) resultEl.innerHTML = `<div class="text-green" style="font-size:0.85rem">&#10003; Connected — ${libs.length} librar${libs.length !== 1 ? 'ies' : 'y'} found</div>`;
+            } else if (resultEl) {
+              resultEl.innerHTML = `<div class="text-green" style="font-size:0.85rem">&#10003; Connected: ${escapeHtml(JSON.stringify(r))}</div>`;
             }
           } catch (err) {
             if (resultEl) {
@@ -1760,32 +1856,59 @@ route('/settings', async () => {
         };
       });
 
-      // Sync tab specific
-      if (tabName === 'Sync') {
+      // General tab: toggle prefix fields based on separate_type_dirs checkbox
+      if (tabName === 'General') {
+        const sepCheck = content.querySelector('[data-key="separate_type_dirs"]');
+        const prefixFields = document.getElementById('prefix-fields');
+        if (sepCheck && prefixFields) {
+          sepCheck.addEventListener('change', () => {
+            prefixFields.style.display = sepCheck.checked ? '' : 'none';
+          });
+        }
+      }
+
+      // Tasks tab specific
+      if (tabName === 'Tasks') {
         loadSyncStatus();
-        document.getElementById('run-sync-btn')?.addEventListener('click', async (e) => {
-          const btn = e.currentTarget;
-          btn.disabled = true;
-          try {
-            await api('/sync/library', { method: 'POST' });
-            toast('Library sync started', 'info');
-          } catch (err) {
-            toast('Failed: ' + err.message, 'error');
-          } finally {
-            btn.disabled = false;
-          }
+
+        // Live next-run preview as cron expression changes
+        TASK_DEFS.forEach(t => {
+          const input = content.querySelector(`[data-key="${t.key}"]`);
+          const nextEl = document.getElementById(`task-next-${t.key}`);
+          if (!input || !nextEl) return;
+          let debounce;
+          input.addEventListener('input', () => {
+            clearTimeout(debounce);
+            const expr = input.value.trim();
+            if (!expr) { nextEl.className = 'task-cell-next text-dim'; nextEl.style.fontSize = '0.82rem'; nextEl.style.paddingTop = '0.45rem'; nextEl.textContent = 'Disabled'; return; }
+            debounce = setTimeout(async () => {
+              try {
+                const r = await api(`/schedule/next-run?expr=${encodeURIComponent(expr)}`);
+                nextEl.className = 'text-dim';
+                nextEl.style.fontSize = '0.82rem';
+                nextEl.style.paddingTop = '0.45rem';
+                nextEl.textContent = 'Next: ' + (r.next_run ? formatDateTime(r.next_run) : '—');
+              } catch {
+                nextEl.className = 'text-red';
+                nextEl.textContent = 'invalid';
+              }
+            }, 400);
+          });
         });
-        document.getElementById('run-cache-btn')?.addEventListener('click', async (e) => {
-          const btn = e.currentTarget;
-          btn.disabled = true;
-          try {
-            await api('/sync/cache-refresh', { method: 'POST' });
-            toast('Cache refresh started', 'info');
-          } catch (err) {
-            toast('Failed: ' + err.message, 'error');
-          } finally {
-            btn.disabled = false;
-          }
+
+        content.querySelectorAll('[data-run]').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+              await api(btn.dataset.run, { method: 'POST' });
+              const label = TASK_DEFS.find(t => t.endpoint === btn.dataset.run)?.label || 'Task';
+              toast(`${label} started`, 'info');
+            } catch (err) {
+              toast('Failed: ' + err.message, 'error');
+            } finally {
+              btn.disabled = false;
+            }
+          });
         });
       }
     }

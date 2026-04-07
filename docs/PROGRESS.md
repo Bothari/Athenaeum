@@ -57,12 +57,14 @@ _Completed 2026-04-06_
 
 ---
 
-## Phase 2: Settings & ABS
-_Not started_
+## Phase 2: Settings & ABS [complete]
+_Completed 2026-04-06_
 
-- [ ] `app/services/audiobookshelf.py`
-- [ ] `app/routes/settings.py` — GET/PUT settings, 4 connection test endpoints
-- [ ] Settings page frontend — tabs, form groups, test buttons, save
+- [x] `app/services/audiobookshelf.py` — all 6 methods, normalised item shape
+- [x] `app/routes/settings.py` — GET/PUT settings, 4 connection test endpoints
+- [x] Settings page frontend — tabs, form groups, test buttons, save (was already built in Phase 1 shell)
+- [x] `tests/test_services/test_audiobookshelf.py` — 14 tests (normalize, test_connection, check_library, get_item_by_id, list_all_items, scan_library)
+- [x] `tests/test_routes/test_settings.py` — 17 tests (GET masking, PUT validation, sentinel handling, cron validation, 4 test endpoints)
 
 ---
 
