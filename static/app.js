@@ -1593,6 +1593,22 @@ route('/dashboard', async () => {
         </div>
       </div>
 
+      <div class="section-heading">Hardcover Links</div>
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-value${status.unlinked_books ? '' : ' text-green'}">${status.unlinked_books || 0}</div>
+          <div class="stat-label">Books unlinked</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value${status.unlinked_authors ? '' : ' text-green'}">${status.unlinked_authors || 0}</div>
+          <div class="stat-label">Authors unlinked</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value${status.unlinked_series ? '' : ' text-green'}">${status.unlinked_series || 0}</div>
+          <div class="stat-label">Series unlinked</div>
+        </div>
+      </div>
+
       <div class="section-heading">Scheduled Tasks</div>
       <div class="stats-row">
         ${[
@@ -1868,8 +1884,9 @@ route('/settings', async () => {
     }
 
     async function loadSyncStatus() {
+      let s;
       try {
-        const s = await api('/sync/status');
+        s = await api('/sync/status');
         for (const [task, t] of Object.entries(s)) {
           const nextEl = document.getElementById(`task-next-${task}`);
           const lastEl = document.getElementById(`task-last-${task}`);
@@ -1880,8 +1897,8 @@ route('/settings', async () => {
           }
           if (lastEl) {
             if (t.running) {
-              lastEl.className = '';
-              lastEl.innerHTML = `Last: ${ICON_SPINNER} running`;
+              lastEl.className = 'text-dim';
+              lastEl.innerHTML = `${ICON_SPINNER} running`;
             } else if (t.last_run) {
               const resultHtml = t.last_result
                 ? ` <span class="${t.last_result === 'ok' ? 'text-green' : 'text-red'}">${escapeHtml(t.last_result)}</span>`
@@ -1896,6 +1913,7 @@ route('/settings', async () => {
           }
         }
       } catch { /* ignore */ }
+      return s;
     }
 
     function wireTabEvents(tabName) {
@@ -2026,6 +2044,13 @@ route('/settings', async () => {
               await api(btn.dataset.run, { method: 'POST' });
               const label = TASK_DEFS.find(t => t.endpoint === btn.dataset.run)?.label || 'Task';
               toast(`${label} started`, 'info');
+              // Poll until task finishes
+              const taskKey = TASK_DEFS.find(t => t.endpoint === btn.dataset.run)?.key;
+              const poll = setInterval(async () => {
+                if (!document.getElementById(`task-next-${taskKey}`)) { clearInterval(poll); return; }
+                const s = await loadSyncStatus();
+                if (!s || !s[taskKey]?.running) clearInterval(poll);
+              }, 2000);
             } catch (err) {
               toast('Failed: ' + err.message, 'error');
             } finally {

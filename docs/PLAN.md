@@ -1159,6 +1159,78 @@ Live fetch (cache miss only):
 
 Frontend uses AbortController so navigating away cancels any in-flight requests.
 
+### Hardcover API Reference
+
+Endpoint: `POST https://api.hardcover.app/v1/graphql`
+Auth: `Authorization: Bearer <api_key>`
+Rate limit: 60 requests/minute. Handle 429 with exponential backoff (start 2s, double, cap 60s).
+
+#### Search (Typesense index — fast, returns raw JSON documents)
+
+```graphql
+query Search($q: String!, $type: String!) {
+  search(query: $q, query_type: $type, per_page: 5) {
+    results  # jsonb: { found: Int, hits: [{ document: { ... } }] }
+  }
+}
+```
+
+Supported `query_type` values: `"Book"`, `"author"`, `"series"`, `"user"`, `"list"`, `"publisher"`, `"character"`, `"all"`.
+
+Search document shapes vary by type. For books: `id`, `title`, `slug`, `contributions`/`cached_contributors` (author list), `book_series` (series list). For authors: `id`, `name`, `slug`, `books_count`. For series: `id`, `name`, `slug`, `books_count`.
+
+Name matching: fetch up to 5 candidates and rank client-side with `rapidfuzz.fuzz.token_sort_ratio`. For authors/series, prefer results where `state == "active"` and `canonical_id == null` (canonical records over aliases/duplicates).
+
+#### Direct lookup by ID (Hasura/Postgres — strongly typed, supports relationship traversal)
+
+```graphql
+# Book by numeric HC ID
+query { books_by_pk(id: 12345) {
+  id slug title subtitle description release_year pages audio_seconds
+  rating ratings_count users_count
+  contributions { author { id name slug } }
+  book_series(order_by: { position: asc_nulls_last }) {
+    position featured compilation
+    series { id name slug }
+  }
+}}
+
+# Author by numeric HC ID
+query { authors_by_pk(id: 456) {
+  id name slug bio books_count state canonical_id
+  contributions(limit: 25, order_by: { created_at: desc }) {
+    book { id slug title release_year }
+  }
+}}
+
+# Series by numeric HC ID — primary path for missing-books detection
+query { series_by_pk(id: 789) {
+  id name slug description books_count primary_books_count is_completed
+  book_series(order_by: { position: asc_nulls_last }) {
+    position featured compilation details
+    book { id slug title release_year rating cached_contributors }
+  }
+}}
+```
+
+`book_series.position` is `float8` (allows 1.5 for novellas between whole-number entries). `featured` distinguishes primary entries from companions/spinoffs. `compilation` marks omnibus volumes.
+
+#### `cache_refresh` HC linking strategy
+
+**Primary path — book search carries everything:**
+When `_link_to_hardcover` finds a match, the HC book search result includes `contributions` (author IDs) and `book_series` (series IDs). These are extracted and stored immediately in `author_links.hardcover_author_id` and `series_links.hardcover_series_id`. This means a single HC search call links the book, its authors, and its series simultaneously.
+
+**Catch-up passes — explicit but rare:**
+After the book pass completes, two additional passes handle authors/series that still lack HC IDs (edge cases: HC returned no contributor data, or a series/author was created via a path that didn't go through a book search):
+
+- **Author catch-up:** search HC with `query_type: "author"` for each author with no `hardcover_author_id`
+- **Series catch-up:** search HC with `query_type: "series"` for each series with no `hardcover_series_id`
+
+These catch-up passes are defensive. In normal operation (after a full book link pass) there should be few or zero items to process.
+
+**Future: missing books detection** (cache_refresh Phase 4+):
+For series with a `hardcover_series_id`, call `series_by_pk` to get all positions. Compare against `book_series` positions we own. Surface gaps as missing books. Cache result in `metadata_cache` with 14-day TTL.
+
 ### `library_sync.py`
 
 ```python

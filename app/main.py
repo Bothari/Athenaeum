@@ -12,7 +12,7 @@ from .routes.abs_proxy import router as abs_proxy_router
 from .routes.books import router as books_router
 from .routes.settings import router as settings_router
 from .routes.sync import router as sync_router
-from .services.library_sync import sync_library, _upsert_task_state
+from .services.library_sync import sync_library, cache_refresh
 from .settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -51,8 +51,18 @@ async def _task_loop(task_name: str, cron_key: str, task_fn):
 
 
 async def _cache_refresh_task():
-    """Placeholder — implemented in Phase 4."""
-    pass
+    await cache_refresh()
+
+
+async def _library_sync_task():
+    """Run library sync then kick off HC linking if cache_refresh isn't already running."""
+    await sync_library()
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT running FROM task_state WHERE task = 'cache_refresh'")
+        ).fetchone()
+    if not (row and row["running"]):
+        asyncio.create_task(_cache_refresh_task())
 
 
 async def _auto_search_task():
@@ -64,7 +74,11 @@ async def _auto_search_task():
 async def startup():
     await init_db()
     logger.info("Database initialised")
-    asyncio.create_task(_task_loop("library_sync_task", "library_sync", sync_library))
+    async with get_db() as db:
+        await db.execute("UPDATE task_state SET running = 0 WHERE running = 1")
+        await db.commit()
+    logger.info("Cleared stale task running flags")
+    asyncio.create_task(_task_loop("library_sync_task", "library_sync", _library_sync_task))
     asyncio.create_task(_task_loop("cache_refresh_task", "cache_refresh", _cache_refresh_task))
     asyncio.create_task(_task_loop("auto_search_task", "auto_search", _auto_search_task))
 
@@ -86,6 +100,16 @@ async def api_status():
         authors_row = await (await db.execute("SELECT COUNT(*) FROM authors")).fetchone()
         series_row = await (await db.execute("SELECT COUNT(*) FROM series")).fetchone()
 
+        unlinked_books_row = await (await db.execute(
+            "SELECT COUNT(*) FROM book_links WHERE hardcover_id IS NULL OR hardcover_id = ''"
+        )).fetchone()
+        unlinked_authors_row = await (await db.execute(
+            "SELECT COUNT(*) FROM author_links WHERE hardcover_author_id IS NULL OR hardcover_author_id = ''"
+        )).fetchone()
+        unlinked_series_row = await (await db.execute(
+            "SELECT COUNT(*) FROM series_links WHERE hardcover_series_id IS NULL OR hardcover_series_id = ''"
+        )).fetchone()
+
         statuses = [
             "requested", "snatched", "downloading",
             "downloaded", "merging", "organizing", "in_library", "failed",
@@ -103,6 +127,9 @@ async def api_status():
         "books": books_row[0],
         "authors": authors_row[0],
         "series": series_row[0],
+        "unlinked_books": unlinked_books_row[0],
+        "unlinked_authors": unlinked_authors_row[0],
+        "unlinked_series": unlinked_series_row[0],
         "requests": requests,
     }
 
