@@ -36,7 +36,8 @@ ITEM_NORMALIZED = {
     "abs_url": "http://abs.local:13378/item/li_abc123",
     "title": "Project Hail Mary",
     "author": "Andy Weir",
-    "series_items": [{"name": "Standalone", "sequence": ""}],
+    "author_items": [{"name": "Andy Weir", "abs_id": "a1"}],
+    "series_items": [{"name": "Standalone", "sequence": "", "abs_id": "s1"}],
     "cover_url": "http://abs.local:13378/api/items/li_abc123/cover",
     "narrator": "Ray Porter",
     "formats": [
@@ -168,7 +169,11 @@ class TestListAllItems:
     async def test_returns_all_items(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(
             url="http://abs.local:13378/api/libraries/lib_1/items?limit=0",
-            json={"results": [ITEM_JSON], "total": 1},
+            json={"results": [{"id": "li_abc123"}], "total": 1},
+        )
+        httpx_mock.add_response(
+            url="http://abs.local:13378/api/items/li_abc123",
+            json=ITEM_JSON,
         )
         svc = make_svc()
         results = await svc.list_all_items()
