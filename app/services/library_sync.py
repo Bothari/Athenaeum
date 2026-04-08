@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -108,14 +109,14 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
 
         author_rows = await (
             await db.execute(
-                """SELECT a.name FROM authors a
+                """SELECT a.id, a.name FROM authors a
                    JOIN book_authors ba ON ba.author_id = a.id
                    WHERE ba.book_id = ?
                    ORDER BY ba.author_position""",
                 (book_id,),
             )
         ).fetchall()
-        author = author_rows[0][0] if author_rows else ""
+        author = author_rows[0]["name"] if author_rows else ""
 
         book_series_rows = await (
             await db.execute(
@@ -129,8 +130,6 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
     query = f"{title} {author}".strip()
     if not query:
         return False
-
-    await asyncio.sleep(0.25)
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -148,8 +147,12 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
                 },
                 headers={"Authorization": f"Bearer {api_key}"},
             )
+            if resp.status_code == 429:
+                resp.raise_for_status()  # let caller handle rate limiting
             resp.raise_for_status()
             data = resp.json()
+    except httpx.HTTPStatusError:
+        raise
     except Exception as e:
         logger.warning(f"HC link search failed for book {book_id}: {e}")
         return False
@@ -157,6 +160,11 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
     try:
         hits = data["data"]["search"]["results"].get("hits", [])
     except Exception:
+        logger.warning(f"HC unexpected response structure for '{title}': {str(data)[:200]}")
+        return False
+
+    if not hits:
+        logger.debug(f"HC no results for '{title}' by '{author}'")
         return False
 
     best = None
@@ -174,13 +182,16 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
             )
 
         t_score = fuzz.token_sort_ratio(title.lower(), doc_title.lower())
-        a_score = fuzz.token_sort_ratio(author.lower(), doc_author.lower()) if author else 85
+        a_score = fuzz.token_sort_ratio(author.lower(), doc_author.lower()) if (author and doc_author) else 85
+
+        logger.debug(f"HC candidate '{doc_title}' by '{doc_author}': t={t_score} a={a_score}")
 
         if t_score >= 90 and a_score >= 85 and (t_score, a_score) > best_score:
             best = doc
             best_score = (t_score, a_score)
 
     if not best:
+        logger.warning(f"HC no confident match for '{title}' by '{author}' (best scores: {best_score})")
         return False
 
     hardcover_id = str(best.get("id", ""))
@@ -188,29 +199,73 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
     if not hardcover_id:
         return False
 
-    hc_series = []
-    for bs in (best.get("book_series") or []):
-        s = bs.get("series") or {}
-        if s.get("id"):
-            hc_series.append({"id": str(s["id"]), "name": s.get("name", "")})
+    # Extract series from featured_series and series_names (confirmed present in HC Typesense docs)
+    featured = best.get("featured_series") or {}
+    featured_series_name = ((featured.get("series") or {}).get("name") or "").strip()
+    featured_series_id = str((featured.get("series") or {}).get("id") or "")
+    series_names = best.get("series_names") or []
+
+    # Build list of HC contributors: [{hc_author_id, name}]
+    hc_contributors = []
+    for c in (best.get("contributions") or best.get("cached_contributors") or []):
+        if not isinstance(c, dict):
+            continue
+        hc_author_id = str(
+            c.get("author_id")
+            or (c.get("author") or {}).get("id", "")
+            or ""
+        )
+        hc_author_name = (
+            c.get("author_name")
+            or (c.get("author") or {}).get("name", "")
+            or ""
+        )
+        if hc_author_id and hc_author_name:
+            hc_contributors.append({"id": hc_author_id, "name": hc_author_name})
 
     async with get_db() as db:
+        existing = await (
+            await db.execute(
+                "SELECT book_id FROM book_links WHERE hardcover_id = ?", (hardcover_id,)
+            )
+        ).fetchone()
+        if existing and existing[0] != book_id:
+            logger.warning(
+                f"HC book {hardcover_id} already linked to book {existing[0]}, skipping {book_id}"
+            )
+            return False
         await db.execute(
             "UPDATE book_links SET hardcover_id = ?, hardcover_slug = ? WHERE book_id = ?",
             (hardcover_id, hardcover_slug, book_id),
         )
         for local_series_id, local_series_name in book_series_rows:
-            best_hc = None
+            best_match_name = None
             best_s_score = 0
-            for hs in hc_series:
-                score = fuzz.token_sort_ratio(local_series_name.lower(), hs["name"].lower())
+            for sname in series_names:
+                score = fuzz.token_sort_ratio(local_series_name.lower(), sname.lower())
                 if score >= 80 and score > best_s_score:
-                    best_hc = hs
+                    best_match_name = sname
                     best_s_score = score
-            if best_hc:
+            if best_match_name and featured_series_id and featured_series_name:
+                if fuzz.token_sort_ratio(best_match_name.lower(), featured_series_name.lower()) >= 80:
+                    await db.execute(
+                        "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ? AND (hardcover_series_id IS NULL OR hardcover_series_id = '')",
+                        (featured_series_id, local_series_id),
+                    )
+        for local_author in author_rows:
+            local_id = local_author["id"]
+            local_name = local_author["name"]
+            best_hc_author = None
+            best_a_score = 0
+            for hc in hc_contributors:
+                score = fuzz.token_sort_ratio(local_name.lower(), hc["name"].lower())
+                if score >= 85 and score > best_a_score:
+                    best_hc_author = hc
+                    best_a_score = score
+            if best_hc_author:
                 await db.execute(
-                    "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ?",
-                    (best_hc["id"], local_series_id),
+                    "UPDATE author_links SET hardcover_author_id = ? WHERE author_id = ? AND (hardcover_author_id IS NULL OR hardcover_author_id = '')",
+                    (best_hc_author["id"], local_id),
                 )
         await db.commit()
 
@@ -235,6 +290,201 @@ async def _upsert_task_state(task: str, running: bool, last_result: str = None):
         await db.commit()
 
 
+async def _hc_rate_limited_loop(items: list, fn, deadline: float) -> dict:
+    """Run fn(item) for each item, rate-limited to ~60 req/min with exponential backoff on 429."""
+    counters = {"linked": 0, "failed": 0, "skipped": 0}
+    backoff = 0.0
+    for i, item in enumerate(items):
+        if time.monotonic() >= deadline:
+            counters["skipped"] = len(items) - i
+            break
+        await asyncio.sleep(backoff if backoff else 1.0)
+        try:
+            if await fn(item):
+                counters["linked"] += 1
+                backoff = 0.0
+            else:
+                counters["failed"] += 1
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                backoff = min((backoff or 2.0) * 2, 60.0)
+                logger.warning(f"HC rate limited, backing off {backoff:.0f}s")
+            else:
+                logger.warning(f"HC HTTP error: {e}")
+                backoff = 0.0
+            counters["failed"] += 1
+    return counters
+
+
+async def _hc_link_books(settings: dict, deadline: float) -> dict:
+    """Link books with no hardcover_id. Primary path — also sets author/series HC IDs from result."""
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"linked": 0, "failed": 0, "skipped": 0}
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                "SELECT bl.book_id FROM book_links bl WHERE bl.hardcover_id IS NULL OR bl.hardcover_id = '' ORDER BY bl.linked_at"
+            )
+        ).fetchall()
+    book_ids = [r[0] for r in rows]
+    return await _hc_rate_limited_loop(
+        book_ids, lambda bid: _link_to_hardcover(bid, settings), deadline
+    )
+
+
+async def _hc_catchup_authors(settings: dict, deadline: float) -> dict:
+    """Catch-up pass: link authors with no hardcover_author_id via HC author search."""
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"linked": 0, "failed": 0, "skipped": 0}
+
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                """SELECT al.author_id, a.name FROM author_links al
+                   JOIN authors a ON a.id = al.author_id
+                   WHERE al.hardcover_author_id IS NULL OR al.hardcover_author_id = ''
+                   ORDER BY al.linked_at"""
+            )
+        ).fetchall()
+
+    async def link_author(row) -> bool:
+        author_id, name = row["author_id"], row["name"]
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    "https://api.hardcover.app/v1/graphql",
+                    json={
+                        "query": 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 5) { results } }',
+                        "variables": {"q": name},
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                if resp.status_code == 429:
+                    resp.raise_for_status()
+                resp.raise_for_status()
+                hits = resp.json()["data"]["search"]["results"].get("hits", [])
+        except httpx.HTTPStatusError:
+            raise
+        except Exception as e:
+            logger.warning(f"HC author search failed for '{name}': {e}")
+            return False
+
+        best, best_score = None, 0
+        for hit in hits:
+            doc = hit.get("document", {})
+            score = fuzz.token_sort_ratio(name.lower(), (doc.get("name") or "").lower())
+            if score >= 85 and score > best_score:
+                best, best_score = doc, score
+
+        if not best:
+            logger.debug(f"HC no author match for '{name}'")
+            return False
+
+        hc_author_id = str(best.get("id", ""))
+        if not hc_author_id:
+            return False
+
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE author_links SET hardcover_author_id = ? WHERE author_id = ? AND (hardcover_author_id IS NULL OR hardcover_author_id = '')",
+                (hc_author_id, author_id),
+            )
+            await db.commit()
+        return True
+
+    return await _hc_rate_limited_loop(list(rows), link_author, deadline)
+
+
+async def _hc_catchup_series(settings: dict, deadline: float) -> dict:
+    """Catch-up pass: link series with no hardcover_series_id via HC series search."""
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"linked": 0, "failed": 0, "skipped": 0}
+
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                """SELECT sl.series_id, s.name FROM series_links sl
+                   JOIN series s ON s.id = sl.series_id
+                   WHERE sl.hardcover_series_id IS NULL OR sl.hardcover_series_id = ''
+                   ORDER BY sl.linked_at"""
+            )
+        ).fetchall()
+
+    async def link_series(row) -> bool:
+        series_id, name = row["series_id"], row["name"]
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    "https://api.hardcover.app/v1/graphql",
+                    json={
+                        "query": 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 5) { results } }',
+                        "variables": {"q": name},
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                if resp.status_code == 429:
+                    resp.raise_for_status()
+                resp.raise_for_status()
+                hits = resp.json()["data"]["search"]["results"].get("hits", [])
+        except httpx.HTTPStatusError:
+            raise
+        except Exception as e:
+            logger.warning(f"HC series search failed for '{name}': {e}")
+            return False
+
+        best, best_score = None, 0
+        for hit in hits:
+            doc = hit.get("document", {})
+            score = fuzz.token_sort_ratio(name.lower(), (doc.get("name") or "").lower())
+            if score >= 85 and score > best_score:
+                best, best_score = doc, score
+
+        if not best:
+            logger.debug(f"HC no series match for '{name}'")
+            return False
+
+        hc_series_id = str(best.get("id", ""))
+        if not hc_series_id:
+            return False
+
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ? AND (hardcover_series_id IS NULL OR hardcover_series_id = '')",
+                (hc_series_id, series_id),
+            )
+            await db.commit()
+        return True
+
+    return await _hc_rate_limited_loop(list(rows), link_series, deadline)
+
+
+async def cache_refresh() -> dict:
+    """HC linking: books (primary), then author/series catch-up. Rate-limited, 1hr time slice."""
+    settings = await get_settings()
+    deadline = time.monotonic() + 3600
+    await _upsert_task_state("cache_refresh", running=True)
+    try:
+        b = await _hc_link_books(settings, deadline)
+        a = await _hc_catchup_authors(settings, deadline)
+        s = await _hc_catchup_series(settings, deadline)
+        result = (
+            f"books {b['linked']}/{b['linked']+b['failed']} linked"
+            + (f" ({b['skipped']} skipped)" if b['skipped'] else "")
+            + f" | authors {a['linked']}/{a['linked']+a['failed']}"
+            + f" | series {s['linked']}/{s['linked']+s['failed']}"
+        )
+        logger.info(f"cache_refresh complete: {result}")
+        await _upsert_task_state("cache_refresh", running=False, last_result=result)
+        return {"books": b, "authors": a, "series": s}
+    except Exception as e:
+        logger.error(f"cache_refresh failed: {e}", exc_info=True)
+        await _upsert_task_state("cache_refresh", running=False, last_result=f"error: {e}")
+        raise
+
+
 async def sync_library() -> dict:
     """Fetch all ABS items and upsert into the local database."""
     from .audiobookshelf import AudiobookshelfService
@@ -253,7 +503,7 @@ async def sync_library() -> dict:
 
         for item in items:
             try:
-                result = await _sync_item(item, settings)
+                result = await _sync_item(item)
                 if result == "created":
                     counters["created"] += 1
                 elif result == "updated":
@@ -271,7 +521,7 @@ async def sync_library() -> dict:
     return counters
 
 
-async def _sync_item(item: dict, settings: dict) -> str:
+async def _sync_item(item: dict) -> str:
     """Sync a single ABS item. Returns 'created', 'updated', or 'unchanged'."""
     abs_id = item.get("abs_id", "")
     if not abs_id:
@@ -410,19 +660,7 @@ async def _sync_item(item: dict, settings: dict) -> str:
             await db.execute("UPDATE books SET abs_checked_at = ? WHERE id = ?", (now, book_id))
             await db.commit()
 
-            hc_link = await (
-                await db.execute(
-                    "SELECT hardcover_id FROM book_links WHERE book_id = ?", (book_id,)
-                )
-            ).fetchone()
-
-    # HC linking outside DB transaction (makes network calls)
     if link_row is None:
-        await _link_to_hardcover(book_id, settings)
         return "created"
     else:
-        if hc_link and hc_link[0] is None:
-            linked = await _link_to_hardcover(book_id, settings)
-            if linked:
-                changed = True
         return "updated" if changed else "unchanged"

@@ -72,14 +72,13 @@ class AudiobookshelfService:
         cover_path = media.get("coverPath")
         cover_url = self._cover_url(item_id) if cover_path else ""
 
-        # Formats — derived from whether item has audio tracks and/or an ebook file
+        # Formats — derived from whether item has audio and/or an ebook file
         formats = []
         abs_url = self._item_url(item_id)
-        tracks = media.get("tracks") or []
-        num_tracks = media.get("numTracks") or 0
+        audio_files = media.get("audioFiles") or []
         ebook_file = media.get("ebookFile")
 
-        if tracks or num_tracks:
+        if audio_files:
             formats.append({
                 "type": "audiobook",
                 "narrator": narrator or "",

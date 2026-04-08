@@ -25,8 +25,7 @@ ITEM_JSON = {
             "seriesName": "Standalone",
         },
         "coverPath": "/covers/li_abc123.jpg",
-        "tracks": [{"index": 1, "startOffset": 0, "duration": 3600}],
-        "numTracks": 1,
+        "audioFiles": [{"index": 1, "duration": 3600}],
         "ebookFile": None,
     },
 }

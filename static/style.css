@@ -499,7 +499,7 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
 
 /* ── Spinner ── */
 @keyframes spin { to { transform: rotate(360deg); } }
-.spin { animation: spin 0.8s linear infinite; display: inline-block; }
+.spin { animation: spin 0.8s linear infinite; display: inline-block; vertical-align: middle; }
 
 /* ── Home inline title (mobile only — desktop keeps the nav logo) ── */
 .home-title {
@@ -861,7 +861,7 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   .task-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto auto auto auto;
     gap: 0.4rem 0.5rem;
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -872,8 +872,8 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   .task-cell-name { grid-column: 1 / -1; grid-row: 1; }
   .task-cell-name-top { justify-content: space-between; }
   .task-cell-cron { grid-column: 1 / -1; grid-row: 2; max-width: none !important; font-size: 16px !important; }
-  .task-cell-next { grid-column: 1; grid-row: 3; padding-top: 0 !important; }
-  .task-cell-last { grid-column: 2; grid-row: 3; padding-top: 0 !important; }
+  .task-cell-next { grid-column: 1 / -1; grid-row: 3; padding-top: 0 !important; }
+  .task-cell-last { grid-column: 1 / -1; grid-row: 4; padding-top: 0 !important; }
 }
 
 /* ── Square covers mode ── */
