@@ -1,24 +1,72 @@
+import asyncio
 import logging
+from datetime import datetime
 
+from croniter import croniter
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import get_db, init_db
+from .routes.abs_proxy import router as abs_proxy_router
+from .routes.books import router as books_router
 from .routes.settings import router as settings_router
+from .routes.sync import router as sync_router
+from .services.library_sync import sync_library, _upsert_task_state
+from .settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Athenaeum")
 
 app.include_router(settings_router)
+app.include_router(books_router)
+app.include_router(sync_router)
+app.include_router(abs_proxy_router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+async def _wait_until_next(cron_expr: str):
+    """Sleep until the next scheduled time for a cron expression."""
+    now = datetime.now()
+    next_run = croniter(cron_expr, now).get_next(datetime)
+    await asyncio.sleep((next_run - now).total_seconds())
+
+
+async def _task_loop(task_name: str, cron_key: str, task_fn):
+    """Supervised loop for a scheduled task."""
+    while True:
+        try:
+            settings = await get_settings()
+            expr = settings.get("schedule", {}).get(cron_key, "")
+            if not expr:
+                await asyncio.sleep(60)
+                continue
+            await _wait_until_next(expr)
+            await task_fn()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"{task_name} error: {e}", exc_info=True)
+
+
+async def _cache_refresh_task():
+    """Placeholder — implemented in Phase 4."""
+    pass
+
+
+async def _auto_search_task():
+    """Placeholder — implemented in Phase 5."""
+    pass
 
 
 @app.on_event("startup")
 async def startup():
     await init_db()
     logger.info("Database initialised")
+    asyncio.create_task(_task_loop("library_sync_task", "library_sync", sync_library))
+    asyncio.create_task(_task_loop("cache_refresh_task", "cache_refresh", _cache_refresh_task))
+    asyncio.create_task(_task_loop("auto_search_task", "auto_search", _auto_search_task))
 
 
 @app.get("/healthz", include_in_schema=False)
@@ -39,7 +87,7 @@ async def api_status():
         series_row = await (await db.execute("SELECT COUNT(*) FROM series")).fetchone()
 
         statuses = [
-            "requested", "monitored", "snatched", "downloading",
+            "requested", "snatched", "downloading",
             "downloaded", "merging", "organizing", "in_library", "failed",
         ]
         requests = {}
