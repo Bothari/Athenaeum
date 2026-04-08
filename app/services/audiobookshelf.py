@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 from rapidfuzz import fuzz
 
@@ -29,14 +31,38 @@ class AudiobookshelfService:
         # Title
         title = meta.get("title", "")
 
-        # Author — prefer structured list, fall back to flat string
-        authors = meta.get("authors") or []
-        author = authors[0]["name"] if authors else meta.get("authorName", "")
+        # Authors — prefer structured list (has IDs), fall back to flat string
+        authors_raw = meta.get("authors") or []
+        if authors_raw:
+            author_items = [
+                {"name": a["name"], "abs_id": str(a.get("id") or "")}
+                for a in authors_raw if a.get("name")
+            ]
+        else:
+            author_items = [{"name": meta.get("authorName", ""), "abs_id": ""}]
+        author = author_items[0]["name"] if author_items else ""
 
-        # Series
+        # Series — may be a structured list or a flat string like "Name #1, Other #2"
         series_list = meta.get("series") or []
-        series_name = series_list[0]["name"] if series_list else meta.get("seriesName", "")
-        series_seq = str(series_list[0].get("sequence", "")) if series_list else ""
+        series_items = []
+        if series_list:
+            for s in series_list:
+                name = (s.get("name") or "").strip()
+                seq = str(s.get("sequence") or "").strip()
+                abs_series_id = str(s.get("id") or "").strip()
+                if name:
+                    series_items.append({"name": name, "sequence": seq, "abs_id": abs_series_id})
+        elif meta.get("seriesName"):
+            for part in meta["seriesName"].split(", "):
+                part = part.strip()
+                if not part:
+                    continue
+                import re as _re
+                m = _re.match(r'^(.+?)\s*#([\d.]+)\s*$', part)
+                if m:
+                    series_items.append({"name": m.group(1).strip(), "sequence": m.group(2)})
+                else:
+                    series_items.append({"name": part, "sequence": ""})
 
         # Narrator
         narrators = meta.get("narrators") or []
@@ -60,7 +86,9 @@ class AudiobookshelfService:
                 "abs_id": item_id,
                 "abs_url": abs_url,
             })
-        if ebook_file:
+        # ebookFile is null in list-endpoint responses (minified); use ebookFormat as fallback
+        ebook_format = media.get("ebookFormat") or ""
+        if ebook_file or ebook_format:
             formats.append({"type": "ebook"})
 
         return {
@@ -68,8 +96,8 @@ class AudiobookshelfService:
             "abs_url": abs_url,
             "title": title,
             "author": author,
-            "series": series_name,
-            "series_sequence": series_seq,
+            "author_items": author_items,
+            "series_items": series_items,
             "cover_url": cover_url,
             "narrator": narrator,
             "formats": formats,
@@ -134,17 +162,41 @@ class AudiobookshelfService:
             return self._normalize_item(resp.json())
 
     async def list_all_items(self) -> list[dict]:
+        """Fetch all library items as fully-normalised dicts.
+
+        The list endpoint returns minified items (no series IDs, no author IDs,
+        no ebookFile). We fetch the full item for each ID concurrently — ABS is
+        local so this is fast.
+        """
         all_items = []
-        async with httpx.AsyncClient(headers=self._headers(), timeout=60.0) as client:
+        sem = asyncio.Semaphore(20)
+
+        async def fetch_full(client: httpx.AsyncClient, item_id: str):
+            async with sem:
+                resp = await client.get(f"{self.base_url}/api/items/{item_id}")
+                resp.raise_for_status()
+                return self._normalize_item(resp.json())
+
+        async with httpx.AsyncClient(headers=self._headers(), timeout=30.0) as client:
             for lib_id in self.library_ids:
                 resp = await client.get(
                     f"{self.base_url}/api/libraries/{lib_id}/items",
                     params={"limit": 0},
                 )
                 resp.raise_for_status()
-                data = resp.json()
-                for item in data.get("results", []):
-                    all_items.append(self._normalize_item(item))
+                item_ids = [item["id"] for item in resp.json().get("results", [])]
+
+                results = await asyncio.gather(
+                    *[fetch_full(client, iid) for iid in item_ids],
+                    return_exceptions=True,
+                )
+                for r in results:
+                    if isinstance(r, Exception):
+                        import logging
+                        logging.getLogger(__name__).warning(f"Failed to fetch ABS item: {r}")
+                    else:
+                        all_items.append(r)
+
         return all_items
 
     async def scan_library(self, library_id: str = None):

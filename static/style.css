@@ -292,7 +292,7 @@ input::placeholder { color: var(--text-dim); }
   gap: 0.25rem;
   font-size: 0.72rem;
   padding: 0.2rem 0.5rem;
-  border-radius: var(--radius);
+  border-radius: 999px;
   font-weight: 500;
   white-space: nowrap;
 }
@@ -348,7 +348,7 @@ thead th {
   white-space: nowrap;
   user-select: none;
 }
-thead th.sortable { cursor: pointer; }
+thead th.sortable { cursor: pointer; touch-action: manipulation; user-select: none; }
 thead th.sortable:hover { color: var(--text); }
 thead th.sort-active { color: var(--accent); }
 tbody tr { border-bottom: 1px solid var(--border); }
@@ -819,6 +819,21 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
 .nb-library-popup-item:last-child { border-bottom: none; }
 .nb-library-popup-item:hover { background: var(--surface2); text-decoration: none; }
 
+/* ── Page header: pin view toggle to top-right on mobile so title wraps freely ── */
+@media (max-width: 640px) {
+  .page-header:has(.view-toggle) {
+    position: relative;
+    padding-right: 5rem;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .page-header:has(.view-toggle) .view-toggle {
+    position: absolute;
+    top: 0;
+    right: 0;
+  }
+}
+
 /* ── Responsive ── */
 @media (max-width: 640px) {
   /* Show bottom nav, hide top nav links, un-stick the top bar */
@@ -859,4 +874,10 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   .task-cell-cron { grid-column: 1 / -1; grid-row: 2; max-width: none !important; font-size: 16px !important; }
   .task-cell-next { grid-column: 1; grid-row: 3; padding-top: 0 !important; }
   .task-cell-last { grid-column: 2; grid-row: 3; padding-top: 0 !important; }
+}
+
+/* ── Square covers mode ── */
+body.square-covers .book-card-cover,
+body.square-covers .book-card-cover-placeholder {
+  aspect-ratio: 1 / 1;
 }

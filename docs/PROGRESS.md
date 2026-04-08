@@ -68,12 +68,16 @@ _Completed 2026-04-06_
 
 ---
 
-## Phase 3: Library Sync
-_Not started_
+## Phase 3: Library Sync [complete]
+_Completed 2026-04-06_
 
-- [ ] `app/services/library_sync.py`
-- [ ] `app/routes/books.py` (partial) — GET /api/books, GET /api/authors, GET /api/series
-- [ ] Library pages: Books list, Authors list, Series list
+- [x] `app/services/library_sync.py` — `sync_library()`, `_sync_item()`, `_link_to_hardcover()`, `_get_or_create_author()`, `_get_or_create_series()`, `_split_authors()`, `_upsert_task_state()`
+- [x] `app/routes/books.py` — GET /api/books, GET /api/authors, GET /api/series (with pagination, filtering, sorting), GET /api/books/{id}, GET /api/authors/{id}/books, GET /api/series/{id}/books
+- [x] `app/routes/sync.py` — POST /api/sync/library, POST /api/sync/cache-refresh (placeholder)
+- [x] `app/main.py` — background task loops for library_sync, cache_refresh, auto_search (cron-driven, skip if blank)
+- [x] Library pages frontend — Books list, Authors list, Series list (already built in Phase 1 shell, now wired to real API)
+- [x] `tests/test_services/test_library_sync.py` — 17 tests (_split_authors, _get_or_create_author/series idempotency, sync creates/deduplicates, INSERT OR IGNORE validation, new format on resync)
+- [x] `tests/test_routes/test_books.py` — 22 tests (list endpoints, pagination, filtering, sorting, 404s)
 
 ---
 

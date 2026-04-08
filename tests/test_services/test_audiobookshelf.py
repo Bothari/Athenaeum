@@ -36,8 +36,7 @@ ITEM_NORMALIZED = {
     "abs_url": "http://abs.local:13378/item/li_abc123",
     "title": "Project Hail Mary",
     "author": "Andy Weir",
-    "series": "Standalone",
-    "series_sequence": "",
+    "series_items": [{"name": "Standalone", "sequence": ""}],
     "cover_url": "http://abs.local:13378/api/items/li_abc123/cover",
     "narrator": "Ray Porter",
     "formats": [
