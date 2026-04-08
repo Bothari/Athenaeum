@@ -95,6 +95,19 @@ _Completed 2026-04-08_
 - [x] Formats badges pill-shaped; formats column fixed-width `white-space: nowrap` in books list table
 - [x] Author detail sortable table (client-side, click-to-sort columns)
 
+## Post-Phase-3 polish (v0.3.1)
+_Completed 2026-04-08_
+
+- [x] HC linking: `cache_refresh` task with three passes — book linking (primary), author catch-up, series catch-up — rate-limited at ~60 req/min with exponential backoff on 429
+- [x] Fix series linking: read `featured_series` + `series_names` from HC Typesense docs (dead `book_series` field removed); fuzzy-match local series name to get HC series ID
+- [x] Fix author linking: extract HC author IDs from `contributions` field in search result
+- [x] Fix audiobook detection: use `audioFiles` instead of `tracks`/`numTracks` (the latter requires ABS probing and is absent on fresh discovery)
+- [x] `cache_refresh` fires automatically after `library_sync` completes
+- [x] Stale `running=1` task_state flags cleared on startup
+- [x] Missing links UI panel — surfaces books/authors/series with no HC ID
+- [x] Mobile task card layout — "Last" row below "Next", no desktop change
+- [x] HC API structure and linking strategy documented in `PLAN.md`
+
 ---
 
 ## Phase 6: Detail Pages [partial]
