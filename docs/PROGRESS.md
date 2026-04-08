@@ -81,6 +81,34 @@ _Completed 2026-04-06_
 
 ---
 
+## Post-Phase-3 polish (v0.3.0)
+_Completed 2026-04-08_
+
+- [x] `app/routes/abs_proxy.py` — `/api/abs/cover/{abs_id}` cover proxy (24h cache); `/api/abs/library-settings` returns `cover_aspect_ratio`
+- [x] `list_all_items` rewritten to fetch full items concurrently (20-way `asyncio.gather`) — fixes missing series IDs, author IDs, and ebook detection
+- [x] ABS author IDs stored via structured `authors` list in full item response, not flat string splitting
+- [x] `CLAUDE.md` — new "ABS API Usage" section: always fetch full items, spam concurrently, prefer IDs over name-matching
+- [x] Book/author/series detail pages — view toggle (list/poster), pinned top-right on mobile; state persisted globally via `localStorage`
+- [x] Series position sort uses `CAST(bs.position AS REAL)` for correct numerical ordering
+- [x] Debug view cards on book detail, author detail, and series detail pages showing link IDs
+- [x] Cover URLs rewritten to proxy route when `abs_id` present; square covers toggled from ABS library setting (`cover_aspect_ratio === 1`)
+- [x] Formats badges pill-shaped; formats column fixed-width `white-space: nowrap` in books list table
+- [x] Author detail sortable table (client-side, click-to-sort columns)
+
+---
+
+## Phase 6: Detail Pages [partial]
+_In progress — detail pages built, book_links and missing-books logic pending_
+
+- [x] Book detail page — metadata, authors, series, formats (in-library), ABS/HC link IDs in debug view
+- [x] Author detail page — books table (sortable), debug card with `abs_author_id` / `hardcover_author_id`
+- [x] Series detail page — books list/poster view with position and formats
+- [ ] `app/routes/book_links.py` — ABS/Hardcover link/unlink endpoints
+- [ ] Series missing-books detection (async, compare owned positions to HC series total)
+- [ ] `tests/test_routes/test_book_links.py`
+
+---
+
 ## Phase 4: Search & Requests
 _Not started_
 
