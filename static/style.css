@@ -853,6 +853,8 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   .detail-cover, .detail-cover-placeholder { width: 100px; min-width: 100px; }
   .search-page.empty { min-height: calc(100vh - 48px - 2rem); }
   .stats-row { grid-template-columns: repeat(3, 1fr); }
+  .tasks-row { grid-template-columns: 1fr; }
+  .tasks-row .stat-card { text-align: left; }
   .card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 
   /* Tasks grid → cards on mobile */

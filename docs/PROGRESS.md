@@ -108,6 +108,22 @@ _Completed 2026-04-08_
 - [x] Mobile task card layout — "Last" row below "Next", no desktop change
 - [x] HC API structure and linking strategy documented in `PLAN.md`
 
+## HC matching tuning (v0.3.2)
+_Completed 2026-04-10_
+
+- [x] `?unlinked=1` filter on `/api/books`, `/api/authors`, `/api/series` — "Unlinked only" checkbox on list pages
+- [x] Try-link endpoints (`POST /api/sync/try-link/book|author|series/{id}`) — run match on demand, persist if found, return full candidate log
+- [x] Try-link UI on book/author/series detail pages — shows candidate table with t/a scores colour-coded against thresholds
+- [x] Title normalisation: strip HC subtitle after colon (e.g. "Dust: Book Three…" → "Dust"), take max of full vs stripped score
+- [x] Title normalisation: `&` → `and` before comparison ("Angels & Demons" ↔ "Angels and Demons")
+- [x] Author normalisation: `_author_score()` removes all periods and spaces before comparing, takes max of token_sort_ratio and plain ratio — fixes "V. E. Schwab" ↔ "V.E. Schwab"
+- [x] Multi-author books: a_score is best match across all local authors × all HC contributors — fixes "A Memory of Light" (Jordan + Sanderson)
+- [x] HC book/author conflict guard: `_set_hc_author_id()` checks for existing claim before UPDATE, logs warning and skips rather than crashing
+- [x] Search result depth: `per_page` bumped from 5 → 15 — fixes books that rank 6th+ in Typesense (e.g. "The Thursday Murder Club")
+- [x] Dashboard task cards: Run Now buttons + live polling of running state
+- [x] Dashboard mobile: task cards full-width stacked
+- [x] Confirmed: HC `_ilike` WHERE queries are blocked server-side — Typesense search is the only viable path
+
 ---
 
 ## Phase 6: Detail Pages [partial]
@@ -152,6 +168,12 @@ _Not started_
 - [ ] Series detail page — completion, missing books (async)
 - [ ] `app/routes/book_links.py`
 - [ ] `app/routes/sync.py`
+
+---
+
+## Future Work / Backlog
+
+- **Author deduplication on HC conflict**: when two local authors match the same HC author ID (e.g. "James S. A. Corey" / "James S.A. Corey"), merge the duplicate into the winner — re-point all `book_authors` rows, delete the duplicate author and its `author_links` row. Currently the second match is skipped and the duplicate stays unlinked.
 
 ---
 

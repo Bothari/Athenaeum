@@ -4,7 +4,8 @@ import logging
 from fastapi import APIRouter
 
 from ..database import get_db
-from ..services.library_sync import sync_library, cache_refresh
+from ..services.library_sync import sync_library, cache_refresh, try_link_book, try_link_author, try_link_series
+from ..settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,3 +45,21 @@ async def _run_cache_refresh():
         await cache_refresh()
     except Exception as e:
         logger.error(f"Manual cache refresh failed: {e}", exc_info=True)
+
+
+@router.post("/sync/try-link/book/{book_id}")
+async def try_link_book_endpoint(book_id: str):
+    settings = await get_settings()
+    return await try_link_book(book_id, settings)
+
+
+@router.post("/sync/try-link/author/{author_id}")
+async def try_link_author_endpoint(author_id: str):
+    settings = await get_settings()
+    return await try_link_author(author_id, settings)
+
+
+@router.post("/sync/try-link/series/{series_id}")
+async def try_link_series_endpoint(series_id: str):
+    settings = await get_settings()
+    return await try_link_series(series_id, settings)
