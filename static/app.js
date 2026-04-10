@@ -230,7 +230,8 @@ function renderTable(config) {
     if (loading) return;
     loading = true;
     try {
-      const data = await fetchFn({ q, sort, dir, limit: LIMIT, offset });
+      const extra = config.extraFetchParams ? config.extraFetchParams() : {};
+      const data = await fetchFn({ q, sort, dir, limit: LIMIT, offset, ...extra });
       total = data.total;
       const tbody = container.querySelector('tbody');
       if (reset) tbody.innerHTML = '';
@@ -314,6 +315,62 @@ function renderTable(config) {
   });
 
   fetchAndAppend(true);
+  return {
+    reload() { offset = 0; allLoaded = false; fetchAndAppend(true); },
+  };
+}
+
+// ── Shared: renderTryLinkLog ───────────────────────────────────────────────────
+
+function renderTryLinkLog(log, type) {
+  const resultColors = { linked: 'var(--color-success)', no_match: 'var(--color-error)', no_results: 'var(--color-error)', conflict: 'var(--color-warning)', error: 'var(--color-error)', no_api_key: 'var(--color-error)', not_found: 'var(--color-error)' };
+  const color = resultColors[log.result] || 'var(--color-text-dim)';
+  let html = `<div style="font-size:0.8rem;font-family:monospace;background:var(--color-surface);border:1px solid var(--color-border);border-radius:6px;padding:0.75rem;overflow-x:auto">`;
+  html += `<div style="margin-bottom:0.5rem"><span class="td-dim">result: </span><strong style="color:${color}">${escapeHtml(log.result || '—')}</strong>`;
+  if (log.reason) html += ` <span class="td-dim">${escapeHtml(log.reason)}</span>`;
+  if (log.error) html += ` <span style="color:var(--color-error)">${escapeHtml(log.error)}</span>`;
+  html += `</div>`;
+  if (log.query) html += `<div style="margin-bottom:0.5rem"><span class="td-dim">query: </span>${escapeHtml(log.query)}</div>`;
+
+  if (type === 'book' && log.candidates && log.candidates.length) {
+    html += `<table style="width:100%;border-collapse:collapse;margin-top:0.25rem"><thead><tr style="color:var(--color-text-dim)"><th style="text-align:left;padding:2px 6px">title</th><th style="text-align:left;padding:2px 6px">author</th><th style="padding:2px 6px">t</th><th style="padding:2px 6px">a</th><th style="padding:2px 6px">hc_id</th></tr></thead><tbody>`;
+    for (const c of log.candidates) {
+      const rowStyle = c.is_best ? 'background:var(--color-surface-raised)' : '';
+      const tColor = c.t_score >= 90 ? 'var(--color-success)' : 'var(--color-error)';
+      const aColor = c.a_score >= 85 ? 'var(--color-success)' : 'var(--color-error)';
+      html += `<tr style="${rowStyle}">
+        <td style="padding:2px 6px">${c.is_best ? '<strong>' : ''}${escapeHtml(c.title)}${c.is_best ? '</strong>' : ''}</td>
+        <td style="padding:2px 6px;color:var(--color-text-dim)">${escapeHtml(c.author)}</td>
+        <td style="padding:2px 6px;color:${tColor};text-align:center">${c.t_score}</td>
+        <td style="padding:2px 6px;color:${aColor};text-align:center">${c.a_score}</td>
+        <td style="padding:2px 6px;color:var(--color-text-dim)">${escapeHtml(c.hc_id)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  } else if ((type === 'author' || type === 'series') && log.candidates && log.candidates.length) {
+    html += `<table style="width:100%;border-collapse:collapse;margin-top:0.25rem"><thead><tr style="color:var(--color-text-dim)"><th style="text-align:left;padding:2px 6px">name</th><th style="padding:2px 6px">score</th><th style="padding:2px 6px">hc_id</th></tr></thead><tbody>`;
+    for (const c of log.candidates) {
+      const rowStyle = c.is_best ? 'background:var(--color-surface-raised)' : '';
+      const scoreColor = c.score >= 85 ? 'var(--color-success)' : 'var(--color-error)';
+      html += `<tr style="${rowStyle}">
+        <td style="padding:2px 6px">${c.is_best ? '<strong>' : ''}${escapeHtml(c.name)}${c.is_best ? '</strong>' : ''}</td>
+        <td style="padding:2px 6px;color:${scoreColor};text-align:center">${c.score}</td>
+        <td style="padding:2px 6px;color:var(--color-text-dim)">${escapeHtml(c.hc_id)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+
+  if (log.result === 'linked') {
+    if (log.series_linked && log.series_linked.length) {
+      html += `<div style="margin-top:0.5rem;color:var(--color-success)">series linked: ${log.series_linked.map(s => escapeHtml(s.local)).join(', ')}</div>`;
+    }
+    if (log.authors_linked && log.authors_linked.length) {
+      html += `<div style="margin-top:0.25rem;color:var(--color-success)">authors linked: ${log.authors_linked.map(a => escapeHtml(a.local)).join(', ')}</div>`;
+    }
+  }
+  html += `</div>`;
+  return html;
 }
 
 // ── Shared: renderBookCard ─────────────────────────────────────────────────────
@@ -870,7 +927,8 @@ route('/library/books', async (params, qp) => {
 
     const content = document.getElementById('books-content');
 
-    renderTable({
+    let booksUnlinked = false;
+    const booksTable = renderTable({
       container: content,
       stateKey: 'books',
       headers: [
@@ -879,6 +937,8 @@ route('/library/books', async (params, qp) => {
         { label: 'Formats', key: 'formats', sortable: false, style: 'width:90px' },
       ],
       fetchFn: (p) => api('/books?' + new URLSearchParams(p).toString()),
+      extraFetchParams: () => booksUnlinked ? { unlinked: '1' } : {},
+      extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="books-unlinked-cb"> Unlinked only</label>`,
       renderRow: (b) => {
         const author = Array.isArray(b.authors) ? b.authors.map(a => a.name).join(', ') : '—';
         const requests = b.requests || [];
@@ -898,6 +958,10 @@ route('/library/books', async (params, qp) => {
       },
       emptyMessage: `Your library is empty. <a href="#/">Search for a book</a>`,
     });
+    content.querySelector('#books-unlinked-cb').addEventListener('change', e => {
+      booksUnlinked = e.target.checked;
+      booksTable.reload();
+    });
   } catch (err) {
     renderError(app, render);
   }
@@ -910,7 +974,8 @@ route('/library/authors', async (params, qp) => {
     <div id="authors-content"></div>
   `;
   const content = document.getElementById('authors-content');
-  renderTable({
+  let authorsUnlinked = false;
+  const authorsTable = renderTable({
     container: content,
     stateKey: 'authors',
     headers: [
@@ -918,11 +983,17 @@ route('/library/authors', async (params, qp) => {
       { label: 'Books', key: 'book_count', sortable: true, style: 'width:80px' },
     ],
     fetchFn: (p) => api('/authors?' + new URLSearchParams(p).toString()),
+    extraFetchParams: () => authorsUnlinked ? { unlinked: '1' } : {},
+    extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="authors-unlinked-cb"> Unlinked only</label>`,
     renderRow: (a) => `
       <td><a href="#/library/authors/${a.id}">${escapeHtml(a.name)}</a></td>
       <td class="td-dim">${a.book_count || 0}</td>
     `,
     emptyMessage: 'No authors yet. Authors are added automatically when books are synced.',
+  });
+  content.querySelector('#authors-unlinked-cb').addEventListener('change', e => {
+    authorsUnlinked = e.target.checked;
+    authorsTable.reload();
   });
 });
 
@@ -950,10 +1021,42 @@ route('/library/authors/:id', async ({ id }) => {
           </div>
         </div>
         <div id="author-books"></div>
+        <div id="author-hc-section" class="mt-2"></div>
         <div id="author-debug-section"></div>
       `;
       document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderAuthorBooksView(); };
       document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderAuthorBooksView(); };
+
+      // HC match section
+      const authorEntry = books.flatMap(b => b.authors || []).find(a => a.id === id) || {};
+      const hcAuthorId = authorEntry.hardcover_author_id;
+      const authorHcSection = document.getElementById('author-hc-section');
+      if (authorHcSection) {
+        authorHcSection.innerHTML = `
+          <div class="section-heading">Hardcover</div>
+          <div class="card">
+            ${hcAuthorId
+              ? `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Linked to HC #${escapeHtml(String(hcAuthorId))}</p>`
+              : `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Not linked to Hardcover.</p>`
+            }
+            <button class="btn btn-secondary btn-sm" id="author-try-link-btn">${hcAuthorId ? 'Re-run match' : 'Try HC match'}</button>
+            <div id="author-try-link-result" class="mt-2"></div>
+          </div>
+        `;
+        document.getElementById('author-try-link-btn').onclick = async function() {
+          this.disabled = true;
+          this.textContent = 'Matching...';
+          const resultEl = document.getElementById('author-try-link-result');
+          try {
+            const log = await api(`/sync/try-link/author/${id}`, { method: 'POST' });
+            resultEl.innerHTML = renderTryLinkLog(log, 'author');
+          } catch (e) {
+            resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">${escapeHtml(String(e))}</p>`;
+          }
+          this.disabled = false;
+          this.textContent = 'Re-run match';
+        };
+      }
 
       // Debug card — pull link IDs from the books we already have
       api('/settings').then(s => {
@@ -1041,7 +1144,8 @@ route('/library/series', async () => {
     <div id="series-content"></div>
   `;
   const content = document.getElementById('series-content');
-  renderTable({
+  let seriesUnlinked = false;
+  const seriesTable = renderTable({
     container: content,
     stateKey: 'series',
     headers: [
@@ -1049,11 +1153,17 @@ route('/library/series', async () => {
       { label: 'Books', key: 'book_count', sortable: true, style: 'width:80px' },
     ],
     fetchFn: (p) => api('/series?' + new URLSearchParams(p).toString()),
+    extraFetchParams: () => seriesUnlinked ? { unlinked: '1' } : {},
+    extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="series-unlinked-cb"> Unlinked only</label>`,
     renderRow: (s) => `
       <td><a href="#/library/series/${s.id}">${escapeHtml(s.name)}</a></td>
       <td class="td-dim">${s.book_count || 0}</td>
     `,
     emptyMessage: 'No series yet. Series are added automatically when books with series data are synced.',
+  });
+  content.querySelector('#series-unlinked-cb').addEventListener('change', e => {
+    seriesUnlinked = e.target.checked;
+    seriesTable.reload();
   });
 });
 
@@ -1088,6 +1198,7 @@ route('/library/series/:id', async ({ id }) => {
         <div class="section-heading">Books in Library</div>
         <div id="series-books"></div>
         <div id="series-missing-section"></div>
+        <div id="series-hc-section" class="mt-2"></div>
         <div id="series-debug-section"></div>
       `;
       document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderSeriesBooksView(); loadSeriesExtras(); };
@@ -1163,9 +1274,38 @@ route('/library/series/:id', async ({ id }) => {
         });
       }
 
-      // Debug card
+      // HC match section + debug card
       try {
         const [s, seriesData] = await Promise.all([api('/settings'), api(`/series/${id}`)]);
+        const hcSeriesId = (seriesData.link || {}).hardcover_series_id;
+        const seriesHcSection = document.getElementById('series-hc-section');
+        if (seriesHcSection) {
+          seriesHcSection.innerHTML = `
+            <div class="section-heading">Hardcover</div>
+            <div class="card">
+              ${hcSeriesId
+                ? `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Linked to HC #${escapeHtml(String(hcSeriesId))}</p>`
+                : `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Not linked to Hardcover.</p>`
+              }
+              <button class="btn btn-secondary btn-sm" id="series-try-link-btn">${hcSeriesId ? 'Re-run match' : 'Try HC match'}</button>
+              <div id="series-try-link-result" class="mt-2"></div>
+            </div>
+          `;
+          document.getElementById('series-try-link-btn').onclick = async function() {
+            this.disabled = true;
+            this.textContent = 'Matching...';
+            const resultEl = document.getElementById('series-try-link-result');
+            try {
+              const log = await api(`/sync/try-link/series/${id}`, { method: 'POST' });
+              resultEl.innerHTML = renderTryLinkLog(log, 'series');
+            } catch (e) {
+              resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">${escapeHtml(String(e))}</p>`;
+            }
+            this.disabled = false;
+            this.textContent = 'Re-run match';
+          };
+        }
+
         if (!(s.general || {}).debug_view) return;
         const link = seriesData.link || {};
         const rows = Object.entries(link).map(([k, v]) =>
@@ -1217,8 +1357,39 @@ route('/library/book', async (params, qp) => {
       </div>
       <div id="book-requests-section"></div>
       <div id="book-abs-section" class="mt-2"></div>
+      <div id="book-hc-section" class="mt-2"></div>
       <div id="book-debug-section"></div>
     `;
+
+    // HC match section
+    const hcSection = document.getElementById('book-hc-section');
+    if (hcSection) {
+      const hcId = (book.link || {}).hardcover_id;
+      hcSection.innerHTML = `
+        <div class="section-heading">Hardcover</div>
+        <div class="card">
+          ${hcId
+            ? `<p class="text-dim" style="margin:0;font-size:0.875rem">Linked to HC #${escapeHtml(String(hcId))}</p>`
+            : `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Not linked to Hardcover.</p>`
+          }
+          <button class="btn btn-secondary btn-sm" id="book-try-link-btn">${hcId ? 'Re-run match' : 'Try HC match'}</button>
+          <div id="book-try-link-result" class="mt-2"></div>
+        </div>
+      `;
+      document.getElementById('book-try-link-btn').onclick = async function() {
+        this.disabled = true;
+        this.textContent = 'Matching...';
+        const resultEl = document.getElementById('book-try-link-result');
+        try {
+          const log = await api(`/sync/try-link/book/${bookId}`, { method: 'POST' });
+          resultEl.innerHTML = renderTryLinkLog(log, 'book');
+        } catch (e) {
+          resultEl.innerHTML = `<p class="text-dim" style="color:var(--color-error)">Request failed: ${escapeHtml(String(e))}</p>`;
+        }
+        this.disabled = false;
+        this.textContent = 'Re-run match';
+      };
+    }
 
     // Debug card (async, only if debug_view is enabled)
     api('/settings').then(s => {
@@ -1610,33 +1781,76 @@ route('/dashboard', async () => {
       </div>
 
       <div class="section-heading">Scheduled Tasks</div>
-      <div class="stats-row">
-        ${[
-          { key: 'library_sync',  label: 'Library sync'  },
-          { key: 'cache_refresh', label: 'Cache refresh' },
-          { key: 'auto_search',   label: 'Auto search'   },
-        ].map(({ key, label }) => {
-          const t = syncStatus[key] || {};
-          const disabled = !t.next_run && !t.running;
-          const resultClass = t.last_result === 'ok' ? 'text-green' : (t.last_result ? 'text-red' : '');
-          return `
-            <div class="stat-card${disabled ? ' stat-card-disabled' : ''}">
-              <div style="font-size:0.9rem;font-weight:600">${label}</div>
-              <div class="text-dim mt-1" style="font-size:0.78rem">
-                ${disabled
-                  ? 'Disabled'
-                  : t.running
-                    ? `${ICON_SPINNER} running`
-                    : t.last_run
-                      ? `Last: ${formatDate(t.last_run)}`
-                      : 'Never run'}
-              </div>
-              ${!disabled && t.last_result ? `<div class="${resultClass}" style="font-size:0.78rem;margin-top:0.2rem">${escapeHtml(t.last_result)}</div>` : ''}
-            </div>
-          `;
-        }).join('')}
-      </div>
+      <div class="stats-row tasks-row" id="dash-tasks"></div>
     `;
+
+    const DASH_TASKS = [
+      { key: 'library_sync',  label: 'Library sync',  endpoint: '/sync/library'       },
+      { key: 'cache_refresh', label: 'Cache refresh', endpoint: '/sync/cache-refresh' },
+      { key: 'auto_search',   label: 'Auto search',   endpoint: null                  },
+    ];
+
+    function renderDashTask(key, label, endpoint, t) {
+      const disabled = !t.next_run && !t.running;
+      const resultClass = (t.last_result === 'ok') ? 'text-green' : (t.last_result ? 'text-red' : '');
+      return `
+        <div class="stat-card${disabled ? ' stat-card-disabled' : ''}" id="dash-task-${key}">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+            <div style="font-size:0.9rem;font-weight:600">${label}</div>
+            ${endpoint ? `<button class="btn btn-ghost btn-sm dash-run-btn" data-endpoint="${endpoint}" data-key="${key}" style="font-size:0.78rem;padding:0.15rem 0.5rem;white-space:nowrap">${ICON_PLAY} Run</button>` : ''}
+          </div>
+          <div class="text-dim mt-1" style="font-size:0.78rem" id="dash-task-status-${key}">
+            ${disabled ? 'Disabled' : t.running ? `${ICON_SPINNER} running` : t.last_run ? `Last: ${formatDate(t.last_run)}` : 'Never run'}
+          </div>
+          ${!disabled && t.last_result ? `<div class="${resultClass}" style="font-size:0.78rem;margin-top:0.2rem" id="dash-task-result-${key}">${escapeHtml(t.last_result)}</div>` : `<div id="dash-task-result-${key}"></div>`}
+        </div>
+      `;
+    }
+
+    function updateDashTasks(s) {
+      DASH_TASKS.forEach(({ key, label, endpoint }) => {
+        const t = s[key] || {};
+        const card = document.getElementById(`dash-task-${key}`);
+        if (!card) return;
+        const statusEl = document.getElementById(`dash-task-status-${key}`);
+        const resultEl = document.getElementById(`dash-task-result-${key}`);
+        const disabled = !t.next_run && !t.running;
+        if (statusEl) statusEl.innerHTML = disabled ? 'Disabled' : t.running ? `${ICON_SPINNER} running` : t.last_run ? `Last: ${formatDate(t.last_run)}` : 'Never run';
+        if (resultEl) {
+          const resultClass = (t.last_result === 'ok') ? 'text-green' : (t.last_result ? 'text-red' : '');
+          resultEl.className = resultClass;
+          resultEl.textContent = (!disabled && t.last_result) ? t.last_result : '';
+        }
+      });
+    }
+
+    const tasksEl = document.getElementById('dash-tasks');
+    if (tasksEl) {
+      tasksEl.innerHTML = DASH_TASKS.map(({ key, label, endpoint }) =>
+        renderDashTask(key, label, endpoint, syncStatus[key] || {})
+      ).join('');
+
+      tasksEl.querySelectorAll('.dash-run-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          const key = btn.dataset.key;
+          try {
+            await api(btn.dataset.endpoint, { method: 'POST' });
+            toast(`${DASH_TASKS.find(t => t.key === key)?.label} started`, 'info');
+            const poll = setInterval(async () => {
+              if (!document.getElementById(`dash-task-${key}`)) { clearInterval(poll); return; }
+              const s = await api('/sync/status');
+              updateDashTasks(s);
+              if (!s[key]?.running) clearInterval(poll);
+            }, 2000);
+          } catch (err) {
+            toast('Failed: ' + err.message, 'error');
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+    }
   } catch (err) {
     renderError(app, render);
   }

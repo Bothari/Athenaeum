@@ -18,6 +18,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _norm_title(s: str) -> str:
+    """Normalise a title for fuzzy comparison: lowercase, & → and."""
+    return re.sub(r'\s*&\s*', ' and ', s).lower().strip()
+
+
+def _title_score(local: str, hc: str) -> int:
+    """Score two titles, also comparing against the HC title stripped of subtitle."""
+    hc_short = hc.split(':')[0].strip() if ':' in hc else hc
+    return max(
+        fuzz.token_sort_ratio(_norm_title(local), _norm_title(hc)),
+        fuzz.token_sort_ratio(_norm_title(local), _norm_title(hc_short)),
+    )
+
+
+def _author_score(a: str, b: str) -> int:
+    """Compare two author name strings, robust to period/space differences in initials."""
+    def norm(s: str) -> str:
+        return re.sub(r'[\s.]', '', s).lower()
+    return max(
+        fuzz.token_sort_ratio(a.lower(), b.lower()),
+        fuzz.ratio(norm(a), norm(b)),
+    )
+
+
 def _split_authors(author_string: str) -> list[str]:
     """Split a combined author string into individual author names."""
     if not author_string:
@@ -39,6 +63,23 @@ def _split_authors(author_string: str) -> list[str]:
         else:
             result.append(part.title())
     return [r for r in result if r]
+
+
+async def _set_hc_author_id(db, author_id: str, hc_author_id: str) -> bool:
+    """Set hardcover_author_id on author_links, skipping if already claimed. Returns True if set."""
+    conflict = await (
+        await db.execute(
+            "SELECT author_id FROM author_links WHERE hardcover_author_id = ?", (hc_author_id,)
+        )
+    ).fetchone()
+    if conflict and conflict[0] != author_id:
+        logger.warning(f"HC author {hc_author_id} already linked to {conflict[0]}, skipping {author_id}")
+        return False
+    await db.execute(
+        "UPDATE author_links SET hardcover_author_id = ? WHERE author_id = ? AND (hardcover_author_id IS NULL OR hardcover_author_id = '')",
+        (hc_author_id, author_id),
+    )
+    return True
 
 
 async def _get_or_create_author(db, name: str, abs_author_id: str = "") -> str:
@@ -138,7 +179,7 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
                 json={
                     "query": """
                     query Search($q: String!) {
-                      search(query: $q, query_type: "Book", per_page: 5) {
+                      search(query: $q, query_type: "Book", per_page: 15) {
                         results
                       }
                     }
@@ -173,16 +214,23 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
         doc = hit.get("document", {})
         doc_title = doc.get("title", "") or ""
         contributors = doc.get("contributions") or doc.get("cached_contributors") or []
-        doc_author = ""
-        if contributors and isinstance(contributors[0], dict):
-            doc_author = (
-                contributors[0].get("author_name")
-                or (contributors[0].get("author") or {}).get("name", "")
-                or ""
-            )
+        doc_authors = [
+            c.get("author_name") or (c.get("author") or {}).get("name", "") or ""
+            for c in contributors if isinstance(c, dict)
+        ]
+        doc_authors = [n for n in doc_authors if n]
+        doc_author = doc_authors[0] if doc_authors else ""
 
-        t_score = fuzz.token_sort_ratio(title.lower(), doc_title.lower())
-        a_score = fuzz.token_sort_ratio(author.lower(), doc_author.lower()) if (author and doc_author) else 85
+        t_score = _title_score(title, doc_title)
+        local_author_names = [r["name"] for r in author_rows if r["name"]]
+        if local_author_names and doc_authors:
+            a_score = max(
+                _author_score(la, da)
+                for la in local_author_names
+                for da in doc_authors
+            )
+        else:
+            a_score = 85
 
         logger.debug(f"HC candidate '{doc_title}' by '{doc_author}': t={t_score} a={a_score}")
 
@@ -258,15 +306,12 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
             best_hc_author = None
             best_a_score = 0
             for hc in hc_contributors:
-                score = fuzz.token_sort_ratio(local_name.lower(), hc["name"].lower())
+                score = _author_score(local_name, hc["name"])
                 if score >= 85 and score > best_a_score:
                     best_hc_author = hc
                     best_a_score = score
             if best_hc_author:
-                await db.execute(
-                    "UPDATE author_links SET hardcover_author_id = ? WHERE author_id = ? AND (hardcover_author_id IS NULL OR hardcover_author_id = '')",
-                    (best_hc_author["id"], local_id),
-                )
+                await _set_hc_author_id(db, local_id, best_hc_author["id"])
         await db.commit()
 
     return True
@@ -356,7 +401,7 @@ async def _hc_catchup_authors(settings: dict, deadline: float) -> dict:
                 resp = await client.post(
                     "https://api.hardcover.app/v1/graphql",
                     json={
-                        "query": 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 5) { results } }',
+                        "query": 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 15) { results } }',
                         "variables": {"q": name},
                     },
                     headers={"Authorization": f"Bearer {api_key}"},
@@ -374,7 +419,7 @@ async def _hc_catchup_authors(settings: dict, deadline: float) -> dict:
         best, best_score = None, 0
         for hit in hits:
             doc = hit.get("document", {})
-            score = fuzz.token_sort_ratio(name.lower(), (doc.get("name") or "").lower())
+            score = _author_score(name, doc.get("name") or "")
             if score >= 85 and score > best_score:
                 best, best_score = doc, score
 
@@ -387,12 +432,9 @@ async def _hc_catchup_authors(settings: dict, deadline: float) -> dict:
             return False
 
         async with get_db() as db:
-            await db.execute(
-                "UPDATE author_links SET hardcover_author_id = ? WHERE author_id = ? AND (hardcover_author_id IS NULL OR hardcover_author_id = '')",
-                (hc_author_id, author_id),
-            )
+            linked = await _set_hc_author_id(db, author_id, hc_author_id)
             await db.commit()
-        return True
+        return linked
 
     return await _hc_rate_limited_loop(list(rows), link_author, deadline)
 
@@ -420,7 +462,7 @@ async def _hc_catchup_series(settings: dict, deadline: float) -> dict:
                 resp = await client.post(
                     "https://api.hardcover.app/v1/graphql",
                     json={
-                        "query": 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 5) { results } }',
+                        "query": 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 15) { results } }',
                         "variables": {"q": name},
                     },
                     headers={"Authorization": f"Bearer {api_key}"},
@@ -483,6 +525,376 @@ async def cache_refresh() -> dict:
         logger.error(f"cache_refresh failed: {e}", exc_info=True)
         await _upsert_task_state("cache_refresh", running=False, last_result=f"error: {e}")
         raise
+
+
+async def try_link_book(book_id: str, settings: dict) -> dict:
+    """Run HC book match verbosely. Persists if a match is found. Returns full log."""
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"result": "no_api_key"}
+
+    async with get_db() as db:
+        book_row = await (
+            await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+        ).fetchone()
+        if not book_row:
+            return {"result": "not_found"}
+        title = book_row[0]
+
+        author_rows = await (
+            await db.execute(
+                """SELECT a.id, a.name FROM authors a
+                   JOIN book_authors ba ON ba.author_id = a.id
+                   WHERE ba.book_id = ? ORDER BY ba.author_position""",
+                (book_id,),
+            )
+        ).fetchall()
+        author = author_rows[0]["name"] if author_rows else ""
+
+        book_series_rows = await (
+            await db.execute(
+                """SELECT bs.series_id, s.name FROM book_series bs
+                   JOIN series s ON s.id = bs.series_id
+                   WHERE bs.book_id = ?""",
+                (book_id,),
+            )
+        ).fetchall()
+
+        existing_link = await (
+            await db.execute(
+                "SELECT hardcover_id FROM book_links WHERE book_id = ?", (book_id,)
+            )
+        ).fetchone()
+
+    query = f"{title} {author}".strip()
+    log: dict = {
+        "query": query,
+        "title": title,
+        "author": author,
+        "already_linked": bool(existing_link and existing_link[0]),
+        "current_hardcover_id": existing_link[0] if existing_link else None,
+        "candidates": [],
+        "result": None,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={
+                    "query": 'query Search($q: String!) { search(query: $q, query_type: "Book", per_page: 15) { results } }',
+                    "variables": {"q": query},
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            hits = resp.json()["data"]["search"]["results"].get("hits", [])
+    except Exception as e:
+        log["result"] = "error"
+        log["error"] = str(e)
+        return log
+
+    if not hits:
+        log["result"] = "no_results"
+        return log
+
+    best = None
+    best_score = (0, 0)
+    for hit in hits:
+        doc = hit.get("document", {})
+        doc_title = doc.get("title", "") or ""
+        contributors = doc.get("contributions") or doc.get("cached_contributors") or []
+        doc_authors = [
+            c.get("author_name") or (c.get("author") or {}).get("name", "") or ""
+            for c in contributors if isinstance(c, dict)
+        ]
+        doc_authors = [n for n in doc_authors if n]
+        doc_author = doc_authors[0] if doc_authors else ""
+        t_score = _title_score(title, doc_title)
+        local_author_names = [r["name"] for r in author_rows if r["name"]]
+        if local_author_names and doc_authors:
+            a_score = max(
+                _author_score(la, da)
+                for la in local_author_names
+                for da in doc_authors
+            )
+        else:
+            a_score = 85
+        above = t_score >= 90 and a_score >= 85
+        candidate = {
+            "hc_id": str(doc.get("id", "")),
+            "title": doc_title,
+            "author": doc_author,
+            "slug": doc.get("slug", ""),
+            "t_score": t_score,
+            "a_score": a_score,
+            "above_threshold": above,
+            "is_best": False,
+            "series_names": doc.get("series_names") or [],
+            "featured_series": doc.get("featured_series"),
+        }
+        log["candidates"].append(candidate)
+        if above and (t_score, a_score) > best_score:
+            best = doc
+            best_score = (t_score, a_score)
+
+    if best:
+        for c in log["candidates"]:
+            if c["hc_id"] == str(best.get("id", "")):
+                c["is_best"] = True
+
+    if not best:
+        scores = [(c["t_score"], c["a_score"]) for c in log["candidates"]]
+        log["result"] = "no_match"
+        log["reason"] = f"Need t>=90 a>=85. Best: {max(scores, default=(0,0))}"
+        return log
+
+    hardcover_id = str(best.get("id", ""))
+    hardcover_slug = best.get("slug", "")
+
+    featured = best.get("featured_series") or {}
+    featured_series_name = ((featured.get("series") or {}).get("name") or "").strip()
+    featured_series_id = str((featured.get("series") or {}).get("id") or "")
+    series_names = best.get("series_names") or []
+
+    hc_contributors = []
+    for c in (best.get("contributions") or best.get("cached_contributors") or []):
+        if not isinstance(c, dict):
+            continue
+        hc_author_id = str(c.get("author_id") or (c.get("author") or {}).get("id", "") or "")
+        hc_author_name = (c.get("author_name") or (c.get("author") or {}).get("name", "") or "")
+        if hc_author_id and hc_author_name:
+            hc_contributors.append({"id": hc_author_id, "name": hc_author_name})
+
+    async with get_db() as db:
+        conflict = await (
+            await db.execute(
+                "SELECT book_id FROM book_links WHERE hardcover_id = ?", (hardcover_id,)
+            )
+        ).fetchone()
+        if conflict and conflict[0] != book_id:
+            log["result"] = "conflict"
+            log["conflict_book_id"] = conflict[0]
+            return log
+
+        await db.execute(
+            "UPDATE book_links SET hardcover_id = ?, hardcover_slug = ? WHERE book_id = ?",
+            (hardcover_id, hardcover_slug, book_id),
+        )
+        series_linked = []
+        for local_series_id, local_series_name in book_series_rows:
+            best_match_name = None
+            best_s_score = 0
+            for sname in series_names:
+                score = fuzz.token_sort_ratio(local_series_name.lower(), sname.lower())
+                if score >= 80 and score > best_s_score:
+                    best_match_name = sname
+                    best_s_score = score
+            if best_match_name and featured_series_id and featured_series_name:
+                if fuzz.token_sort_ratio(best_match_name.lower(), featured_series_name.lower()) >= 80:
+                    await db.execute(
+                        "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ? AND (hardcover_series_id IS NULL OR hardcover_series_id = '')",
+                        (featured_series_id, local_series_id),
+                    )
+                    series_linked.append({"local": local_series_name, "hc_id": featured_series_id})
+        author_linked = []
+        for local_author in author_rows:
+            best_hc_author = None
+            best_a_score = 0
+            for hc in hc_contributors:
+                score = _author_score(local_author["name"], hc["name"])
+                if score >= 85 and score > best_a_score:
+                    best_hc_author = hc
+                    best_a_score = score
+            if best_hc_author:
+                if await _set_hc_author_id(db, local_author["id"], best_hc_author["id"]):
+                    author_linked.append({"local": local_author["name"], "hc_id": best_hc_author["id"]})
+        await db.commit()
+
+    log["result"] = "linked"
+    log["hardcover_id"] = hardcover_id
+    log["hardcover_slug"] = hardcover_slug
+    log["series_linked"] = series_linked
+    log["authors_linked"] = author_linked
+    return log
+
+
+async def try_link_author(author_id: str, settings: dict) -> dict:
+    """Run HC author match verbosely. Persists if a match is found. Returns full log."""
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"result": "no_api_key"}
+
+    async with get_db() as db:
+        author_row = await (
+            await db.execute("SELECT name FROM authors WHERE id = ?", (author_id,))
+        ).fetchone()
+        if not author_row:
+            return {"result": "not_found"}
+        name = author_row[0]
+        existing_link = await (
+            await db.execute(
+                "SELECT hardcover_author_id FROM author_links WHERE author_id = ?", (author_id,)
+            )
+        ).fetchone()
+
+    log: dict = {
+        "query": name,
+        "already_linked": bool(existing_link and existing_link[0]),
+        "current_hardcover_author_id": existing_link[0] if existing_link else None,
+        "candidates": [],
+        "result": None,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={
+                    "query": 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 15) { results } }',
+                    "variables": {"q": name},
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            hits = resp.json()["data"]["search"]["results"].get("hits", [])
+    except Exception as e:
+        log["result"] = "error"
+        log["error"] = str(e)
+        return log
+
+    if not hits:
+        log["result"] = "no_results"
+        return log
+
+    best = None
+    best_score = 0
+    for hit in hits:
+        doc = hit.get("document", {})
+        doc_name = doc.get("name") or ""
+        score = _author_score(name, doc_name)
+        above = score >= 85
+        candidate = {
+            "hc_id": str(doc.get("id", "")),
+            "name": doc_name,
+            "score": score,
+            "above_threshold": above,
+            "is_best": False,
+        }
+        log["candidates"].append(candidate)
+        if above and score > best_score:
+            best = doc
+            best_score = score
+
+    if best:
+        for c in log["candidates"]:
+            if c["hc_id"] == str(best.get("id", "")):
+                c["is_best"] = True
+
+    if not best:
+        log["result"] = "no_match"
+        log["reason"] = f"Need score>=85. Best: {max((c['score'] for c in log['candidates']), default=0)}"
+        return log
+
+    hc_author_id = str(best.get("id", ""))
+    async with get_db() as db:
+        linked = await _set_hc_author_id(db, author_id, hc_author_id)
+        await db.commit()
+
+    log["result"] = "linked" if linked else "conflict"
+    log["hardcover_author_id"] = hc_author_id
+    return log
+
+
+async def try_link_series(series_id: str, settings: dict) -> dict:
+    """Run HC series match verbosely. Persists if a match is found. Returns full log."""
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"result": "no_api_key"}
+
+    async with get_db() as db:
+        series_row = await (
+            await db.execute("SELECT name FROM series WHERE id = ?", (series_id,))
+        ).fetchone()
+        if not series_row:
+            return {"result": "not_found"}
+        name = series_row[0]
+        existing_link = await (
+            await db.execute(
+                "SELECT hardcover_series_id FROM series_links WHERE series_id = ?", (series_id,)
+            )
+        ).fetchone()
+
+    log: dict = {
+        "query": name,
+        "already_linked": bool(existing_link and existing_link[0]),
+        "current_hardcover_series_id": existing_link[0] if existing_link else None,
+        "candidates": [],
+        "result": None,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={
+                    "query": 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 15) { results } }',
+                    "variables": {"q": name},
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            hits = resp.json()["data"]["search"]["results"].get("hits", [])
+    except Exception as e:
+        log["result"] = "error"
+        log["error"] = str(e)
+        return log
+
+    if not hits:
+        log["result"] = "no_results"
+        return log
+
+    best = None
+    best_score = 0
+    for hit in hits:
+        doc = hit.get("document", {})
+        doc_name = doc.get("name") or ""
+        score = _author_score(name, doc_name)
+        above = score >= 85
+        candidate = {
+            "hc_id": str(doc.get("id", "")),
+            "name": doc_name,
+            "slug": doc.get("slug", ""),
+            "score": score,
+            "above_threshold": above,
+            "is_best": False,
+        }
+        log["candidates"].append(candidate)
+        if above and score > best_score:
+            best = doc
+            best_score = score
+
+    if best:
+        for c in log["candidates"]:
+            if c["hc_id"] == str(best.get("id", "")):
+                c["is_best"] = True
+
+    if not best:
+        log["result"] = "no_match"
+        log["reason"] = f"Need score>=85. Best: {max((c['score'] for c in log['candidates']), default=0)}"
+        return log
+
+    hc_series_id = str(best.get("id", ""))
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ? AND (hardcover_series_id IS NULL OR hardcover_series_id = '')",
+            (hc_series_id, series_id),
+        )
+        await db.commit()
+
+    log["result"] = "linked"
+    log["hardcover_series_id"] = hc_series_id
+    return log
 
 
 async def sync_library() -> dict:

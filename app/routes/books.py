@@ -28,13 +28,13 @@ async def list_books(
     dir: str = Query(default="asc"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    unlinked: bool = Query(default=False),
 ):
     if sort not in VALID_BOOK_SORTS:
         sort = "title"
     if dir not in VALID_DIR:
         dir = "asc"
 
-    # Map "author" sort to the first author name via subquery
     if sort == "author":
         order_expr = "(SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id WHERE ba.book_id = b.id ORDER BY ba.author_position LIMIT 1)"
     elif sort == "title":
@@ -42,41 +42,35 @@ async def list_books(
     else:
         order_expr = f"b.{sort}"
 
+    joins = ""
+    conditions = []
+    bind: list = []
+
+    if unlinked:
+        joins = " JOIN book_links bl ON bl.book_id = b.id"
+        conditions.append("(bl.hardcover_id IS NULL OR bl.hardcover_id = '')")
+
+    if q:
+        like = f"%{q}%"
+        conditions.append(
+            "(b.title LIKE ? OR EXISTS ("
+            "SELECT 1 FROM authors a JOIN book_authors ba ON ba.author_id = a.id "
+            "WHERE ba.book_id = b.id AND a.name LIKE ?))"
+        )
+        bind.extend([like, like])
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
     async with get_db() as db:
-        if q:
-            like = f"%{q}%"
-            count_row = await (
-                await db.execute(
-                    """SELECT COUNT(*) FROM books b
-                       WHERE b.title LIKE ? OR EXISTS (
-                         SELECT 1 FROM authors a JOIN book_authors ba ON ba.author_id = a.id
-                         WHERE ba.book_id = b.id AND a.name LIKE ?
-                       )""",
-                    (like, like),
-                )
-            ).fetchone()
-            rows = await (
-                await db.execute(
-                    f"""SELECT b.* FROM books b
-                       WHERE b.title LIKE ? OR EXISTS (
-                         SELECT 1 FROM authors a JOIN book_authors ba ON ba.author_id = a.id
-                         WHERE ba.book_id = b.id AND a.name LIKE ?
-                       )
-                       ORDER BY {order_expr} {dir}
-                       LIMIT ? OFFSET ?""",
-                    (like, like, limit, offset),
-                )
-            ).fetchall()
-        else:
-            count_row = await (
-                await db.execute("SELECT COUNT(*) FROM books b")
-            ).fetchone()
-            rows = await (
-                await db.execute(
-                    f"SELECT b.* FROM books b ORDER BY {order_expr} {dir} LIMIT ? OFFSET ?",
-                    (limit, offset),
-                )
-            ).fetchall()
+        count_row = await (
+            await db.execute(f"SELECT COUNT(*) FROM books b{joins} {where}", bind)
+        ).fetchone()
+        rows = await (
+            await db.execute(
+                f"SELECT b.* FROM books b{joins} {where} ORDER BY {order_expr} {dir} LIMIT ? OFFSET ?",
+                bind + [limit, offset],
+            )
+        ).fetchall()
 
         items = []
         for row in rows:
@@ -117,6 +111,7 @@ async def list_authors(
     dir: str = Query(default="asc"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    unlinked: bool = Query(default=False),
 ):
     if sort not in {"name", "book_count"}:
         sort = "name"
@@ -126,41 +121,37 @@ async def list_authors(
     order_expr = "lower(a.name)" if sort == "name" else f"book_count {dir}, lower(a.name)"
     order_clause = f"{order_expr} {dir}" if sort == "name" else order_expr
 
+    joins = ""
+    conditions = []
+    bind: list = []
+
+    if unlinked:
+        joins = " JOIN author_links al ON al.author_id = a.id"
+        conditions.append("(al.hardcover_author_id IS NULL OR al.hardcover_author_id = '')")
+
+    if q:
+        like = f"%{q}%"
+        conditions.append("a.name LIKE ?")
+        bind.append(like)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
     async with get_db() as db:
-        if q:
-            like = f"%{q}%"
-            count_row = await (
-                await db.execute(
-                    "SELECT COUNT(*) FROM authors a WHERE a.name LIKE ?", (like,)
-                )
-            ).fetchone()
-            rows = await (
-                await db.execute(
-                    f"""SELECT a.*, COUNT(ba.book_id) as book_count
-                        FROM authors a
-                        LEFT JOIN book_authors ba ON ba.author_id = a.id
-                        WHERE a.name LIKE ?
-                        GROUP BY a.id
-                        ORDER BY {order_clause}
-                        LIMIT ? OFFSET ?""",
-                    (like, limit, offset),
-                )
-            ).fetchall()
-        else:
-            count_row = await (
-                await db.execute("SELECT COUNT(*) FROM authors a")
-            ).fetchone()
-            rows = await (
-                await db.execute(
-                    f"""SELECT a.*, COUNT(ba.book_id) as book_count
-                        FROM authors a
-                        LEFT JOIN book_authors ba ON ba.author_id = a.id
-                        GROUP BY a.id
-                        ORDER BY {order_clause}
-                        LIMIT ? OFFSET ?""",
-                    (limit, offset),
-                )
-            ).fetchall()
+        count_row = await (
+            await db.execute(f"SELECT COUNT(*) FROM authors a{joins} {where}", bind)
+        ).fetchone()
+        rows = await (
+            await db.execute(
+                f"""SELECT a.*, COUNT(ba.book_id) as book_count
+                    FROM authors a{joins}
+                    LEFT JOIN book_authors ba ON ba.author_id = a.id
+                    {where}
+                    GROUP BY a.id
+                    ORDER BY {order_clause}
+                    LIMIT ? OFFSET ?""",
+                bind + [limit, offset],
+            )
+        ).fetchall()
 
         items = []
         for row in rows:
@@ -220,6 +211,7 @@ async def list_series(
     dir: str = Query(default="asc"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    unlinked: bool = Query(default=False),
 ):
     if sort not in {"name", "book_count"}:
         sort = "name"
@@ -229,41 +221,37 @@ async def list_series(
     order_expr = "lower(s.name)" if sort == "name" else f"book_count {dir}, lower(s.name)"
     order_clause = f"{order_expr} {dir}" if sort == "name" else order_expr
 
+    joins = ""
+    conditions = []
+    bind: list = []
+
+    if unlinked:
+        joins = " JOIN series_links sl ON sl.series_id = s.id"
+        conditions.append("(sl.hardcover_series_id IS NULL OR sl.hardcover_series_id = '')")
+
+    if q:
+        like = f"%{q}%"
+        conditions.append("s.name LIKE ?")
+        bind.append(like)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
     async with get_db() as db:
-        if q:
-            like = f"%{q}%"
-            count_row = await (
-                await db.execute(
-                    "SELECT COUNT(*) FROM series s WHERE s.name LIKE ?", (like,)
-                )
-            ).fetchone()
-            rows = await (
-                await db.execute(
-                    f"""SELECT s.*, COUNT(bs.book_id) as book_count
-                        FROM series s
-                        LEFT JOIN book_series bs ON bs.series_id = s.id
-                        WHERE s.name LIKE ?
-                        GROUP BY s.id
-                        ORDER BY {order_clause}
-                        LIMIT ? OFFSET ?""",
-                    (like, limit, offset),
-                )
-            ).fetchall()
-        else:
-            count_row = await (
-                await db.execute("SELECT COUNT(*) FROM series s")
-            ).fetchone()
-            rows = await (
-                await db.execute(
-                    f"""SELECT s.*, COUNT(bs.book_id) as book_count
-                        FROM series s
-                        LEFT JOIN book_series bs ON bs.series_id = s.id
-                        GROUP BY s.id
-                        ORDER BY {order_clause}
-                        LIMIT ? OFFSET ?""",
-                    (limit, offset),
-                )
-            ).fetchall()
+        count_row = await (
+            await db.execute(f"SELECT COUNT(*) FROM series s{joins} {where}", bind)
+        ).fetchone()
+        rows = await (
+            await db.execute(
+                f"""SELECT s.*, COUNT(bs.book_id) as book_count
+                    FROM series s{joins}
+                    LEFT JOIN book_series bs ON bs.series_id = s.id
+                    {where}
+                    GROUP BY s.id
+                    ORDER BY {order_clause}
+                    LIMIT ? OFFSET ?""",
+                bind + [limit, offset],
+            )
+        ).fetchall()
 
         items = []
         for row in rows:

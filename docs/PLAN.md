@@ -1228,6 +1228,28 @@ After the book pass completes, two additional passes handle authors/series that 
 
 These catch-up passes are defensive. In normal operation (after a full book link pass) there should be few or zero items to process.
 
+#### HC matching rules (empirically tuned)
+
+**Title scoring — `_title_score(local, hc)`:**
+- Normalise both sides: `&` → `and`, lowercase
+- Strip HC subtitle (everything after first `:`) and score against that too
+- Take `max(full_score, stripped_score)` using `token_sort_ratio`
+- Accept if `t_score >= 90`
+- Rationale: HC often appends `: A Novel` / `: Book N of …` etc. Stripping prevents false negatives. `&` vs `and` is common (e.g. "Angels & Demons" on HC vs "Angels and Demons" locally).
+
+**Author scoring — `_author_score(a, b)`:**
+- Take `max(token_sort_ratio(a, b), ratio(norm(a), norm(b)))` where `norm` strips all spaces and periods
+- This handles initials: "V. E. Schwab" ↔ "V.E. Schwab" both normalise to "veschwab"
+- For multi-author books, score is `max` across all local authors × all HC contributors
+- Accept if `a_score >= 85`
+- Rationale: `token_sort_ratio` alone fails on initials because "V." and "E." are separate tokens vs "V.E." as one token.
+
+**Search depth:** `per_page: 15` — HC Typesense sometimes ranks the correct book 6th–10th (e.g. popular titles with many editions). Confirmed `_ilike` WHERE queries are blocked server-side; Typesense search is the only HC search path.
+
+**Conflict handling:**
+- Books: if HC book ID already claimed by another local book, log warning and skip (two ABS items for same book, e.g. audiobook + ebook as separate entries)
+- Authors: `_set_hc_author_id()` checks before UPDATE — same author entered with slightly different name (e.g. "James S. A. Corey" vs "James S.A. Corey") both match same HC author; first wins, second is skipped and logged
+
 **Future: missing books detection** (cache_refresh Phase 4+):
 For series with a `hardcover_series_id`, call `series_by_pk` to get all positions. Compare against `book_series` positions we own. Surface gaps as missing books. Cache result in `metadata_cache` with 14-day TTL.
 
