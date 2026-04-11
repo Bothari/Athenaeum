@@ -330,7 +330,7 @@ function renderTable(config) {
 
 // ── Shared: renderTryLinkLog ───────────────────────────────────────────────────
 
-function renderTryLinkLog(log, type) {
+function renderTryLinkLog(log, type, showScores = false) {
   const hcBaseUrl = { book: 'https://hardcover.app/books', author: 'https://hardcover.app/authors', series: 'https://hardcover.app/series' }[type] || 'https://hardcover.app';
   const resultColors = { match: 'var(--color-success)', linked: 'var(--color-success)', no_match: 'var(--color-error)', no_results: 'var(--color-error)', conflict: 'var(--color-warning)', error: 'var(--color-error)', no_api_key: 'var(--color-error)', not_found: 'var(--color-error)' };
   const color = resultColors[log.result] || 'var(--color-text-dim)';
@@ -353,9 +353,11 @@ function renderTryLinkLog(log, type) {
       const rowBg = c.is_best ? 'background:var(--color-surface-raised)' : '';
       const openUrl = c.slug ? `${hcBaseUrl}/${encodeURIComponent(c.slug)}` : '';
       const label = isBook ? escapeHtml(c.title) : escapeHtml(c.name);
+      const scoreText = c.score != null ? c.score : (c.t_score != null ? `t:${c.t_score} a:${c.a_score}` : '');
+      const scoreBadge = showScores && scoreText !== '' ? `<span style="font-size:0.75rem;color:var(--color-text-dim);margin-left:0.375rem">${scoreText}</span>` : '';
       const sub = isBook && c.author ? `<div style="font-size:0.8rem;color:var(--color-text-dim);margin-top:1px">${escapeHtml(c.author)}</div>` : '';
       html += `<tr style="${rowBg}">
-        <td>${label}${sub}</td>
+        <td>${label}${scoreBadge}${sub}</td>
         <td style="width:1%;white-space:nowrap">
           <div style="display:flex;gap:0.5rem;align-items:center;justify-content:flex-end">
             <button class="btn btn-primary btn-sm try-link-use-btn" data-hc-id="${escapeHtml(c.hc_id)}" data-hc-slug="${escapeHtml(c.slug || '')}">Link</button>
@@ -429,8 +431,12 @@ function setupHcCard(containerEl, type, entityId, initialHcId, initialSlug) {
       this.disabled = true;
       this.textContent = 'Searching...';
       try {
-        const log = await api(tryLinkEndpoint, { method: 'POST' });
-        resultEl.innerHTML = renderTryLinkLog(log, type);
+        const [log, settings] = await Promise.all([
+          api(tryLinkEndpoint, { method: 'POST' }),
+          api('/settings').catch(() => ({})),
+        ]);
+        const showScores = !!((settings.general || {}).debug_view);
+        resultEl.innerHTML = renderTryLinkLog(log, type, showScores);
       } catch (e) {
         resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">${escapeHtml(String(e))}</p>`;
       }
