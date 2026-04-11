@@ -384,11 +384,18 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
 async def _upsert_task_state(task: str, running: bool, last_result: str = None):
     async with get_db() as db:
         if running:
-            await db.execute(
-                """INSERT INTO task_state (task, running) VALUES (?, 1)
-                   ON CONFLICT(task) DO UPDATE SET running = 1""",
-                (task,),
-            )
+            if last_result is not None:
+                await db.execute(
+                    """INSERT INTO task_state (task, running, last_result) VALUES (?, 1, ?)
+                       ON CONFLICT(task) DO UPDATE SET running = 1, last_result = ?""",
+                    (task, last_result, last_result),
+                )
+            else:
+                await db.execute(
+                    """INSERT INTO task_state (task, running) VALUES (?, 1)
+                       ON CONFLICT(task) DO UPDATE SET running = 1""",
+                    (task,),
+                )
         else:
             now = _now()
             await db.execute(
@@ -399,14 +406,23 @@ async def _upsert_task_state(task: str, running: bool, last_result: str = None):
         await db.commit()
 
 
-async def _hc_rate_limited_loop(items: list, fn, deadline: float) -> dict:
-    """Run fn(item) for each item, rate-limited to ~60 req/min with exponential backoff on 429."""
+async def _hc_rate_limited_loop(
+    items: list, fn, deadline: float, on_progress=None, progress_interval: float = 4.0
+) -> dict:
+    """Run fn(item) for each item, retrying 429s up to MAX_RETRIES times.
+
+    on_progress(linked, failed, remaining) is called roughly every progress_interval seconds.
+    """
+    MAX_RETRIES = 5
     counters = {"linked": 0, "failed": 0, "skipped": 0}
+    queue = [[item, 0] for item in items]  # [item, retry_count]
     backoff = 0.0
-    for i, item in enumerate(items):
+    last_progress = time.monotonic() - progress_interval  # fire immediately on first item
+    while queue:
         if time.monotonic() >= deadline:
-            counters["skipped"] = len(items) - i
+            counters["skipped"] += len(queue)
             break
+        item, retries = queue.pop(0)
         await asyncio.sleep(backoff if backoff else 1.0)
         try:
             if await fn(item):
@@ -417,15 +433,28 @@ async def _hc_rate_limited_loop(items: list, fn, deadline: float) -> dict:
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 backoff = min((backoff or 2.0) * 2, 60.0)
-                logger.warning(f"HC rate limited, backing off {backoff:.0f}s")
+                if retries < MAX_RETRIES:
+                    queue.append([item, retries + 1])
+                    logger.warning(f"HC rate limited, backing off {backoff:.0f}s (retry {retries+1}/{MAX_RETRIES})")
+                else:
+                    logger.warning(f"HC rate limited, max retries exceeded for item")
+                    counters["failed"] += 1
             else:
                 logger.warning(f"HC HTTP error: {e}")
                 backoff = 0.0
-            counters["failed"] += 1
+                counters["failed"] += 1
+
+        now = time.monotonic()
+        if on_progress and (now - last_progress) >= progress_interval:
+            await on_progress(counters["linked"], counters["failed"], len(queue))
+            last_progress = now
+
+    if on_progress:
+        await on_progress(counters["linked"], counters["failed"], 0)
     return counters
 
 
-async def _hc_link_books(settings: dict, deadline: float) -> dict:
+async def _hc_link_books(settings: dict, deadline: float, on_progress=None) -> dict:
     """Link books with no hardcover_id. Primary path — also sets author/series HC IDs from result."""
     api_key = settings.get("hardcover", {}).get("api_key", "")
     if not api_key:
@@ -438,11 +467,11 @@ async def _hc_link_books(settings: dict, deadline: float) -> dict:
         ).fetchall()
     book_ids = [r[0] for r in rows]
     return await _hc_rate_limited_loop(
-        book_ids, lambda bid: _link_to_hardcover(bid, settings), deadline
+        book_ids, lambda bid: _link_to_hardcover(bid, settings), deadline, on_progress=on_progress
     )
 
 
-async def _hc_catchup_authors(settings: dict, deadline: float) -> dict:
+async def _hc_catchup_authors(settings: dict, deadline: float, on_progress=None) -> dict:
     """Catch-up pass: link authors with no hardcover_author_id via HC author search."""
     api_key = settings.get("hardcover", {}).get("api_key", "")
     if not api_key:
@@ -521,10 +550,10 @@ async def _hc_catchup_authors(settings: dict, deadline: float) -> dict:
             await db.commit()
         return linked
 
-    return await _hc_rate_limited_loop(list(rows), link_author, deadline)
+    return await _hc_rate_limited_loop(list(rows), link_author, deadline, on_progress=on_progress)
 
 
-async def _hc_catchup_series(settings: dict, deadline: float) -> dict:
+async def _hc_catchup_series(settings: dict, deadline: float, on_progress=None) -> dict:
     """Catch-up pass: link series with no hardcover_series_id via HC series search."""
     api_key = settings.get("hardcover", {}).get("api_key", "")
     if not api_key:
@@ -609,18 +638,37 @@ async def _hc_catchup_series(settings: dict, deadline: float) -> dict:
             await db.commit()
         return True
 
-    return await _hc_rate_limited_loop(list(rows), link_series, deadline)
+    return await _hc_rate_limited_loop(list(rows), link_series, deadline, on_progress=on_progress)
 
 
 async def cache_refresh() -> dict:
     """HC linking: books (primary), then author/series catch-up. Rate-limited, 1hr time slice."""
     settings = await get_settings()
     deadline = time.monotonic() + 3600
-    await _upsert_task_state("cache_refresh", running=True)
+
+    # Snapshot of completed phases, built up as we go
+    done: dict[str, dict] = {}
+
+    def _fmt_progress(phase: str, linked: int, failed: int, remaining: int) -> str:
+        parts = [f"{p}: {r['linked']} linked, {r['failed']} failed" for p, r in done.items()]
+        parts.append(f"{phase}: {linked} linked, {failed} failed, {remaining} remaining")
+        return " | ".join(parts)
+
+    async def make_progress(phase: str):
+        async def _cb(linked: int, failed: int, remaining: int):
+            await _upsert_task_state(
+                "cache_refresh", running=True,
+                last_result=_fmt_progress(phase, linked, failed, remaining),
+            )
+        return _cb
+
+    await _upsert_task_state("cache_refresh", running=True, last_result="starting...")
     try:
-        b = await _hc_link_books(settings, deadline)
-        a = await _hc_catchup_authors(settings, deadline)
-        s = await _hc_catchup_series(settings, deadline)
+        b = await _hc_link_books(settings, deadline, on_progress=await make_progress("books"))
+        done["books"] = b
+        a = await _hc_catchup_authors(settings, deadline, on_progress=await make_progress("authors"))
+        done["authors"] = a
+        s = await _hc_catchup_series(settings, deadline, on_progress=await make_progress("series"))
         result = (
             f"books {b['linked']}/{b['linked']+b['failed']} linked"
             + (f" ({b['skipped']} skipped)" if b['skipped'] else "")

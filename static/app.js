@@ -1855,7 +1855,7 @@ route('/dashboard', async () => {
           <div class="text-dim mt-1" style="font-size:0.78rem" id="dash-task-status-${key}">
             ${disabled ? 'Disabled' : t.running ? `${ICON_SPINNER} running` : t.last_run ? `Last: ${formatDate(t.last_run)}` : 'Never run'}
           </div>
-          ${!disabled && t.last_result ? `<div class="${resultClass}" style="font-size:0.78rem;margin-top:0.2rem" id="dash-task-result-${key}">${escapeHtml(t.last_result)}</div>` : `<div id="dash-task-result-${key}"></div>`}
+          ${!disabled && (t.last_result || t.running) ? `<div class="${t.running ? 'text-dim' : resultClass}" style="font-size:0.78rem;margin-top:0.2rem" id="dash-task-result-${key}">${escapeHtml(t.last_result || '')}</div>` : `<div id="dash-task-result-${key}"></div>`}
         </div>
       `;
     }
@@ -1871,7 +1871,9 @@ route('/dashboard', async () => {
         if (statusEl) statusEl.innerHTML = disabled ? 'Disabled' : t.running ? `${ICON_SPINNER} running` : t.last_run ? `Last: ${formatDate(t.last_run)}` : 'Never run';
         if (resultEl) {
           const resultClass = (t.last_result === 'ok') ? 'text-green' : (t.last_result ? 'text-red' : '');
-          resultEl.className = resultClass;
+          resultEl.className = t.running ? 'text-dim' : resultClass;
+          resultEl.style.fontSize = '0.78rem';
+          resultEl.style.marginTop = '0.2rem';
           resultEl.textContent = (!disabled && t.last_result) ? t.last_result : '';
         }
       });
