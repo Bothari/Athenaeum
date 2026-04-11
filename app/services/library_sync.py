@@ -19,16 +19,26 @@ def _now() -> str:
 
 
 def _norm_title(s: str) -> str:
-    """Normalise a title for fuzzy comparison: lowercase, & → and."""
-    return re.sub(r'\s*&\s*', ' and ', s).lower().strip()
+    """Normalise a title for fuzzy comparison."""
+    s = re.sub(r'[\u200b-\u200f\u00ad\ufeff]', '', s)  # strip zero-width / soft-hyphen / BOM chars
+    s = re.sub(r'\s*\([^)]*\)', '', s)    # strip parentheticals e.g. "(Third Edition)"
+    s = re.sub(r'\s*&\s*', ' and ', s)    # & → and
+    s = re.sub(r'[-]', ' ', s)             # hyphens → spaces
+    s = re.sub(r'\s+', ' ', s).lower().strip()
+    s = re.sub(r'^(the|a|an)\s+', '', s)  # strip leading article
+    s = re.sub(r'\s+(a novel|a memoir|a thriller|a story|a tale)$', '', s)  # strip trailing marketing suffix
+    return s
 
 
 def _title_score(local: str, hc: str) -> int:
-    """Score two titles, also comparing against the HC title stripped of subtitle."""
+    """Score two titles across all combinations of full/subtitle-stripped forms."""
+    local_short = local.split(':')[0].strip() if ':' in local else local
     hc_short = hc.split(':')[0].strip() if ':' in hc else hc
     return max(
-        fuzz.token_sort_ratio(_norm_title(local), _norm_title(hc)),
-        fuzz.token_sort_ratio(_norm_title(local), _norm_title(hc_short)),
+        fuzz.token_sort_ratio(_norm_title(local),       _norm_title(hc)),
+        fuzz.token_sort_ratio(_norm_title(local_short), _norm_title(hc_short)),
+        fuzz.token_sort_ratio(_norm_title(local),       _norm_title(hc_short)),
+        fuzz.token_sort_ratio(_norm_title(local_short), _norm_title(hc)),
     )
 
 
@@ -39,6 +49,7 @@ def _author_score(a: str, b: str) -> int:
     return max(
         fuzz.token_sort_ratio(a.lower(), b.lower()),
         fuzz.ratio(norm(a), norm(b)),
+        fuzz.token_set_ratio(a.lower(), b.lower()),
     )
 
 
@@ -134,6 +145,48 @@ async def _get_or_create_series(db, name: str, abs_series_id: str = "") -> str:
     return series_id
 
 
+async def _hc_book_search(query: str, api_key: str, pages: int = 3) -> list:
+    """Fetch up to `pages` pages of HC book search results concurrently.
+
+    HC caps per_page at 25, so we fan out across pages and merge.
+    Returns hits sorted by users_count descending.
+    """
+    gql = 'query Search($q: String!, $page: Int!) { search(query: $q, query_type: "Book", per_page: 25, page: $page) { results } }'
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    async def fetch_page(client: httpx.AsyncClient, page: int) -> list:
+        resp = await client.post(
+            "https://api.hardcover.app/v1/graphql",
+            json={"query": gql, "variables": {"q": query, "page": page}},
+            headers=headers,
+        )
+        if resp.status_code == 429:
+            resp.raise_for_status()
+        resp.raise_for_status()
+        return resp.json()["data"]["search"]["results"].get("hits", [])
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        results = await asyncio.gather(
+            *[fetch_page(client, p) for p in range(1, pages + 1)],
+            return_exceptions=True,
+        )
+
+    hits = []
+    for r in results:
+        if isinstance(r, list):
+            hits.extend(r)
+
+    seen = set()
+    deduped = []
+    for h in hits:
+        doc_id = h.get("document", {}).get("id")
+        if doc_id and doc_id not in seen:
+            seen.add(doc_id)
+            deduped.append(h)
+
+    return sorted(deduped, key=lambda h: h.get("document", {}).get("users_count") or 0, reverse=True)
+
+
 async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
     """Attempt to link a book to Hardcover. Returns True if a match was found."""
     api_key = settings.get("hardcover", {}).get("api_key", "")
@@ -173,35 +226,11 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
         return False
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={
-                    "query": """
-                    query Search($q: String!) {
-                      search(query: $q, query_type: "Book", per_page: 15) {
-                        results
-                      }
-                    }
-                    """,
-                    "variables": {"q": query},
-                },
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            if resp.status_code == 429:
-                resp.raise_for_status()  # let caller handle rate limiting
-            resp.raise_for_status()
-            data = resp.json()
+        hits = await _hc_book_search(query, api_key)
     except httpx.HTTPStatusError:
         raise
     except Exception as e:
         logger.warning(f"HC link search failed for book {book_id}: {e}")
-        return False
-
-    try:
-        hits = data["data"]["search"]["results"].get("hits", [])
-    except Exception:
-        logger.warning(f"HC unexpected response structure for '{title}': {str(data)[:200]}")
         return False
 
     if not hits:
@@ -477,10 +506,12 @@ async def _hc_catchup_series(settings: dict, deadline: float) -> dict:
             logger.warning(f"HC series search failed for '{name}': {e}")
             return False
 
+        hits = sorted(hits, key=lambda h: h.get("document", {}).get("books_count") or 0, reverse=True)
+
         best, best_score = None, 0
         for hit in hits:
             doc = hit.get("document", {})
-            score = fuzz.token_sort_ratio(name.lower(), (doc.get("name") or "").lower())
+            score = fuzz.token_sort_ratio(_norm_title(name), _norm_title(doc.get("name") or ""))
             if score >= 85 and score > best_score:
                 best, best_score = doc, score
 
@@ -578,17 +609,7 @@ async def try_link_book(book_id: str, settings: dict) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={
-                    "query": 'query Search($q: String!) { search(query: $q, query_type: "Book", per_page: 15) { results } }',
-                    "variables": {"q": query},
-                },
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            hits = resp.json()["data"]["search"]["results"].get("hits", [])
+        hits = await _hc_book_search(query, api_key)
     except Exception as e:
         log["result"] = "error"
         log["error"] = str(e)
@@ -854,12 +875,14 @@ async def try_link_series(series_id: str, settings: dict) -> dict:
         log["result"] = "no_results"
         return log
 
+    hits = sorted(hits, key=lambda h: h.get("document", {}).get("books_count") or 0, reverse=True)
+
     best = None
     best_score = 0
     for hit in hits:
         doc = hit.get("document", {})
         doc_name = doc.get("name") or ""
-        score = _author_score(name, doc_name)
+        score = fuzz.token_sort_ratio(_norm_title(name), _norm_title(doc_name))
         above = score >= 85
         candidate = {
             "hc_id": str(doc.get("id", "")),

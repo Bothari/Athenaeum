@@ -54,6 +54,8 @@ const ICON_CHEVRON_UP = `<svg width="16" height="16" viewBox="0 0 24 24" fill="n
 
 const ICON_STAR = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
 
+const ICON_HC = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 7v10M16 7v10M8 12h8"/></svg>`;
+
 function typeIcon(type) {
   return type === 'audiobook' ? ICON_AUDIOBOOK : ICON_EBOOK;
 }
@@ -323,39 +325,58 @@ function renderTable(config) {
 // ── Shared: renderTryLinkLog ───────────────────────────────────────────────────
 
 function renderTryLinkLog(log, type) {
+  const hcBaseUrl = { book: 'https://hardcover.app/books', author: 'https://hardcover.app/authors', series: 'https://hardcover.app/series' }[type] || 'https://hardcover.app';
   const resultColors = { linked: 'var(--color-success)', no_match: 'var(--color-error)', no_results: 'var(--color-error)', conflict: 'var(--color-warning)', error: 'var(--color-error)', no_api_key: 'var(--color-error)', not_found: 'var(--color-error)' };
   const color = resultColors[log.result] || 'var(--color-text-dim)';
-  let html = `<div style="font-size:0.8rem;font-family:monospace;background:var(--color-surface);border:1px solid var(--color-border);border-radius:6px;padding:0.75rem;overflow-x:auto">`;
-  html += `<div style="margin-bottom:0.5rem"><span class="td-dim">result: </span><strong style="color:${color}">${escapeHtml(log.result || '—')}</strong>`;
+  let html = `<div style="font-size:0.8rem;background:var(--color-surface);border:1px solid var(--color-border);border-radius:6px;padding:0.75rem;overflow-x:auto">`;
+  html += `<div style="margin-bottom:0.5rem;font-family:monospace"><span class="td-dim">result: </span><strong style="color:${color}">${escapeHtml(log.result || '—')}</strong>`;
   if (log.reason) html += ` <span class="td-dim">${escapeHtml(log.reason)}</span>`;
   if (log.error) html += ` <span style="color:var(--color-error)">${escapeHtml(log.error)}</span>`;
   html += `</div>`;
-  if (log.query) html += `<div style="margin-bottom:0.5rem"><span class="td-dim">query: </span>${escapeHtml(log.query)}</div>`;
+  if (log.query) html += `<div style="margin-bottom:0.5rem;font-family:monospace"><span class="td-dim">query: </span>${escapeHtml(log.query)}</div>`;
 
   if (type === 'book' && log.candidates && log.candidates.length) {
-    html += `<table style="width:100%;border-collapse:collapse;margin-top:0.25rem"><thead><tr style="color:var(--color-text-dim)"><th style="text-align:left;padding:2px 6px">title</th><th style="text-align:left;padding:2px 6px">author</th><th style="padding:2px 6px">t</th><th style="padding:2px 6px">a</th><th style="padding:2px 6px">hc_id</th></tr></thead><tbody>`;
+    html += `<table style="width:100%;border-collapse:collapse;margin-top:0.25rem"><thead><tr style="color:var(--color-text-dim)">
+      <th style="text-align:left;padding:2px 6px">title</th>
+      <th style="text-align:left;padding:2px 6px">author</th>
+      <th style="padding:2px 6px">t</th>
+      <th style="padding:2px 6px">a</th>
+      <th style="padding:2px 6px"></th>
+    </tr></thead><tbody>`;
     for (const c of log.candidates) {
       const rowStyle = c.is_best ? 'background:var(--color-surface-raised)' : '';
       const tColor = c.t_score >= 90 ? 'var(--color-success)' : 'var(--color-error)';
       const aColor = c.a_score >= 85 ? 'var(--color-success)' : 'var(--color-error)';
+      const openUrl = c.slug ? `${hcBaseUrl}/${encodeURIComponent(c.slug)}` : '';
       html += `<tr style="${rowStyle}">
         <td style="padding:2px 6px">${c.is_best ? '<strong>' : ''}${escapeHtml(c.title)}${c.is_best ? '</strong>' : ''}</td>
         <td style="padding:2px 6px;color:var(--color-text-dim)">${escapeHtml(c.author)}</td>
         <td style="padding:2px 6px;color:${tColor};text-align:center">${c.t_score}</td>
         <td style="padding:2px 6px;color:${aColor};text-align:center">${c.a_score}</td>
-        <td style="padding:2px 6px;color:var(--color-text-dim)">${escapeHtml(c.hc_id)}</td>
+        <td style="padding:2px 6px;white-space:nowrap">
+          <button class="btn btn-primary btn-sm try-link-use-btn" data-hc-id="${escapeHtml(c.hc_id)}" style="padding:1px 6px;font-size:0.75rem">Link</button>
+          ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" class="btn btn-secondary btn-sm" style="padding:1px 6px;margin-left:2px" title="Open on Hardcover">${ICON_HC}</a>` : ''}
+        </td>
       </tr>`;
     }
     html += `</tbody></table>`;
   } else if ((type === 'author' || type === 'series') && log.candidates && log.candidates.length) {
-    html += `<table style="width:100%;border-collapse:collapse;margin-top:0.25rem"><thead><tr style="color:var(--color-text-dim)"><th style="text-align:left;padding:2px 6px">name</th><th style="padding:2px 6px">score</th><th style="padding:2px 6px">hc_id</th></tr></thead><tbody>`;
+    html += `<table style="width:100%;border-collapse:collapse;margin-top:0.25rem"><thead><tr style="color:var(--color-text-dim)">
+      <th style="text-align:left;padding:2px 6px">name</th>
+      <th style="padding:2px 6px">score</th>
+      <th style="padding:2px 6px"></th>
+    </tr></thead><tbody>`;
     for (const c of log.candidates) {
       const rowStyle = c.is_best ? 'background:var(--color-surface-raised)' : '';
       const scoreColor = c.score >= 85 ? 'var(--color-success)' : 'var(--color-error)';
+      const openUrl = c.slug ? `${hcBaseUrl}/${encodeURIComponent(c.slug)}` : '';
       html += `<tr style="${rowStyle}">
         <td style="padding:2px 6px">${c.is_best ? '<strong>' : ''}${escapeHtml(c.name)}${c.is_best ? '</strong>' : ''}</td>
         <td style="padding:2px 6px;color:${scoreColor};text-align:center">${c.score}</td>
-        <td style="padding:2px 6px;color:var(--color-text-dim)">${escapeHtml(c.hc_id)}</td>
+        <td style="padding:2px 6px;white-space:nowrap">
+          <button class="btn btn-primary btn-sm try-link-use-btn" data-hc-id="${escapeHtml(c.hc_id)}" style="padding:1px 6px;font-size:0.75rem">Link</button>
+          ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" class="btn btn-secondary btn-sm" style="padding:1px 6px;margin-left:2px" title="Open on Hardcover">${ICON_HC}</a>` : ''}
+        </td>
       </tr>`;
     }
     html += `</tbody></table>`;
@@ -1032,30 +1053,81 @@ route('/library/authors/:id', async ({ id }) => {
       const hcAuthorId = authorEntry.hardcover_author_id;
       const authorHcSection = document.getElementById('author-hc-section');
       if (authorHcSection) {
-        authorHcSection.innerHTML = `
-          <div class="section-heading">Hardcover</div>
-          <div class="card">
-            ${hcAuthorId
-              ? `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Linked to HC #${escapeHtml(String(hcAuthorId))}</p>`
-              : `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Not linked to Hardcover.</p>`
-            }
-            <button class="btn btn-secondary btn-sm" id="author-try-link-btn">${hcAuthorId ? 'Re-run match' : 'Try HC match'}</button>
-            <div id="author-try-link-result" class="mt-2"></div>
-          </div>
-        `;
-        document.getElementById('author-try-link-btn').onclick = async function() {
-          this.disabled = true;
-          this.textContent = 'Matching...';
+        const renderAuthorHcSection = (currentHcId) => {
+          authorHcSection.innerHTML = `
+            <div class="section-heading">Hardcover</div>
+            <div class="card">
+              <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem;flex-wrap:wrap">
+                ${currentHcId
+                  ? `<span class="text-dim" style="font-size:0.875rem">Linked to HC #${escapeHtml(String(currentHcId))}</span>
+                     <button class="btn btn-secondary btn-sm" id="author-unlink-btn" style="padding:2px 8px;font-size:0.8rem">Unlink</button>`
+                  : `<span class="text-dim" style="font-size:0.875rem">Not linked to Hardcover.</span>`
+                }
+              </div>
+              <div style="margin-bottom:0.75rem">
+                <button class="btn btn-secondary btn-sm" id="author-try-link-btn">${currentHcId ? 'Re-run match' : 'Try HC match'}</button>
+              </div>
+              <div id="author-try-link-result"></div>
+              <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem">
+                <input type="text" class="form-input" id="author-hc-id-input" placeholder="Paste HC ID to set manually" style="flex:1;min-width:0">
+                <button class="btn btn-secondary btn-sm" id="author-set-link-btn">Set</button>
+              </div>
+            </div>
+          `;
           const resultEl = document.getElementById('author-try-link-result');
-          try {
-            const log = await api(`/sync/try-link/author/${id}`, { method: 'POST' });
-            resultEl.innerHTML = renderTryLinkLog(log, 'author');
-          } catch (e) {
-            resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">${escapeHtml(String(e))}</p>`;
-          }
-          this.disabled = false;
-          this.textContent = 'Re-run match';
+          document.getElementById('author-try-link-btn').onclick = async function() {
+            this.disabled = true;
+            this.textContent = 'Matching...';
+            try {
+              const log = await api(`/sync/try-link/author/${id}`, { method: 'POST' });
+              resultEl.innerHTML = renderTryLinkLog(log, 'author');
+            } catch (e) {
+              resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">${escapeHtml(String(e))}</p>`;
+            }
+            this.disabled = false;
+            this.textContent = 'Re-run match';
+          };
+          resultEl.addEventListener('click', async e => {
+            const btn = e.target.closest('.try-link-use-btn');
+            if (!btn) return;
+            btn.disabled = true;
+            try {
+              const hcId = btn.dataset.hcId;
+              await api(`/sync/link/author/${id}`, { method: 'PUT', body: { hardcover_id: hcId } });
+              renderAuthorHcSection(hcId);
+              toast('Linked', 'success');
+            } catch (e) {
+              toast('Failed: ' + e, 'error');
+              btn.disabled = false;
+            }
+          });
+          const unlinkBtn = document.getElementById('author-unlink-btn');
+          if (unlinkBtn) unlinkBtn.onclick = async function() {
+            this.disabled = true;
+            try {
+              await api(`/sync/link/author/${id}`, { method: 'PUT', body: { hardcover_id: '' } });
+              renderAuthorHcSection(null);
+              toast('Unlinked', 'success');
+            } catch (e) {
+              toast('Unlink failed: ' + e, 'error');
+              this.disabled = false;
+            }
+          };
+          document.getElementById('author-set-link-btn').onclick = async function() {
+            const hcId = document.getElementById('author-hc-id-input').value.trim();
+            if (!hcId) return;
+            this.disabled = true;
+            try {
+              await api(`/sync/link/author/${id}`, { method: 'PUT', body: { hardcover_id: hcId } });
+              renderAuthorHcSection(hcId);
+              toast('Link updated', 'success');
+            } catch (e) {
+              toast('Failed: ' + e, 'error');
+            }
+            this.disabled = false;
+          };
         };
+        renderAuthorHcSection(hcAuthorId);
       }
 
       // Debug card — pull link IDs from the books we already have
@@ -1280,30 +1352,81 @@ route('/library/series/:id', async ({ id }) => {
         const hcSeriesId = (seriesData.link || {}).hardcover_series_id;
         const seriesHcSection = document.getElementById('series-hc-section');
         if (seriesHcSection) {
-          seriesHcSection.innerHTML = `
-            <div class="section-heading">Hardcover</div>
-            <div class="card">
-              ${hcSeriesId
-                ? `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Linked to HC #${escapeHtml(String(hcSeriesId))}</p>`
-                : `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Not linked to Hardcover.</p>`
-              }
-              <button class="btn btn-secondary btn-sm" id="series-try-link-btn">${hcSeriesId ? 'Re-run match' : 'Try HC match'}</button>
-              <div id="series-try-link-result" class="mt-2"></div>
-            </div>
-          `;
-          document.getElementById('series-try-link-btn').onclick = async function() {
-            this.disabled = true;
-            this.textContent = 'Matching...';
+          const renderSeriesHcSection = (currentHcId) => {
+            seriesHcSection.innerHTML = `
+              <div class="section-heading">Hardcover</div>
+              <div class="card">
+                <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem;flex-wrap:wrap">
+                  ${currentHcId
+                    ? `<span class="text-dim" style="font-size:0.875rem">Linked to HC #${escapeHtml(String(currentHcId))}</span>
+                       <button class="btn btn-secondary btn-sm" id="series-unlink-btn" style="padding:2px 8px;font-size:0.8rem">Unlink</button>`
+                    : `<span class="text-dim" style="font-size:0.875rem">Not linked to Hardcover.</span>`
+                  }
+                </div>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem">
+                  <button class="btn btn-secondary btn-sm" id="series-try-link-btn">${currentHcId ? 'Re-run match' : 'Try HC match'}</button>
+                </div>
+                <div id="series-try-link-result"></div>
+                <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem">
+                  <input type="text" class="form-input" id="series-hc-id-input" placeholder="Paste HC ID to set manually" style="flex:1;min-width:0">
+                  <button class="btn btn-secondary btn-sm" id="series-set-link-btn">Set</button>
+                </div>
+              </div>
+            `;
             const resultEl = document.getElementById('series-try-link-result');
-            try {
-              const log = await api(`/sync/try-link/series/${id}`, { method: 'POST' });
-              resultEl.innerHTML = renderTryLinkLog(log, 'series');
-            } catch (e) {
-              resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">${escapeHtml(String(e))}</p>`;
-            }
-            this.disabled = false;
-            this.textContent = 'Re-run match';
+            document.getElementById('series-try-link-btn').onclick = async function() {
+              this.disabled = true;
+              this.textContent = 'Matching...';
+              try {
+                const log = await api(`/sync/try-link/series/${id}`, { method: 'POST' });
+                resultEl.innerHTML = renderTryLinkLog(log, 'series');
+              } catch (e) {
+                resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">${escapeHtml(String(e))}</p>`;
+              }
+              this.disabled = false;
+              this.textContent = 'Re-run match';
+            };
+            resultEl.addEventListener('click', async e => {
+              const btn = e.target.closest('.try-link-use-btn');
+              if (!btn) return;
+              btn.disabled = true;
+              try {
+                const hcId = btn.dataset.hcId;
+                await api(`/sync/link/series/${id}`, { method: 'PUT', body: { hardcover_id: hcId } });
+                renderSeriesHcSection(hcId);
+                toast('Linked', 'success');
+              } catch (e) {
+                toast('Failed: ' + e, 'error');
+                btn.disabled = false;
+              }
+            });
+            const unlinkBtn = document.getElementById('series-unlink-btn');
+            if (unlinkBtn) unlinkBtn.onclick = async function() {
+              this.disabled = true;
+              try {
+                await api(`/sync/link/series/${id}`, { method: 'PUT', body: { hardcover_id: '' } });
+                renderSeriesHcSection(null);
+                toast('Unlinked', 'success');
+              } catch (e) {
+                toast('Unlink failed: ' + e, 'error');
+                this.disabled = false;
+              }
+            };
+            document.getElementById('series-set-link-btn').onclick = async function() {
+              const hcId = document.getElementById('series-hc-id-input').value.trim();
+              if (!hcId) return;
+              this.disabled = true;
+              try {
+                await api(`/sync/link/series/${id}`, { method: 'PUT', body: { hardcover_id: hcId } });
+                renderSeriesHcSection(hcId);
+                toast('Link updated', 'success');
+              } catch (e) {
+                toast('Failed: ' + e, 'error');
+              }
+              this.disabled = false;
+            };
           };
+          renderSeriesHcSection(hcSeriesId);
         }
 
         if (!(s.general || {}).debug_view) return;
@@ -1364,31 +1487,81 @@ route('/library/book', async (params, qp) => {
     // HC match section
     const hcSection = document.getElementById('book-hc-section');
     if (hcSection) {
-      const hcId = (book.link || {}).hardcover_id;
-      hcSection.innerHTML = `
-        <div class="section-heading">Hardcover</div>
-        <div class="card">
-          ${hcId
-            ? `<p class="text-dim" style="margin:0;font-size:0.875rem">Linked to HC #${escapeHtml(String(hcId))}</p>`
-            : `<p class="text-dim" style="margin:0 0 0.75rem;font-size:0.875rem">Not linked to Hardcover.</p>`
-          }
-          <button class="btn btn-secondary btn-sm" id="book-try-link-btn">${hcId ? 'Re-run match' : 'Try HC match'}</button>
-          <div id="book-try-link-result" class="mt-2"></div>
-        </div>
-      `;
-      document.getElementById('book-try-link-btn').onclick = async function() {
-        this.disabled = true;
-        this.textContent = 'Matching...';
+      const renderBookHcSection = (currentHcId) => {
+        hcSection.innerHTML = `
+          <div class="section-heading">Hardcover</div>
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem;flex-wrap:wrap">
+              ${currentHcId
+                ? `<span class="text-dim" style="font-size:0.875rem">Linked to HC #${escapeHtml(String(currentHcId))}</span>
+                   <button class="btn btn-secondary btn-sm" id="book-unlink-btn" style="padding:2px 8px;font-size:0.8rem">Unlink</button>`
+                : `<span class="text-dim" style="font-size:0.875rem">Not linked to Hardcover.</span>`
+              }
+            </div>
+            <div style="margin-bottom:0.75rem">
+              <button class="btn btn-secondary btn-sm" id="book-try-link-btn">${currentHcId ? 'Re-run match' : 'Try HC match'}</button>
+            </div>
+            <div id="book-try-link-result"></div>
+            <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem">
+              <input type="text" class="form-input" id="book-hc-id-input" placeholder="Paste HC ID to set manually" style="flex:1;min-width:0">
+              <button class="btn btn-secondary btn-sm" id="book-set-link-btn">Set</button>
+            </div>
+          </div>
+        `;
         const resultEl = document.getElementById('book-try-link-result');
-        try {
-          const log = await api(`/sync/try-link/book/${bookId}`, { method: 'POST' });
-          resultEl.innerHTML = renderTryLinkLog(log, 'book');
-        } catch (e) {
-          resultEl.innerHTML = `<p class="text-dim" style="color:var(--color-error)">Request failed: ${escapeHtml(String(e))}</p>`;
-        }
-        this.disabled = false;
-        this.textContent = 'Re-run match';
+        document.getElementById('book-try-link-btn').onclick = async function() {
+          this.disabled = true;
+          this.textContent = 'Matching...';
+          try {
+            const log = await api(`/sync/try-link/book/${bookId}`, { method: 'POST' });
+            resultEl.innerHTML = renderTryLinkLog(log, 'book');
+          } catch (e) {
+            resultEl.innerHTML = `<p style="color:var(--color-error);font-size:0.875rem">Request failed: ${escapeHtml(String(e))}</p>`;
+          }
+          this.disabled = false;
+          this.textContent = 'Re-run match';
+        };
+        resultEl.addEventListener('click', async e => {
+          const btn = e.target.closest('.try-link-use-btn');
+          if (!btn) return;
+          btn.disabled = true;
+          try {
+            const hcId = btn.dataset.hcId;
+            await api(`/sync/link/book/${bookId}`, { method: 'PUT', body: { hardcover_id: hcId } });
+            renderBookHcSection(hcId);
+            toast('Linked', 'success');
+          } catch (e) {
+            toast('Failed: ' + e, 'error');
+            btn.disabled = false;
+          }
+        });
+        const unlinkBtn = document.getElementById('book-unlink-btn');
+        if (unlinkBtn) unlinkBtn.onclick = async function() {
+          this.disabled = true;
+          try {
+            await api(`/sync/link/book/${bookId}`, { method: 'PUT', body: { hardcover_id: '' } });
+            renderBookHcSection(null);
+            toast('Unlinked', 'success');
+          } catch (e) {
+            toast('Unlink failed: ' + e, 'error');
+            this.disabled = false;
+          }
+        };
+        document.getElementById('book-set-link-btn').onclick = async function() {
+          const hcId = document.getElementById('book-hc-id-input').value.trim();
+          if (!hcId) return;
+          this.disabled = true;
+          try {
+            await api(`/sync/link/book/${bookId}`, { method: 'PUT', body: { hardcover_id: hcId } });
+            renderBookHcSection(hcId);
+            toast('Link updated', 'success');
+          } catch (e) {
+            toast('Failed: ' + e, 'error');
+          }
+          this.disabled = false;
+        };
       };
+      renderBookHcSection((book.link || {}).hardcover_id);
     }
 
     // Debug card (async, only if debug_view is enabled)
