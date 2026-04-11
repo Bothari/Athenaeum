@@ -157,7 +157,7 @@ async def list_authors(
         for row in rows:
             link_row = await (
                 await db.execute(
-                    "SELECT hardcover_author_id FROM author_links WHERE author_id = ?",
+                    "SELECT hardcover_author_id, hardcover_author_slug FROM author_links WHERE author_id = ?",
                     (row["id"],),
                 )
             ).fetchone()
@@ -165,7 +165,10 @@ async def list_authors(
                 "id": row["id"],
                 "name": row["name"],
                 "book_count": row["book_count"],
-                "link": {"hardcover_author_id": link_row["hardcover_author_id"] if link_row else None},
+                "link": {
+                    "hardcover_author_id": link_row["hardcover_author_id"] if link_row else None,
+                    "hardcover_author_slug": link_row["hardcover_author_slug"] if link_row else None,
+                },
             })
 
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
@@ -257,7 +260,7 @@ async def list_series(
         for row in rows:
             link_row = await (
                 await db.execute(
-                    "SELECT hardcover_series_id FROM series_links WHERE series_id = ?",
+                    "SELECT hardcover_series_id, hardcover_series_slug FROM series_links WHERE series_id = ?",
                     (row["id"],),
                 )
             ).fetchone()
@@ -265,7 +268,10 @@ async def list_series(
                 "id": row["id"],
                 "name": row["name"],
                 "book_count": row["book_count"],
-                "link": {"hardcover_series_id": link_row["hardcover_series_id"] if link_row else None},
+                "link": {
+                    "hardcover_series_id": link_row["hardcover_series_id"] if link_row else None,
+                    "hardcover_series_slug": link_row["hardcover_series_slug"] if link_row else None,
+                },
             })
 
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
@@ -289,6 +295,7 @@ async def get_series(series_id: str):
         "name": row["name"],
         "link": {
             "hardcover_series_id": link_row["hardcover_series_id"] if link_row else None,
+            "hardcover_series_slug": link_row["hardcover_series_slug"] if link_row else None,
             "abs_series_id": link_row["abs_series_id"] if link_row else None,
         },
     }
@@ -334,7 +341,7 @@ async def _get_book_authors(db, book_id: str) -> list:
     rows = await (
         await db.execute(
             """SELECT a.id, a.name, ba.author_position,
-                      al.abs_author_id, al.hardcover_author_id
+                      al.abs_author_id, al.hardcover_author_id, al.hardcover_author_slug
                FROM authors a
                JOIN book_authors ba ON ba.author_id = a.id
                LEFT JOIN author_links al ON al.author_id = a.id
@@ -349,6 +356,7 @@ async def _get_book_authors(db, book_id: str) -> list:
             "position": r["author_position"],
             "abs_author_id": r["abs_author_id"],
             "hardcover_author_id": r["hardcover_author_id"],
+            "hardcover_author_slug": r["hardcover_author_slug"],
         }
         for r in rows
     ]

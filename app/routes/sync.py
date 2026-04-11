@@ -68,39 +68,91 @@ async def try_link_series_endpoint(series_id: str):
 
 class SetLinkBody(BaseModel):
     hardcover_id: str
+    hardcover_slug: str = ""
 
 
 @router.put("/sync/link/book/{book_id}")
 async def set_book_link(book_id: str, body: SetLinkBody):
     hc_id = body.hardcover_id.strip() or None
+    hc_slug = body.hardcover_slug.strip() or None
     async with get_db() as db:
         await db.execute(
-            "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?",
-            (hc_id, book_id),
+            "UPDATE book_links SET hardcover_id = ?, hardcover_slug = ? WHERE book_id = ?",
+            (hc_id, hc_slug, book_id),
         )
         await db.commit()
-    return {"ok": True, "hardcover_id": hc_id}
+    return {"ok": True, "hardcover_id": hc_id, "hardcover_slug": hc_slug}
 
 
 @router.put("/sync/link/author/{author_id}")
 async def set_author_link(author_id: str, body: SetLinkBody):
     hc_id = body.hardcover_id.strip() or None
+    hc_slug = body.hardcover_slug.strip() or None
     async with get_db() as db:
         await db.execute(
-            "UPDATE author_links SET hardcover_author_id = ? WHERE author_id = ?",
-            (hc_id, author_id),
+            "UPDATE author_links SET hardcover_author_id = ?, hardcover_author_slug = ? WHERE author_id = ?",
+            (hc_id, hc_slug, author_id),
         )
         await db.commit()
-    return {"ok": True, "hardcover_id": hc_id}
+    return {"ok": True, "hardcover_id": hc_id, "hardcover_slug": hc_slug}
 
 
 @router.put("/sync/link/series/{series_id}")
 async def set_series_link(series_id: str, body: SetLinkBody):
     hc_id = body.hardcover_id.strip() or None
+    hc_slug = body.hardcover_slug.strip() or None
     async with get_db() as db:
         await db.execute(
-            "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ?",
-            (hc_id, series_id),
+            "UPDATE series_links SET hardcover_series_id = ?, hardcover_series_slug = ? WHERE series_id = ?",
+            (hc_id, hc_slug, series_id),
         )
         await db.commit()
-    return {"ok": True, "hardcover_id": hc_id}
+    return {"ok": True, "hardcover_id": hc_id, "hardcover_slug": hc_slug}
+
+
+class ResolveUrlBody(BaseModel):
+    url: str
+    type: str
+
+
+@router.post("/sync/resolve-hc-url")
+async def resolve_hc_url(body: ResolveUrlBody):
+    """Resolve a Hardcover URL to a numeric ID + slug by searching for the slug."""
+    from urllib.parse import urlparse
+    import httpx
+
+    slug = urlparse(body.url).path.strip("/").split("/")[-1]
+    if not slug:
+        return {"error": "Could not extract slug from URL"}
+
+    query_type_map = {"book": "Book", "author": "author", "series": "series"}
+    query_type = query_type_map.get(body.type, "Book")
+    query = slug.replace("-", " ")
+
+    settings = await get_settings()
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"error": "No Hardcover API key configured"}
+
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={
+                    "query": 'query Search($q: String!) { search(query: $q, query_type: $qt, per_page: 10) { results } }'.replace("$qt", f'"{query_type}"'),
+                    "variables": {"q": query},
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            hits = resp.json()["data"]["search"]["results"].get("hits", [])
+    except Exception as e:
+        return {"error": str(e)}
+
+    for hit in hits:
+        doc = hit.get("document", {})
+        if doc.get("slug") == slug:
+            return {"hardcover_id": str(doc["id"]), "hardcover_slug": slug}
+
+    return {"error": f"No HC item found with slug '{slug}'"}

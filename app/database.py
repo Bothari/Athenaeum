@@ -175,10 +175,10 @@ async def _run_migrations(db):
         await db.executescript(SCHEMA_V1)
         await db.execute("PRAGMA user_version = 1")
 
-    # Future migrations go here:
-    # if current < 2:
-    #     await db.executescript("ALTER TABLE books ADD COLUMN foo TEXT")
-    #     await db.execute("PRAGMA user_version = 2")
+    if current < 2:
+        await db.execute("ALTER TABLE author_links ADD COLUMN hardcover_author_slug TEXT")
+        await db.execute("ALTER TABLE series_links ADD COLUMN hardcover_series_slug TEXT")
+        await db.execute("PRAGMA user_version = 2")
 
     await db.commit()
 
