@@ -89,6 +89,7 @@ async def list_books(
             book["series"] = await _get_book_series(db, row["id"])
             book["link"] = await _get_book_link(db, row["id"])
             book["requests"] = await _get_book_requests(db, row["id"])
+            book["formats"] = await _get_book_formats(db, row["id"])
             if book["link"].get("abs_id"):
                 book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
             items.append(book)
@@ -109,6 +110,7 @@ async def get_book(book_id: str):
         book["series"] = await _get_book_series(db, book_id)
         book["link"] = await _get_book_link(db, book_id)
         book["requests"] = await _get_book_requests(db, book_id)
+        book["formats"] = await _get_book_formats(db, book_id)
         if book["link"].get("abs_id"):
             book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
     return book
@@ -210,6 +212,7 @@ async def get_author_books(author_id: str):
             book["series"] = await _get_book_series(db, row["id"])
             book["link"] = await _get_book_link(db, row["id"])
             book["requests"] = await _get_book_requests(db, row["id"])
+            book["formats"] = await _get_book_formats(db, row["id"])
             if book["link"].get("abs_id"):
                 book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
             items.append(book)
@@ -338,6 +341,7 @@ async def get_series_books(series_id: str):
             book["series"] = await _get_book_series(db, row["id"])
             book["link"] = await _get_book_link(db, row["id"])
             book["requests"] = await _get_book_requests(db, row["id"])
+            book["formats"] = await _get_book_formats(db, row["id"])
             if book["link"].get("abs_id"):
                 book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
             items.append(book)
@@ -399,11 +403,21 @@ async def _get_book_link(db, book_id: str) -> dict:
 async def _get_book_requests(db, book_id: str) -> list:
     rows = await (
         await db.execute(
-            "SELECT id, type, status, narrator FROM requests WHERE book_id = ? ORDER BY created_at",
+            "SELECT id, type, status, narrator FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
             (book_id,),
         )
     ).fetchall()
     return [{"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"]} for r in rows]
+
+
+async def _get_book_formats(db, book_id: str) -> list:
+    rows = await (
+        await db.execute(
+            "SELECT type, narrator FROM book_formats WHERE book_id = ? ORDER BY type",
+            (book_id,),
+        )
+    ).fetchall()
+    return [{"type": r["type"], "narrator": r["narrator"]} for r in rows]
 
 
 # ── Search annotation helper ───────────────────────────────────────────────────
@@ -426,21 +440,26 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
         book_id = link_row["book_id"]
         result["book_id"] = book_id
 
-        req_rows = await (
+        fmt_rows = await (
             await db.execute(
-                "SELECT id, type, status, narrator FROM requests WHERE book_id = ? ORDER BY created_at",
+                "SELECT type, narrator FROM book_formats WHERE book_id = ?",
                 (book_id,),
             )
         ).fetchall()
-
-        in_library = [r for r in req_rows if r["status"] == "in_library"]
-        result["in_library"] = len(in_library) > 0
+        result["in_library"] = len(fmt_rows) > 0
         result["library_formats"] = [
-            {"type": r["type"], "narrator": r["narrator"]} for r in in_library
+            {"type": r["type"], "narrator": r["narrator"]} for r in fmt_rows
         ]
+
+        req_rows = await (
+            await db.execute(
+                "SELECT id, type, status, narrator FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
+                (book_id,),
+            )
+        ).fetchall()
         result["existing_requests"] = [
             {"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"]}
-            for r in req_rows if r["status"] != "in_library"
+            for r in req_rows
         ]
 
         # Resolve local series UUIDs
@@ -648,6 +667,7 @@ async def create_book(body: CreateBookBody):
         book["series"] = await _get_book_series(db, book_id)
         book["link"] = await _get_book_link(db, book_id)
         book["requests"] = await _get_book_requests(db, book_id)
+        book["formats"] = await _get_book_formats(db, book_id)
 
     book["_created_requests"] = created
     book["_skipped_requests"] = skipped

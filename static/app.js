@@ -1022,14 +1022,13 @@ route('/library/books', async (params, qp) => {
       extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="books-unlinked-cb"> Unlinked only</label>`,
       renderRow: (b) => {
         const author = Array.isArray(b.authors) ? b.authors.map(a => a.name).join(', ') : '—';
+        const formats = b.formats || [];
         const requests = b.requests || [];
-        const inLibraryTypes = new Set(requests.filter(r => r.status === 'in_library').map(r => r.type));
-        const pending = requests.filter(r => r.status !== 'in_library');
-        const formatBadges = [...inLibraryTypes].map(t =>
-          `<span class="badge badge-in_library">${typeIcon(t)}</span>`
+        const formatBadges = formats.map(f =>
+          `<span class="badge badge-in_library" title="${f.type}${f.narrator ? ' — ' + f.narrator : ''}">${typeIcon(f.type)}</span>`
         ).join(' ');
-        const pendingBadges = pending.map(r =>
-          `<span class="badge badge-${r.status}">${typeIcon(r.type)} ${r.status}</span>`
+        const pendingBadges = requests.map(r =>
+          `<span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}</span>`
         ).join(' ');
         return `
           <td><a href="${buildHash('/library/book', { book_id: b.id })}">${escapeHtml(b.title)}</a></td>
@@ -1240,8 +1239,8 @@ route('/library/series/:id', async ({ id }) => {
       ? (booksData[0].series.find(s => s.id === id) || booksData[0].series[0] || {}).name || 'Series'
       : 'Series';
 
-    const inLibrary = booksData.filter(b => (b.requests || []).some(r => r.status === 'in_library')).length;
-    const requested = booksData.filter(b => (b.requests || []).some(r => !['in_library', 'failed'].includes(r.status))).length;
+    const inLibrary = booksData.filter(b => (b.formats || []).length > 0).length;
+    const requested = booksData.filter(b => (b.requests || []).length > 0).length;
 
     function renderSeriesBooksView() {
       const view = localStorage.getItem('detail_view') || 'list';
@@ -1270,8 +1269,7 @@ route('/library/series/:id', async ({ id }) => {
         table.innerHTML = `<thead><tr><th style="width:3rem">#</th><th>Title</th><th style="width:100px">Formats</th></tr></thead>`;
         const tbody = document.createElement('tbody');
         booksData.forEach(b => {
-          const inLibTypes = (b.requests || []).filter(r => r.status === 'in_library').map(r => r.type);
-          const fmtBadges = inLibTypes.map(t => `<span class="badge badge-in_library">${typeIcon(t)}</span>`).join(' ');
+          const fmtBadges = (b.formats || []).map(f => `<span class="badge badge-in_library" title="${f.type}${f.narrator ? ' — ' + f.narrator : ''}">${typeIcon(f.type)}</span>`).join(' ');
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td class="td-dim">${b.series_position != null ? b.series_position : '—'}</td>
@@ -1383,11 +1381,11 @@ route('/library/book', async (params, qp) => {
           <div class="detail-author">${escapeHtml(author)}</div>
           ${seriesInfo ? `<div class="detail-series">${escapeHtml(seriesInfo)}</div>` : ''}
           <div class="detail-badges">
-            ${(book.requests || []).filter(r => r.status === 'in_library').map(r =>
-              `<span class="badge badge-in_library">${typeIcon(r.type)}${r.narrator ? ' ' + escapeHtml(r.narrator) : ''}</span>`
+            ${(book.formats || []).map(f =>
+              `<span class="badge badge-in_library" title="${f.type}${f.narrator ? ' — ' + escapeHtml(f.narrator) : ''}">${typeIcon(f.type)}${f.narrator ? ' ' + escapeHtml(f.narrator) : ''}</span>`
             ).join('')}
-            ${(book.requests || []).filter(r => r.status !== 'in_library').map(r =>
-              `<span class="badge badge-${r.status}">${typeIcon(r.type)} ${r.status}</span>`
+            ${(book.requests || []).map(r =>
+              `<span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}</span>`
             ).join('')}
           </div>
         </div>
@@ -1427,9 +1425,8 @@ route('/library/book', async (params, qp) => {
       `;
     }).catch(() => {});
 
-    // Requests section — only non-in_library requests
     const reqSection = document.getElementById('book-requests-section');
-    const pendingRequests = (book.requests || []).filter(r => r.status !== 'in_library');
+    const pendingRequests = book.requests || [];
     if (pendingRequests.length) {
       reqSection.innerHTML = `<div class="section-heading">Requests</div>`;
       pendingRequests.forEach(req => {
@@ -1509,7 +1506,7 @@ route('/requests', async (params, qp) => {
   const statusFilter = qp.requests_status || '';
   const typeFilter = qp.requests_type || '';
 
-  const statusOptions = ['', 'requested', 'monitored', 'snatched', 'downloading', 'organizing', 'in_library', 'failed'];
+  const statusOptions = ['', 'requested', 'snatched', 'downloading', 'downloaded', 'merging', 'organizing', 'completed', 'failed'];
   const statusSelect = `
     <select id="status-filter">
       ${statusOptions.map(s => `<option value="${s}" ${s === statusFilter ? 'selected' : ''}>${s || 'All statuses'}</option>`).join('')}
@@ -1536,8 +1533,7 @@ route('/requests', async (params, qp) => {
     headers: [
       { label: 'Book', key: 'book_title', sortable: true },
       { label: 'Author', key: 'author', sortable: false },
-      { label: 'Type', key: 'type', sortable: false, style: 'width:50px' },
-      { label: 'Status', key: 'status', sortable: true },
+      { label: 'Format', key: 'type', sortable: false },
       { label: 'Narrator', key: 'narrator', sortable: false },
       { label: 'Created', key: 'created_at', sortable: true },
       { label: '', key: '_actions', sortable: false, style: 'width:100px' },
@@ -1547,8 +1543,7 @@ route('/requests', async (params, qp) => {
     renderRow: (r) => `
       <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a></td>
       <td class="td-dim">${escapeHtml(r.author || '—')}</td>
-      <td>${typeIcon(r.type)}</td>
-      <td><span class="badge badge-${r.status}">${r.status}</span></td>
+      <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}</span></td>
       <td class="td-dim">${escapeHtml(r.narrator || '—')}</td>
       <td class="td-dim">${formatDate(r.created_at)}</td>
       <td></td>

@@ -21,13 +21,13 @@ async def _create_request(db, book_id: str, req_type: str, narrator: str = None)
     """Create a request row, returning None (skipped) if a dedup rule blocks it.
 
     Dedup rules:
-    - An active (non-failed, non-in_library) request for same book + type already exists.
-    - An in_library request for same book + type + same narrator (case-insensitive) exists.
+    - An active (non-failed, non-completed) request for same book + type already exists.
+    - A book_formats row for same book + type + same narrator (case-insensitive) exists.
     """
     active = await (
         await db.execute(
             """SELECT id FROM requests
-               WHERE book_id = ? AND type = ? AND status NOT IN ('failed', 'in_library')""",
+               WHERE book_id = ? AND type = ? AND status NOT IN ('failed', 'completed')""",
             (book_id, req_type),
         )
     ).fetchone()
@@ -37,9 +37,8 @@ async def _create_request(db, book_id: str, req_type: str, narrator: str = None)
     if narrator:
         in_lib = await (
             await db.execute(
-                """SELECT id FROM requests
-                   WHERE book_id = ? AND type = ? AND status = 'in_library'
-                   AND lower(narrator) = lower(?)""",
+                """SELECT id FROM book_formats
+                   WHERE book_id = ? AND type = ? AND lower(narrator) = lower(?)""",
                 (book_id, req_type, narrator),
             )
         ).fetchone()
@@ -146,11 +145,11 @@ async def list_requests(
         "type": "r.type",
     }[sort]
 
-    conditions = []
+    conditions = ["r.status != 'completed'"]
     bind: list = []
 
     if status:
-        conditions.append("r.status = ?")
+        conditions = ["r.status = ?"]
         bind.append(status)
     if type:
         conditions.append("r.type = ?")
@@ -231,7 +230,7 @@ async def delete_request(request_id: str):
 
 @router.post("/requests/sync-library")
 async def sync_library_requests():
-    """Check ABS for all non-in_library requests and promote any found there."""
+    """Check ABS for active requests and fulfil any found there."""
     settings = await get_settings()
     abs_settings = settings.get("audiobookshelf", {})
     if not abs_settings.get("url"):
@@ -247,7 +246,7 @@ async def sync_library_requests():
                           (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
                            WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
                    FROM requests r JOIN books b ON b.id = r.book_id
-                   WHERE r.status NOT IN ('in_library', 'failed')"""
+                   WHERE r.status NOT IN ('completed', 'failed')"""
             )
         ).fetchall()
 
@@ -260,10 +259,20 @@ async def sync_library_requests():
         for item in matches:
             for fmt in item.get("formats", []):
                 if fmt.get("type") == row["type"]:
+                    now = _now()
                     async with get_db() as db:
                         await db.execute(
-                            "UPDATE requests SET status='in_library', updated_at=? WHERE id=?",
-                            (_now(), row["id"]),
+                            """INSERT OR IGNORE INTO book_formats
+                                   (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (str(uuid.uuid4()), row["book_id"], row["type"],
+                             fmt.get("narrator") or row["narrator"],
+                             item.get("abs_id"), item.get("abs_url"),
+                             row["id"], now, now),
+                        )
+                        await db.execute(
+                            "UPDATE requests SET status='completed', updated_at=? WHERE id=?",
+                            (now, row["id"]),
                         )
                         await db.commit()
                     updated += 1

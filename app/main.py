@@ -114,7 +114,7 @@ async def api_status():
 
         statuses = [
             "requested", "snatched", "downloading",
-            "downloaded", "merging", "organizing", "in_library", "failed",
+            "downloaded", "merging", "organizing", "completed", "failed",
         ]
         requests = {}
         for status in statuses:
