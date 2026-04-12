@@ -124,6 +124,21 @@ _Completed 2026-04-10_
 - [x] Dashboard mobile: task cards full-width stacked
 - [x] Confirmed: HC `_ilike` WHERE queries are blocked server-side — Typesense search is the only viable path
 
+## HC matching polish (v0.3.3)
+_Completed 2026-04-11_
+
+- [x] Shared `setupHcCard()` helper replaces three separate inline HC card implementations (book/author/series detail pages)
+- [x] HC link card: no "Change match" toggle — unlink first, options appear naturally; linked state shows "Linked to Hardcover {type} #{id}" with clickable icon
+- [x] HC icon aspect ratio fixed (was forced square); bare anchor in candidate table (no button wrapper)
+- [x] Series candidates: also fetch HC series for the first linked book in the local series (`_hc_series_for_book`) and merge/sort via_book first
+- [x] Ghost HC series entries (`books_count: 0`) filtered from all series search results
+- [x] Author and series slug storage fixed — catchup passes backfill slugs for already-linked entities by ID match
+- [x] Debug view flag (`settings.general.debug_view`) gates score badges in candidate table
+- [x] `cache_refresh`: 429s now retry up to 5 times (queue-based) instead of counting as immediate failures
+- [x] `cache_refresh`: live progress written to `task_state.last_result` every ~4s (linked/failed/remaining per phase); dashboard task card shows it alongside spinner
+- [x] Book search runs title-only (3 pages) + title+author (1 page) concurrently, deduplicated by HC ID — fixes books buried in title-only results (e.g. "Strangers" by Belle Burden)
+- [x] Candidate tables sorted by score descending across all three entity types
+
 ---
 
 ## Phase 6: Detail Pages [partial]
