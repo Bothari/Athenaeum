@@ -16,7 +16,8 @@ _SEARCH_GQL = (
 # ── Normalisation helpers ──────────────────────────────────────────────────────
 
 def _cover_url(doc: dict) -> str:
-    img = doc.get("cached_image") or {}
+    # Typesense book docs use "image" (dict with url/width/height)
+    img = doc.get("image") or doc.get("cached_image") or {}
     if isinstance(img, dict):
         return img.get("url") or ""
     if isinstance(img, str):
@@ -24,17 +25,26 @@ def _cover_url(doc: dict) -> str:
     return ""
 
 
-def _primary_author(doc: dict) -> tuple[str, str]:
-    """Return (name, hardcover_author_id) for the primary contributor."""
+def _all_authors(doc: dict) -> list[tuple[str, str]]:
+    """Return list of (name, hardcover_author_id) for all contributors."""
+    seen: set = set()
+    result = []
     for c in (doc.get("contributions") or doc.get("cached_contributors") or []):
         if not isinstance(c, dict):
             continue
         author = c.get("author") or {}
         name = c.get("author_name") or author.get("name") or ""
         author_id = str(author.get("id") or "")
-        if name:
-            return name, author_id
-    return "", ""
+        if name and name not in seen:
+            seen.add(name)
+            result.append((name, author_id))
+    return result
+
+
+def _primary_author(doc: dict) -> tuple[str, str]:
+    """Return (name, hardcover_author_id) for the primary contributor."""
+    authors = _all_authors(doc)
+    return authors[0] if authors else ("", "")
 
 
 def _series_list(doc: dict, context_hc_series_id: str = "") -> list[dict]:
@@ -76,7 +86,8 @@ def _series_list(doc: dict, context_hc_series_id: str = "") -> list[dict]:
 
 def normalize_hit(doc: dict, context_hc_series_id: str = "") -> dict:
     """Normalise a Typesense book document into the search result shape."""
-    author, author_id = _primary_author(doc)
+    all_authors = _all_authors(doc)
+    author, author_id = all_authors[0] if all_authors else ("", "")
     slug = doc.get("slug") or ""
     raw_rating = doc.get("rating") or 0
     return {
@@ -84,6 +95,7 @@ def normalize_hit(doc: dict, context_hc_series_id: str = "") -> dict:
         "subtitle": doc.get("subtitle") or "",
         "author": author,
         "author_id": author_id,
+        "authors": [{"name": n, "id": aid} for n, aid in all_authors],
         "narrator": "",
         "description": "",
         "cover_url": _cover_url(doc),

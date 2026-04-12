@@ -428,7 +428,7 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
 
         req_rows = await (
             await db.execute(
-                "SELECT type, status, narrator FROM requests WHERE book_id = ? ORDER BY created_at",
+                "SELECT id, type, status, narrator FROM requests WHERE book_id = ? ORDER BY created_at",
                 (book_id,),
             )
         ).fetchall()
@@ -439,7 +439,7 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
             {"type": r["type"], "narrator": r["narrator"]} for r in in_library
         ]
         result["existing_requests"] = [
-            {"type": r["type"], "status": r["status"], "narrator": r["narrator"]}
+            {"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"]}
             for r in req_rows if r["status"] != "in_library"
         ]
 
