@@ -250,6 +250,8 @@ input::placeholder { color: var(--text-dim); }
 .search-card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
 .search-card-hc-link { display: flex; align-items: center; flex-shrink: 0; opacity: 0.7; margin-top: 1px; }
 .search-card-hc-link:hover { opacity: 1; }
+.hc-icon { height: auto; transform: rotate(-12deg); display: block; flex-shrink: 0; filter: invert(1); }
+html.light .hc-icon { filter: none; }
 .search-card-author { font-size: 0.82rem; color: var(--text-dim); margin-top: 0.15rem; }
 .search-card-series { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.1rem; }
 .search-card-meta { margin-top: 0.35rem; display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
