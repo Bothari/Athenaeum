@@ -145,16 +145,22 @@ async def _get_or_create_series(db, name: str, abs_series_id: str = "") -> str:
     return series_id
 
 
-async def _hc_book_search(query: str, api_key: str, pages: int = 3) -> list:
-    """Fetch up to `pages` pages of HC book search results concurrently.
+async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int = 3) -> list:
+    """Fetch HC book search results for both title-only and title+author queries concurrently.
 
-    HC caps per_page at 25, so we fan out across pages and merge.
-    Returns hits sorted by users_count descending.
+    HC caps per_page at 25, so we fan out across pages and queries and merge.
+    Returns deduplicated hits; order is preserved (title+author hits come first so
+    the scorer sees them, but final ordering is left to the caller).
     """
     gql = 'query Search($q: String!, $page: Int!) { search(query: $q, query_type: "Book", per_page: 25, page: $page) { results } }'
     headers = {"Authorization": f"Bearer {api_key}"}
 
-    async def fetch_page(client: httpx.AsyncClient, page: int) -> list:
+    # Title-only: paginate broadly. Title+author: single page — it's targeted enough.
+    fetches: list[tuple[str, int]] = [(title.strip(), p) for p in range(1, pages + 1)]
+    if author.strip():
+        fetches.append((f"{title.strip()} {author.strip()}", 1))
+
+    async def fetch_page(client: httpx.AsyncClient, query: str, page: int) -> list:
         resp = await client.post(
             "https://api.hardcover.app/v1/graphql",
             json={"query": gql, "variables": {"q": query, "page": page}},
@@ -167,23 +173,22 @@ async def _hc_book_search(query: str, api_key: str, pages: int = 3) -> list:
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         results = await asyncio.gather(
-            *[fetch_page(client, p) for p in range(1, pages + 1)],
+            *[fetch_page(client, q, p) for q, p in fetches],
             return_exceptions=True,
         )
 
-    hits = []
+    seen: set = set()
+    deduped: list = []
     for r in results:
-        if isinstance(r, list):
-            hits.extend(r)
+        if not isinstance(r, list):
+            continue
+        for h in r:
+            doc_id = h.get("document", {}).get("id")
+            if doc_id and doc_id not in seen:
+                seen.add(doc_id)
+                deduped.append(h)
 
-    seen = set()
-    deduped = []
-    for h in hits:
-        doc_id = h.get("document", {}).get("id")
-        if doc_id and doc_id not in seen:
-            seen.add(doc_id)
-            deduped.append(h)
-
+    # Tiebreaker: more popular books should win equal-score matches
     return sorted(deduped, key=lambda h: h.get("document", {}).get("users_count") or 0, reverse=True)
 
 
@@ -256,12 +261,11 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
             )
         ).fetchall()
 
-    query = title.strip()
-    if not query:
+    if not title.strip():
         return False
 
     try:
-        hits = await _hc_book_search(query, api_key)
+        hits = await _hc_book_search(title, api_key, author=author)
     except httpx.HTTPStatusError:
         raise
     except Exception as e:
@@ -723,9 +727,7 @@ async def try_link_book(book_id: str, settings: dict) -> dict:
             )
         ).fetchone()
 
-    query = title.strip()
     log: dict = {
-        "query": query,
         "title": title,
         "author": author,
         "already_linked": bool(existing_link and existing_link[0]),
@@ -735,7 +737,7 @@ async def try_link_book(book_id: str, settings: dict) -> dict:
     }
 
     try:
-        hits = await _hc_book_search(query, api_key)
+        hits = await _hc_book_search(title, api_key, author=author)
     except Exception as e:
         log["result"] = "error"
         log["error"] = str(e)
@@ -784,6 +786,8 @@ async def try_link_book(book_id: str, settings: dict) -> dict:
         if above and (t_score, a_score) > best_score:
             best = doc
             best_score = (t_score, a_score)
+
+    log["candidates"].sort(key=lambda c: (c["t_score"], c["a_score"]), reverse=True)
 
     if best:
         for c in log["candidates"]:
@@ -886,6 +890,8 @@ async def try_link_author(author_id: str, settings: dict) -> dict:
         if above and score > best_score:
             best = doc
             best_score = score
+
+    log["candidates"].sort(key=lambda c: c["score"], reverse=True)
 
     if best:
         for c in log["candidates"]:
