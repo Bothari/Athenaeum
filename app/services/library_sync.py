@@ -1152,8 +1152,9 @@ async def _sync_item(item: dict) -> str:
                 seen_types.add(fmt_type)
                 narrator = fmt.get("narrator") or None
                 await db.execute(
-                    """INSERT INTO requests (id, book_id, type, status, narrator, abs_id, abs_url, created_at, updated_at)
-                       VALUES (?, ?, ?, 'in_library', ?, ?, ?, ?, ?)""",
+                    """INSERT OR IGNORE INTO book_formats
+                           (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
                     (str(uuid.uuid4()), book_id, fmt_type, narrator,
                      abs_id, item.get("abs_url"), now, now),
                 )
@@ -1201,27 +1202,21 @@ async def _sync_item(item: dict) -> str:
                 if r.rowcount:
                     changed = True
 
-            existing_rows = await (
-                await db.execute(
-                    "SELECT type FROM requests WHERE book_id = ? AND status = 'in_library'",
-                    (book_id,),
-                )
-            ).fetchall()
-            existing_types = {r[0] for r in existing_rows}
             seen_types = set()
             for fmt in formats:
                 fmt_type = fmt.get("type")
                 if not fmt_type or fmt_type in seen_types:
                     continue
                 seen_types.add(fmt_type)
-                if fmt_type not in existing_types:
-                    narrator = fmt.get("narrator") or None
-                    await db.execute(
-                        """INSERT INTO requests (id, book_id, type, status, narrator, abs_id, abs_url, created_at, updated_at)
-                           VALUES (?, ?, ?, 'in_library', ?, ?, ?, ?, ?)""",
-                        (str(uuid.uuid4()), book_id, fmt_type, narrator,
-                         abs_id, item.get("abs_url"), now, now),
-                    )
+                narrator = fmt.get("narrator") or None
+                r = await db.execute(
+                    """INSERT OR IGNORE INTO book_formats
+                           (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                    (str(uuid.uuid4()), book_id, fmt_type, narrator,
+                     abs_id, item.get("abs_url"), now, now),
+                )
+                if r.rowcount:
                     changed = True
 
             await db.execute("UPDATE books SET abs_checked_at = ? WHERE id = ?", (now, book_id))

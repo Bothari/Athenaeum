@@ -180,6 +180,32 @@ async def _run_migrations(db):
         await db.execute("ALTER TABLE series_links ADD COLUMN hardcover_series_slug TEXT")
         await db.execute("PRAGMA user_version = 2")
 
+    if current < 3:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS book_formats (
+                id                      TEXT PRIMARY KEY,
+                book_id                 TEXT NOT NULL REFERENCES books(id),
+                type                    TEXT NOT NULL,
+                narrator                TEXT,
+                abs_id                  TEXT,
+                abs_url                 TEXT,
+                fulfilled_by_request_id TEXT REFERENCES requests(id),
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL,
+                UNIQUE(book_id, type, narrator)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_book_formats_book ON book_formats(book_id)")
+        # Migrate existing in_library request rows into book_formats
+        await db.execute("""
+            INSERT OR IGNORE INTO book_formats
+                (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
+            SELECT id, book_id, type, narrator, abs_id, abs_url, NULL, created_at, updated_at
+            FROM requests WHERE status = 'in_library'
+        """)
+        await db.execute("DELETE FROM requests WHERE status = 'in_library'")
+        await db.execute("PRAGMA user_version = 3")
+
     await db.commit()
 
 
