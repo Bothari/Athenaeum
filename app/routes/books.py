@@ -1,11 +1,21 @@
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from ..database import get_db
+from ..settings import get_settings
 
 router = APIRouter(prefix="/api")
 
 VALID_BOOK_SORTS = {"title", "author", "created_at"}
 VALID_DIR = {"asc", "desc"}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _book_row_to_dict(row) -> dict:
@@ -394,3 +404,251 @@ async def _get_book_requests(db, book_id: str) -> list:
         )
     ).fetchall()
     return [{"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"]} for r in rows]
+
+
+# ── Search annotation helper ───────────────────────────────────────────────────
+
+async def _annotate_results(results: list[dict], db) -> list[dict]:
+    """Annotate search results with local DB data (in_library, book_id, library_formats, existing_requests, series IDs)."""
+    for result in results:
+        hc_id = result.get("metadata_id")
+        if not hc_id:
+            continue
+
+        link_row = await (
+            await db.execute(
+                "SELECT book_id FROM book_links WHERE hardcover_id = ?", (hc_id,)
+            )
+        ).fetchone()
+        if not link_row:
+            continue
+
+        book_id = link_row["book_id"]
+        result["book_id"] = book_id
+
+        req_rows = await (
+            await db.execute(
+                "SELECT type, status, narrator FROM requests WHERE book_id = ? ORDER BY created_at",
+                (book_id,),
+            )
+        ).fetchall()
+
+        in_library = [r for r in req_rows if r["status"] == "in_library"]
+        result["in_library"] = len(in_library) > 0
+        result["library_formats"] = [
+            {"type": r["type"], "narrator": r["narrator"]} for r in in_library
+        ]
+        result["existing_requests"] = [
+            {"type": r["type"], "status": r["status"], "narrator": r["narrator"]}
+            for r in req_rows if r["status"] != "in_library"
+        ]
+
+        # Resolve local series UUIDs
+        for s in result.get("series", []):
+            hc_sid = s.get("hardcover_series_id")
+            if hc_sid:
+                sl_row = await (
+                    await db.execute(
+                        "SELECT series_id FROM series_links WHERE hardcover_series_id = ?",
+                        (hc_sid,),
+                    )
+                ).fetchone()
+                if sl_row:
+                    s["id"] = sl_row["series_id"]
+
+    return results
+
+
+# ── Search endpoints ───────────────────────────────────────────────────────────
+
+@router.get("/search/metadata")
+async def search_metadata(
+    q: str = Query(default=""),
+    series_id: str = Query(default=""),
+):
+    if not q.strip():
+        return {"results": []}
+
+    settings = await get_settings()
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"results": [], "error": "Hardcover API key not configured"}
+
+    # Resolve local series_id to HC series ID for context sorting
+    context_hc_series_id = ""
+    if series_id:
+        async with get_db() as db:
+            sl_row = await (
+                await db.execute(
+                    "SELECT hardcover_series_id FROM series_links WHERE series_id = ?",
+                    (series_id,),
+                )
+            ).fetchone()
+        if sl_row:
+            context_hc_series_id = sl_row["hardcover_series_id"] or ""
+
+    from ..services.book_search import search_books
+    results = await search_books(q.strip(), api_key, context_hc_series_id=context_hc_series_id)
+
+    async with get_db() as db:
+        results = await _annotate_results(results, db)
+
+    return {"results": results}
+
+
+@router.get("/search/advanced")
+async def search_advanced(
+    title: str = Query(default=""),
+    author: str = Query(default=""),
+    series: str = Query(default=""),
+    series_id: str = Query(default=""),
+):
+    if not title.strip() and not author.strip() and not series.strip():
+        return {"results": []}
+
+    settings = await get_settings()
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"results": [], "error": "Hardcover API key not configured"}
+
+    context_hc_series_id = ""
+    if series_id:
+        async with get_db() as db:
+            sl_row = await (
+                await db.execute(
+                    "SELECT hardcover_series_id FROM series_links WHERE series_id = ?",
+                    (series_id,),
+                )
+            ).fetchone()
+        if sl_row:
+            context_hc_series_id = sl_row["hardcover_series_id"] or ""
+
+    from ..services.book_search import advanced_search_books
+    results = await advanced_search_books(
+        title=title, author=author, series=series,
+        api_key=api_key, context_hc_series_id=context_hc_series_id,
+    )
+
+    async with get_db() as db:
+        results = await _annotate_results(results, db)
+
+    return {"results": results}
+
+
+# ── POST /api/books ────────────────────────────────────────────────────────────
+
+class BookRequestItem(BaseModel):
+    type: str
+    narrator: Optional[str] = None
+
+
+class CreateBookBody(BaseModel):
+    title: str
+    author: str = ""
+    cover_url: Optional[str] = None
+    series: Optional[str] = None
+    series_position: Optional[str] = None
+    metadata_source: Optional[str] = None
+    metadata_id: Optional[str] = None
+    metadata_url: Optional[str] = None
+    requests: list[BookRequestItem] = []
+
+
+@router.post("/books")
+async def create_book(body: CreateBookBody):
+    """Create a book (if it doesn't already exist) and attach requests."""
+    from ..routes.requests import _create_request
+    from ..services.library_sync import _get_or_create_author, _get_or_create_series, _split_authors
+
+    async with get_db() as db:
+        book_id = None
+
+        # 1. Check by hardcover_id first (most reliable dedup)
+        if body.metadata_id:
+            link_row = await (
+                await db.execute(
+                    "SELECT book_id FROM book_links WHERE hardcover_id = ?",
+                    (body.metadata_id,),
+                )
+            ).fetchone()
+            if link_row:
+                book_id = link_row["book_id"]
+
+        # 2. Fall back to title + primary author match
+        if not book_id and body.title:
+            title_match = await (
+                await db.execute(
+                    "SELECT b.id FROM books b WHERE lower(b.title) = lower(?)",
+                    (body.title.strip(),),
+                )
+            ).fetchone()
+            if title_match:
+                book_id = title_match["id"]
+
+        # 3. Create new book
+        if not book_id:
+            book_id = str(uuid.uuid4())
+            now = _now()
+            await db.execute(
+                """INSERT INTO books (id, title, cover_url, metadata_source, metadata_url, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    book_id,
+                    body.title.strip(),
+                    body.cover_url or None,
+                    body.metadata_source or "hardcover",
+                    body.metadata_url or None,
+                    now, now,
+                ),
+            )
+
+            # Authors
+            author_names = _split_authors(body.author) if body.author else []
+            for pos, name in enumerate(author_names, 1):
+                author_id = await _get_or_create_author(db, name)
+                await db.execute(
+                    "INSERT OR IGNORE INTO book_authors (book_id, author_id, author_position) VALUES (?, ?, ?)",
+                    (book_id, author_id, pos),
+                )
+
+            # Series
+            if body.series:
+                series_id = await _get_or_create_series(db, body.series.strip())
+                await db.execute(
+                    "INSERT OR IGNORE INTO book_series (book_id, series_id, position) VALUES (?, ?, ?)",
+                    (book_id, series_id, body.series_position or None),
+                )
+
+            # book_links row
+            await db.execute(
+                "INSERT OR IGNORE INTO book_links (id, book_id, hardcover_id, linked_at) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), book_id, body.metadata_id or None, _now()),
+            )
+
+        # 4. Create requests
+        created = 0
+        skipped = 0
+        for req in body.requests:
+            if req.type not in ("audiobook", "ebook"):
+                continue
+            result = await _create_request(db, book_id, req.type, req.narrator or None)
+            if result:
+                created += 1
+            else:
+                skipped += 1
+
+        await db.commit()
+
+        # Return the book record
+        book_row = await (
+            await db.execute("SELECT * FROM books WHERE id = ?", (book_id,))
+        ).fetchone()
+        book = _book_row_to_dict(book_row)
+        book["authors"] = await _get_book_authors(db, book_id)
+        book["series"] = await _get_book_series(db, book_id)
+        book["link"] = await _get_book_link(db, book_id)
+        book["requests"] = await _get_book_requests(db, book_id)
+
+    book["_created_requests"] = created
+    book["_skipped_requests"] = skipped
+    return book

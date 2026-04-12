@@ -153,14 +153,16 @@ _In progress — detail pages built, book_links and missing-books logic pending_
 
 ---
 
-## Phase 4: Search & Requests
-_Not started_
+## Phase 4: Search & Requests [complete]
+_Completed 2026-04-11_
 
-- [ ] `app/services/book_search.py`
-- [ ] `app/routes/books.py` (complete) — search, series missing, book detail
-- [ ] Search page (quick + advanced, in-place request success)
-- [ ] `app/routes/requests.py` — CRUD, sync-library
-- [ ] Requests list page, request UI on book cards/detail
+- [x] `app/services/book_search.py` — HC Typesense search, `normalize_hit()`, `search_books()`, `advanced_search_books()`
+- [x] `GET /api/search/metadata?q=...` and `GET /api/search/advanced?title=...&author=...&series=...` — annotated with `in_library`, `book_id`, `library_formats`, `existing_requests`, local series UUIDs
+- [x] `POST /api/books` — create book from HC result + attach requests; dedup by hardcover_id then title match
+- [x] `app/routes/requests.py` — `POST`, `GET` (paginated, filterable), `GET /:id`, `DELETE /:id`, `POST /sync-library`, `GET /:id/downloads`, `POST /:id/search-indexers` (Phase 5 stub)
+- [x] `_create_request()` shared helper — dedup-aware, blocks duplicate active requests and matching narrator in_library entries
+- [x] Search page wired (quick + advanced, URL-persisted state, in-place request success) — frontend already built in Phase 1
+- [x] Requests list page wired — frontend already built in Phase 1
 
 ---
 

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .database import get_db, init_db
 from .routes.abs_proxy import router as abs_proxy_router
 from .routes.books import router as books_router
+from .routes.requests import router as requests_router
 from .routes.settings import router as settings_router
 from .routes.sync import router as sync_router
 from .services.library_sync import sync_library, cache_refresh
@@ -21,6 +22,7 @@ app = FastAPI(title="Athenaeum")
 
 app.include_router(settings_router)
 app.include_router(books_router)
+app.include_router(requests_router)
 app.include_router(sync_router)
 app.include_router(abs_proxy_router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
