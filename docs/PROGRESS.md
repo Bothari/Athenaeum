@@ -192,6 +192,8 @@ _Not started_
 
 - **Author deduplication on HC conflict**: when two local authors match the same HC author ID (e.g. "James S. A. Corey" / "James S.A. Corey"), merge the duplicate into the winner — re-point all `book_authors` rows, delete the duplicate author and its `author_links` row. Currently the second match is skipped and the duplicate stays unlinked.
 
+- **Multiple narrators per audiobook**: ABS handles multiple narrator editions by putting them in separate directories with distinct naming schemes. Athenaeum currently tracks only one narrator per request. Supporting multiple editions would require a separate request per narrator, or a richer request model. Deferred — not needed for typical single-narrator libraries.
+
 ---
 
 ## Phase 7: Polish

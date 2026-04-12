@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -100,7 +101,7 @@ async def _request_detail(db, req_id: str) -> dict:
 class CreateRequestBody(BaseModel):
     book_id: str
     type: str
-    narrator: str = None
+    narrator: Optional[str] = None
 
 
 @router.post("/requests")

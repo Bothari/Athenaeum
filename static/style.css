@@ -214,22 +214,28 @@ input::placeholder { color: var(--text-dim); }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  display: flex;
-  gap: 1rem;
-  padding: 1rem;
-  margin-bottom: 0.75rem;
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 0.75rem;
+  padding: 0.75rem;
+  padding-bottom: 0;
+  margin-bottom: 0.65rem;
 }
+.search-card-cover, .search-card-cover-placeholder { grid-column: 1; grid-row: 1; }
+.search-card-body { grid-column: 2; grid-row: 1; }
 .search-card-cover {
-  width: 70px;
-  min-width: 70px;
+  width: 64px;
+  min-width: 64px;
   aspect-ratio: 2/3;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 2px;
   background: var(--surface2);
+  align-self: flex-start;
 }
 .search-card-cover-placeholder {
-  width: 70px;
-  min-width: 70px;
+  width: 64px;
+  min-width: 64px;
   aspect-ratio: 2/3;
   background: var(--surface2);
   display: flex;
@@ -237,15 +243,40 @@ input::placeholder { color: var(--text-dim); }
   justify-content: center;
   color: var(--text-dim);
   border-radius: 2px;
+  align-self: flex-start;
 }
 .search-card-body { flex: 1; min-width: 0; }
-.search-card-title { font-size: 1rem; font-weight: 600; }
-.search-card-author { font-size: 0.85rem; color: var(--text-dim); margin-top: 0.15rem; }
-.search-card-series { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.15rem; }
-.search-card-meta { margin-top: 0.4rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-.search-card-rating { font-size: 0.8rem; color: var(--text-dim); }
-.search-card-actions { margin-top: 0.75rem; }
-.search-card-slot { margin-top: 0.5rem; }
+.search-card-title-row { display: flex; align-items: flex-start; gap: 0.4rem; }
+.search-card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.search-card-hc-link { display: flex; align-items: center; flex-shrink: 0; opacity: 0.7; margin-top: 1px; }
+.search-card-hc-link:hover { opacity: 1; }
+.search-card-author { font-size: 0.82rem; color: var(--text-dim); margin-top: 0.15rem; }
+.search-card-series { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.1rem; }
+.search-card-meta { margin-top: 0.35rem; display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+.search-card-rating { font-size: 0.78rem; color: var(--text-dim); }
+.search-card-lib-link { display: inline-flex; gap: 0.25rem; align-items: center; }
+.search-card-lib-badge {
+  display: inline-flex; align-items: center; gap: 0.2rem;
+  font-size: 0.72rem; padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+}
+/* Format row (single row: Request label | ebook pill | sep | audiobook pill | narrator) */
+.search-card-fmt-rows { grid-column: 1 / -1; grid-row: 2; border-top: 1px solid var(--border); margin-top: 0.5rem; }
+.fmt-row { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0; }
+.fmt-label { font-size: 0.78rem; color: var(--text-dim); margin-right: 0.1rem; }
+.fmt-sep { font-size: 0.78rem; color: var(--border); }
+.fmt-pill { cursor: pointer; border: none; transition: opacity 0.15s; }
+.fmt-pill:disabled { cursor: default; }
+.fmt-pill:not(:disabled):hover { opacity: 0.75; }
+.badge-unmonitored { background: var(--surface2); color: var(--text-dim); opacity: 0.6; }
+html.light .badge-unmonitored { background: var(--surface2); color: var(--text-dim); }
+.fmt-narrator-input {
+  flex: 1; padding: 0.1rem 0.4rem; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font-size: 16px;
+}
+.fmt-narrator-input:focus { outline: none; border-color: var(--accent); }
+.fmt-narrator-text { font-size: 0.78rem; color: var(--text-dim); font-style: italic; margin-left: 0.2rem; }
 
 /* Author / series card */
 .entity-card {

@@ -580,138 +580,115 @@ function renderDetailStats(name, stats) {
   `;
 }
 
-// ── Shared: expandRequestForm ──────────────────────────────────────────────────
-// slot: Element to render into
-// result: search result shape
-// onSuccess: optional callback(createdBook, result, selectedTypes)
+// ── Shared: buildFormatRows ────────────────────────────────────────────────────
+// Renders always-visible format status rows at the bottom of a search card.
+// Each row shows a status dot (gray=unmonitored, blue=requested, green=in-library),
+// type label, optional narrator input (audiobook unmonitored), and narrator name.
+// Clicking the dot toggles between unmonitored and requested.
 
-function expandRequestForm(slot, result, onSuccess = null) {
-  const libFormats = result.library_formats || [];
-  const existingReqs = result.existing_requests || [];
+function buildFormatRows(card, result, onRequestSuccess) {
+  const container = card.querySelector('.search-card-fmt-rows');
 
-  function libFormat(type) {
-    return libFormats.find(f => f.type === type);
+  const state = {};
+  for (const type of ['audiobook', 'ebook']) {
+    const lib = (result.library_formats || []).find(f => f.type === type);
+    const req = (result.existing_requests || []).find(r => r.type === type && r.status !== 'failed');
+    state[type] = {
+      mode: lib ? 'in-library' : req ? 'requested' : 'unmonitored',
+      narrator: req ? (req.narrator || '') : '',
+      reqId: req ? (req.id || null) : null,
+      libNarrator: lib ? (lib.narrator || '') : '',
+    };
   }
-  function existingReq(type) {
-    return existingReqs.find(r => r.type === type && r.status !== 'failed');
-  }
-
-  function fmtBtnLabel(type, narratorVal) {
-    const ex = existingReq(type);
-    if (ex) return `${typeIcon(type)} ${ex.status}`;
-    const lib = libFormat(type);
-    if (lib && type === 'audiobook' && lib.narrator) return `${typeIcon(type)} have (${lib.narrator})`;
-    if (lib) return `${typeIcon(type)} have`;
-    return typeIcon(type) + ' ' + (type === 'audiobook' ? 'Audiobook' : 'Ebook');
-  }
-
-  function isBtnDisabled(type, narratorVal) {
-    const ex = existingReq(type);
-    if (ex) return true;
-    if (type === 'audiobook') {
-      const lib = libFormat('audiobook');
-      if (lib && lib.narrator && narratorVal &&
-          lib.narrator.toLowerCase() === narratorVal.toLowerCase()) return true;
-    }
-    return false;
-  }
-
-  let selectedType = null;
-  let narrator = '';
 
   function render() {
-    slot.innerHTML = `
-      <div class="request-form">
-        <div class="request-format-btns">
-          <button class="btn btn-secondary btn-sm${selectedType === 'audiobook' ? ' btn-primary' : ''}"
-            id="rf-audiobook" ${isBtnDisabled('audiobook', narrator) ? 'disabled' : ''}>
-            ${fmtBtnLabel('audiobook', narrator)}
-          </button>
-          <button class="btn btn-secondary btn-sm${selectedType === 'ebook' ? ' btn-primary' : ''}"
-            id="rf-ebook" ${isBtnDisabled('ebook', narrator) ? 'disabled' : ''}>
-            ${fmtBtnLabel('ebook', narrator)}
-          </button>
-        </div>
-        ${selectedType === 'audiobook' ? `
-          <div class="request-narrator">
-            <input type="text" id="rf-narrator" placeholder="Narrator (optional)" value="${escapeHtml(narrator)}">
-          </div>
-        ` : ''}
-        ${selectedType ? `
-          <div class="request-submit-row">
-            <button class="btn btn-primary btn-sm" id="rf-submit">Request</button>
-            <button class="btn btn-ghost btn-sm" id="rf-cancel">Cancel</button>
-          </div>
-        ` : ''}
-      </div>
-    `;
+    const ab = state['audiobook'];
+    const eb = state['ebook'];
 
-    slot.querySelector('#rf-audiobook').onclick = () => {
-      selectedType = selectedType === 'audiobook' ? null : 'audiobook';
-      render();
-    };
-    slot.querySelector('#rf-ebook').onclick = () => {
-      selectedType = selectedType === 'ebook' ? null : 'ebook';
-      render();
-    };
-    if (selectedType === 'audiobook') {
-      slot.querySelector('#rf-narrator').oninput = (e) => { narrator = e.target.value; };
+    function pill(type) {
+      const s = state[type];
+      const typeName = type === 'audiobook' ? 'Audiobook' : 'Ebook';
+      const tips = { 'in-library': `${typeName} — in library`, 'requested': `${typeName} — click to cancel`, 'unmonitored': `${typeName} — click to request` };
+      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? 'badge-requested' : 'badge-unmonitored';
+      return `<button class="badge ${badgeClass} fmt-pill" data-type="${type}" title="${tips[s.mode]}"${s.mode === 'in-library' ? ' disabled' : ''}>${typeIcon(type)}</button>`;
     }
-    if (selectedType) {
-      slot.querySelector('#rf-submit').onclick = () => submitRequest();
-      slot.querySelector('#rf-cancel').onclick = () => {
-        selectedType = null; narrator = ''; render();
-      };
+
+    // Narrator: show input if audiobook is unmonitored, text if requested/in-library
+    let narratorHtml = '';
+    if (ab.mode === 'unmonitored') {
+      narratorHtml = `<input class="fmt-narrator-input" data-type="audiobook" type="text" placeholder="Narrator" value="${escapeHtml(ab.narrator)}">`;
+    } else if (ab.mode === 'requested' && ab.narrator) {
+      narratorHtml = `<span class="fmt-narrator-text">${escapeHtml(ab.narrator)}</span>`;
+    } else if (ab.mode === 'in-library' && ab.libNarrator) {
+      narratorHtml = `<span class="fmt-narrator-text">${escapeHtml(ab.libNarrator)}</span>`;
     }
+
+    container.innerHTML = `<div class="fmt-row">
+      <span class="fmt-label">Request</span>
+      ${pill('ebook')}
+      <span class="fmt-sep">|</span>
+      ${pill('audiobook')}
+      ${narratorHtml}
+    </div>`;
+
+    const inp = container.querySelector('.fmt-narrator-input');
+    if (inp) {
+      inp.addEventListener('input', e => { state['audiobook'].narrator = e.target.value; });
+      inp.addEventListener('click', e => e.stopPropagation());
+    }
+
+    container.querySelectorAll('.fmt-pill:not(:disabled)').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); handleDot(btn.dataset.type); });
+    });
   }
 
-  async function submitRequest() {
-    const submitBtn = slot.querySelector('#rf-submit');
-    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = ICON_SPINNER + ' Requesting…'; }
+  async function handleDot(type) {
+    const s = state[type];
+    const dot = container.querySelector(`.fmt-pill[data-type="${type}"]`);
+    dot.disabled = true;
 
-    try {
-      // Try POST /api/books (creates book + request if new)
-      const body = {
-        title: result.title,
-        author: result.author,
-        cover_url: result.cover_url || null,
-        series: result.series && result.series[0] ? result.series[0].name : null,
-        series_position: result.series && result.series[0] ? result.series[0].position : null,
-        metadata_source: result.metadata_source || null,
-        metadata_id: result.metadata_id || null,
-        metadata_url: result.metadata_url || null,
-        requests: [{ type: selectedType, narrator: selectedType === 'audiobook' ? (narrator || null) : null }],
-      };
+    if (s.mode === 'unmonitored') {
+      try {
+        const narratorVal = type === 'audiobook' ? (s.narrator.trim() || null) : null;
+        let bookId = result.book_id;
 
-      let book, skipped = false;
-      if (result.book_id) {
-        // Book already exists — just create the request
-        const reqResult = await api('/requests', {
-          method: 'POST',
-          body: { book_id: result.book_id, type: selectedType, narrator: selectedType === 'audiobook' ? (narrator || null) : null },
-        });
-        skipped = reqResult.skipped === true;
-        book = { id: result.book_id };
-      } else {
-        const res = await api('/books', { method: 'POST', body });
-        book = res;
-        skipped = res._skipped_requests > 0 && res._created_requests === 0;
+        if (!bookId) {
+          const book = await api('/books', { method: 'POST', body: {
+            title: result.title, author: result.author,
+            cover_url: result.cover_url || null,
+            series: result.series?.[0]?.name || null,
+            series_position: result.series?.[0]?.position || null,
+            metadata_source: result.metadata_source || null,
+            metadata_id: result.metadata_id || null,
+            metadata_url: result.metadata_url || null,
+          }});
+          result.book_id = book.id;
+          bookId = book.id;
+        }
+
+        const req = await api('/requests', { method: 'POST', body: { book_id: bookId, type, narrator: narratorVal } });
+        if (req.skipped) toast('Already requested', 'info');
+        s.reqId = req.id || null;
+        s.mode = 'requested';
+        render();
+        if (onRequestSuccess) onRequestSuccess({ id: bookId }, result, [type]);
+      } catch (err) {
+        toast('Request failed: ' + err.message, 'error');
+        dot.disabled = false;
       }
 
-      if (skipped) {
-        toast('Request already exists', 'info');
-      } else {
-        toast('Requested!', 'success');
+    } else if (s.mode === 'requested') {
+      if (!s.reqId) { toast('Cannot cancel — unknown request ID', 'warning'); dot.disabled = false; return; }
+      try {
+        await api(`/requests/${s.reqId}`, { method: 'DELETE' });
+        s.mode = 'unmonitored';
+        s.reqId = null;
+        s.narrator = '';
+        render();
+      } catch (err) {
+        toast('Cancel failed: ' + err.message, 'error');
+        dot.disabled = false;
       }
-
-      if (onSuccess) {
-        onSuccess(book, result, [selectedType]);
-      } else {
-        navigate('/library/book', { book_id: book.id });
-      }
-    } catch (err) {
-      toast('Request failed: ' + err.message, 'error');
-      if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = 'Request'; }
     }
   }
 
@@ -735,16 +712,18 @@ function renderSearchResults(container, results, onRequestSuccess = null) {
     const card = document.createElement('div');
     card.className = 'search-card';
 
+    const pos = result.series && result.series[0] && result.series[0].position;
+    const posFmt = pos ? (() => { const n = parseFloat(pos); return isNaN(n) ? pos : (n % 1 === 0 ? String(Math.floor(n)) : String(n)); })() : '';
     const seriesStr = (result.series && result.series[0])
-      ? `${escapeHtml(result.series[0].name)}${result.series[0].position ? ' #' + result.series[0].position : ''}`
+      ? `${escapeHtml(result.series[0].name)}${posFmt ? ' #' + posFmt : ''}`
       : '';
 
     const ratingStr = result.rating
-      ? `${ICON_STAR} ${result.rating.toFixed(1)} (${result.rating_count || 0})`
+      ? `${ICON_STAR} ${result.rating.toFixed(1)} <span style="opacity:0.6">(${result.rating_count || 0})</span>`
       : '';
 
-    const inLibBadge = result.in_library
-      ? `<span class="badge badge-in_library">${ICON_CHECK} in library</span>`
+    const hcLink = result.hardcover_url
+      ? `<a href="${escapeHtml(result.hardcover_url)}" target="_blank" class="search-card-hc-link" title="Open on Hardcover">${ICON_HC()}</a>`
       : '';
 
     card.innerHTML = `
@@ -753,39 +732,20 @@ function renderSearchResults(container, results, onRequestSuccess = null) {
         : `<div class="search-card-cover-placeholder">${ICON_EBOOK}</div>`
       }
       <div class="search-card-body">
-        <div class="search-card-title">${escapeHtml(result.title)}</div>
-        <div class="search-card-author">${escapeHtml(result.author)}</div>
+        <div class="search-card-title-row">
+          <div class="search-card-title">${escapeHtml(result.title)}</div>
+          ${hcLink}
+        </div>
+        <div class="search-card-author">${escapeHtml((result.authors && result.authors.length > 1 ? result.authors.map(a => a.name) : [result.author]).join(', '))}</div>
         ${seriesStr ? `<div class="search-card-series">${seriesStr}</div>` : ''}
         <div class="search-card-meta">
           ${ratingStr ? `<span class="search-card-rating">${ratingStr}</span>` : ''}
-          ${inLibBadge}
         </div>
-        <div class="search-card-actions">
-          <button class="btn btn-secondary btn-sm" data-req-toggle>
-            ${ICON_DOWNLOAD} Request
-          </button>
-          ${result.book_id ? `<a href="${buildHash('/library/book', { book_id: result.book_id })}" class="btn btn-ghost btn-sm">View</a>` : ''}
-        </div>
-        <div class="search-card-slot"></div>
       </div>
+      <div class="search-card-fmt-rows"></div>
     `;
 
-    const reqBtn = card.querySelector('[data-req-toggle]');
-    const slot = card.querySelector('.search-card-slot');
-
-    reqBtn.onclick = () => {
-      if (slot.innerHTML.trim()) {
-        slot.innerHTML = '';
-        return;
-      }
-      expandRequestForm(slot, result, (book, res, types) => {
-        slot.innerHTML = '';
-        // Update in-place
-        card.querySelector('.search-card-actions .btn-secondary').innerHTML = `${ICON_CHECK} Requested`;
-        card.querySelector('.search-card-actions .btn-secondary').disabled = true;
-        if (onRequestSuccess) onRequestSuccess(book, res, types);
-      });
-    };
+    buildFormatRows(card, result, onRequestSuccess);
 
     container.appendChild(card);
   });
