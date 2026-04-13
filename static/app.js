@@ -690,10 +690,55 @@ function buildFormatRows(card, result, onRequestSuccess) {
   render();
 }
 
+// ── Shared: populateBookCard ───────────────────────────────────────────────────
+// Fills `el` with the standard book card layout (cover + body + format rows).
+// `el` should already have the appropriate class (search-card or book-detail-header).
+// result shape: { title, author, authors, series, rating, rating_count,
+//                 hardcover_url, cover_url, book_id, library_formats, existing_requests }
+
+function populateBookCard(el, result, onRequestSuccess, { showFmtRows = true } = {}) {
+  const pos = result.series && result.series[0] && result.series[0].position;
+  const posFmt = pos ? (() => { const n = parseFloat(pos); return isNaN(n) ? pos : (n % 1 === 0 ? String(Math.floor(n)) : String(n)); })() : '';
+  const seriesStr = (result.series && result.series[0])
+    ? `${escapeHtml(result.series[0].name)}${posFmt ? ' #' + posFmt : ''}`
+    : '';
+
+  const ratingStr = result.rating
+    ? `${ICON_STAR} ${result.rating.toFixed(1)} <span style="opacity:0.6">(${result.rating_count || 0})</span>`
+    : '';
+
+  const hcLink = result.hardcover_url
+    ? `<a href="${escapeHtml(result.hardcover_url)}" target="_blank" class="search-card-hc-link" title="Open on Hardcover">${ICON_HC()}</a>`
+    : '';
+
+  const authorStr = (result.authors && result.authors.length > 1
+    ? result.authors.map(a => a.name)
+    : [result.author]
+  ).filter(Boolean).join(', ');
+
+  el.innerHTML = `
+    ${result.cover_url
+      ? `<img class="search-card-cover" src="${escapeHtml(result.cover_url)}" alt="" loading="lazy">`
+      : `<div class="search-card-cover-placeholder">${ICON_EBOOK}</div>`
+    }
+    <div class="search-card-body">
+      <div class="search-card-title-row">
+        <div class="search-card-title">${escapeHtml(result.title)}</div>
+        ${hcLink}
+      </div>
+      <div class="search-card-author">${escapeHtml(authorStr)}</div>
+      ${seriesStr ? `<div class="search-card-series">${seriesStr}</div>` : ''}
+      <div class="search-card-meta">
+        ${ratingStr ? `<span class="search-card-rating">${ratingStr}</span>` : ''}
+      </div>
+    </div>
+    ${showFmtRows ? '<div class="search-card-fmt-rows"></div>' : ''}
+  `;
+
+  if (showFmtRows) buildFormatRows(el, result, onRequestSuccess);
+}
+
 // ── Shared: renderSearchResults ────────────────────────────────────────────────
-// container: Element
-// results: array of search result shape
-// onRequestSuccess: optional callback(book, result, types) — if null, navigates to book
 
 function renderSearchResults(container, results, onRequestSuccess = null) {
   if (!results || results.length === 0) {
@@ -706,42 +751,7 @@ function renderSearchResults(container, results, onRequestSuccess = null) {
   results.forEach(result => {
     const card = document.createElement('div');
     card.className = 'search-card';
-
-    const pos = result.series && result.series[0] && result.series[0].position;
-    const posFmt = pos ? (() => { const n = parseFloat(pos); return isNaN(n) ? pos : (n % 1 === 0 ? String(Math.floor(n)) : String(n)); })() : '';
-    const seriesStr = (result.series && result.series[0])
-      ? `${escapeHtml(result.series[0].name)}${posFmt ? ' #' + posFmt : ''}`
-      : '';
-
-    const ratingStr = result.rating
-      ? `${ICON_STAR} ${result.rating.toFixed(1)} <span style="opacity:0.6">(${result.rating_count || 0})</span>`
-      : '';
-
-    const hcLink = result.hardcover_url
-      ? `<a href="${escapeHtml(result.hardcover_url)}" target="_blank" class="search-card-hc-link" title="Open on Hardcover">${ICON_HC()}</a>`
-      : '';
-
-    card.innerHTML = `
-      ${result.cover_url
-        ? `<img class="search-card-cover" src="${escapeHtml(result.cover_url)}" alt="" loading="lazy">`
-        : `<div class="search-card-cover-placeholder">${ICON_EBOOK}</div>`
-      }
-      <div class="search-card-body">
-        <div class="search-card-title-row">
-          <div class="search-card-title">${escapeHtml(result.title)}</div>
-          ${hcLink}
-        </div>
-        <div class="search-card-author">${escapeHtml((result.authors && result.authors.length > 1 ? result.authors.map(a => a.name) : [result.author]).join(', '))}</div>
-        ${seriesStr ? `<div class="search-card-series">${seriesStr}</div>` : ''}
-        <div class="search-card-meta">
-          ${ratingStr ? `<span class="search-card-rating">${ratingStr}</span>` : ''}
-        </div>
-      </div>
-      <div class="search-card-fmt-rows"></div>
-    `;
-
-    buildFormatRows(card, result, onRequestSuccess);
-
+    populateBookCard(card, result, onRequestSuccess);
     container.appendChild(card);
   });
 }
@@ -852,13 +862,13 @@ function updateActiveNav() {
 
 // Home / Search
 route('/', async (params, qp) => {
-  document.body.classList.add('home-page');
-
   const q = qp.q || '';
   const author = qp.author || '';
   const series = qp.series || '';
   const advanced = qp.advanced === '1';
   const hasValue = !!(q || author || series);
+
+  if (!hasValue) document.body.classList.add('home-page');
 
   app.innerHTML = `
     <div class="search-page ${hasValue ? '' : 'empty'}" id="search-page">
@@ -923,8 +933,9 @@ route('/', async (params, qp) => {
     if (isAdv) newParams.advanced = '1';
     history.replaceState(null, '', buildHash('/', newParams));
 
-    // Move input to top
+    // Move input to top, switch to normal nav layout
     searchPage.classList.remove('empty');
+    document.body.classList.remove('home-page');
 
     renderLoading(resultsDiv);
 
@@ -1356,6 +1367,137 @@ route('/library/series/:id', async ({ id }) => {
   }
 });
 
+// ── Book detail: format rows ───────────────────────────────────────────────────
+
+function renderDetailFormats(container, book, onRefresh) {
+  const libraryFormats = book.formats || [];
+  const activeRequests = book.requests || [];
+  const bookId = book.id;
+
+  const fmtKey = (type, narrator) => `${type}::${narrator || ''}`;
+  const rows = [];
+  const seen = new Set();
+
+  for (const fmt of libraryFormats) {
+    const key = fmtKey(fmt.type, fmt.narrator);
+    seen.add(key);
+    rows.push({ status: 'in_library', type: fmt.type, narrator: fmt.narrator || null, fmt, request: null });
+  }
+  for (const req of activeRequests) {
+    const key = fmtKey(req.type, req.narrator);
+    if (!seen.has(key)) {
+      seen.add(key);
+      rows.push({ status: req.status, type: req.type, narrator: req.narrator || null, fmt: null, request: req });
+    }
+  }
+  for (const type of ['ebook', 'audiobook']) {
+    if (!rows.some(r => r.type === type)) {
+      rows.push({ status: 'missing', type, narrator: null, fmt: null, request: null });
+    }
+  }
+
+  container.innerHTML = '';
+  rows.forEach(row => {
+    const wrap = document.createElement('div');
+    wrap.className = 'collapsible-row';
+
+    const badgeCls = row.status === 'in_library'
+      ? 'badge-completed'
+      : row.status === 'missing'
+        ? 'badge-unmonitored'
+        : `badge-${row.status}`;
+    const badgeTitle = row.status === 'in_library' ? 'In library' : row.status;
+    const typeLabel = row.type === 'audiobook' ? 'Audiobook' : 'Ebook';
+    const narratorHtml = row.narrator
+      ? `<span class="detail-fmt-narrator">${escapeHtml(row.narrator)}</span>`
+      : '';
+
+    wrap.innerHTML = `
+      <button class="collapsible-trigger">
+        <span class="badge ${badgeCls}" title="${badgeTitle}">${typeIcon(row.type)}</span>
+        <span class="detail-fmt-type">${typeLabel}</span>
+        ${narratorHtml}
+        <span class="collapsible-chevron">${ICON_CHEVRON_DOWN}</span>
+      </button>
+      <div class="collapsible-content" style="display:none"></div>
+    `;
+
+    const trigger = wrap.querySelector('.collapsible-trigger');
+    const content = wrap.querySelector('.collapsible-content');
+    trigger.onclick = () => {
+      const open = content.style.display !== 'none';
+      if (open) {
+        content.style.display = 'none';
+        trigger.querySelector('.collapsible-chevron').classList.remove('open');
+      } else {
+        content.style.display = '';
+        trigger.querySelector('.collapsible-chevron').classList.add('open');
+        if (!content.dataset.populated) {
+          content.dataset.populated = '1';
+          renderDetailFormatContent(content, row, bookId, onRefresh);
+        }
+      }
+    };
+    container.appendChild(wrap);
+  });
+}
+
+function renderDetailFormatContent(container, row, bookId, onRefresh) {
+  const refresh = onRefresh || (() => {});
+  if (row.status === 'in_library') {
+    const fmt = row.fmt;
+    container.innerHTML = `
+      <div class="detail-fmt-detail">
+        ${fmt.abs_url ? `<div class="detail-fmt-kv"><a href="${escapeHtml(fmt.abs_url)}" target="_blank" class="detail-fmt-link">Open in AudioBookShelf</a></div>` : ''}
+        ${fmt.abs_id ? `<div class="detail-fmt-kv"><span class="td-dim">ABS item</span> <span class="td-mono">${escapeHtml(fmt.abs_id)}</span></div>` : ''}
+        ${fmt.fulfilled_by_request_id ? `<div class="detail-fmt-kv"><span class="td-dim">Download request</span> <span class="td-mono">${escapeHtml(fmt.fulfilled_by_request_id)}</span></div>` : ''}
+        ${!fmt.abs_id && !fmt.fulfilled_by_request_id ? `<div class="detail-fmt-kv td-dim">Added from AudioBookShelf library</div>` : ''}
+      </div>
+    `;
+  } else if (row.status !== 'missing') {
+    const req = row.request;
+    container.innerHTML = `
+      <div class="detail-fmt-detail">
+        <div class="detail-fmt-kv"><span class="td-dim">Status</span> <span class="badge badge-${req.status}">${escapeHtml(req.status)}</span></div>
+        <div class="detail-fmt-actions">
+          <a href="#/requests" class="btn btn-secondary btn-sm">View in Queue</a>
+          <button class="btn btn-secondary btn-sm detail-fmt-cancel">Cancel</button>
+        </div>
+      </div>
+    `;
+    container.querySelector('.detail-fmt-cancel').onclick = async () => {
+      try {
+        await api(`/requests/${req.id}`, { method: 'DELETE' });
+        toast('Request cancelled');
+        refresh();
+      } catch {
+        toast('Failed to cancel request', 'error');
+      }
+    };
+  } else {
+    const isAudio = row.type === 'audiobook';
+    container.innerHTML = `
+      <div class="detail-fmt-detail">
+        <div class="detail-fmt-request-form">
+          ${isAudio ? `<input type="text" class="input detail-fmt-narrator-input" placeholder="Narrator (optional)">` : ''}
+          <button class="btn btn-primary btn-sm detail-fmt-request-btn">Request ${escapeHtml(row.type)}</button>
+        </div>
+      </div>
+    `;
+    container.querySelector('.detail-fmt-request-btn').onclick = async () => {
+      const narrator = isAudio ? (container.querySelector('.detail-fmt-narrator-input')?.value.trim() || null) : null;
+      try {
+        const result = await api('/requests', { method: 'POST', body: { book_id: bookId, type: row.type, narrator } });
+        if (result.skipped) toast('Already requested', 'info');
+        else toast('Request created');
+        refresh();
+      } catch {
+        toast('Failed to create request', 'error');
+      }
+    };
+  }
+}
+
 // Book detail
 route('/library/book', async (params, qp) => {
   const bookId = qp.book_id;
@@ -1363,33 +1505,46 @@ route('/library/book', async (params, qp) => {
   renderLoading(app);
   try {
     const book = await api(`/books/${bookId}`);
-    const author = (book.authors || []).map(a => a.name).join(', ');
-    const seriesInfo = (book.series || []).map(s => `${s.name}${s.position ? ' #' + s.position : ''}`).join(', ');
+    const hcSlug = (book.link || {}).hardcover_slug;
+    const hcUrl = hcSlug ? `https://hardcover.app/books/${hcSlug}` : '';
+
+    const authorStr = (book.authors || []).map(a => escapeHtml(a.name)).join(', ');
+    const seriesItems = (book.series || []).map(s => {
+      const pos = s.position;
+      const posFmt = pos ? (() => { const n = parseFloat(pos); return isNaN(n) ? pos : (n % 1 === 0 ? String(Math.floor(n)) : String(n)); })() : '';
+      return escapeHtml(s.name) + (posFmt ? ' #' + posFmt : '');
+    });
 
     app.innerHTML = `
-      <div class="detail-header">
-        ${book.cover_url
-          ? `<img class="detail-cover" src="${escapeHtml(book.cover_url)}" alt="">`
-          : `<div class="detail-cover-placeholder">${ICON_EBOOK}</div>`}
-        <div class="detail-meta">
-          <div class="detail-title">${escapeHtml(book.title)}</div>
-          <div class="detail-author">${escapeHtml(author)}</div>
-          ${seriesInfo ? `<div class="detail-series">${escapeHtml(seriesInfo)}</div>` : ''}
-          <div class="detail-badges">
-            ${(book.formats || []).map(f =>
-              `<span class="badge badge-in_library" title="${f.type}${f.narrator ? ' — ' + escapeHtml(f.narrator) : ''}">${typeIcon(f.type)}${f.narrator ? ' ' + escapeHtml(f.narrator) : ''}</span>`
-            ).join('')}
-            ${(book.requests || []).map(r =>
-              `<span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}</span>`
-            ).join('')}
+      <div class="page-header">
+        <span class="page-title">${ICON_EBOOK} ${escapeHtml(book.title)}</span>
+      </div>
+      <div class="card mb-2">
+        <div class="book-detail-card">
+          ${book.cover_url
+            ? `<img class="detail-cover${book.cover_url.startsWith('/api/abs/') ? ' abs-cover' : ''}" src="${escapeHtml(book.cover_url)}" alt="" loading="lazy">`
+            : `<div class="detail-cover-placeholder">${ICON_EBOOK}</div>`
+          }
+          <div class="book-detail-card-meta">
+            ${authorStr ? `<div class="detail-author">${authorStr}</div>` : ''}
+            ${seriesItems.length ? `<div class="detail-series">${seriesItems.join('<br>')}</div>` : ''}
+            ${book.rating ? `<div class="detail-rating">${ICON_STAR} ${book.rating.toFixed(1)} <span style="opacity:0.6">(${book.rating_count || 0})</span></div>` : ''}
+            ${hcUrl ? `<a href="${escapeHtml(hcUrl)}" target="_blank" class="detail-hc-link">${ICON_HC()} Hardcover</a>` : ''}
           </div>
         </div>
       </div>
-      <div id="book-requests-section"></div>
+      <div class="section-heading">Formats</div>
+      <div id="book-formats-section"></div>
       <div id="book-abs-section" class="mt-2"></div>
       <div id="book-hc-section" class="mt-2"></div>
       <div id="book-debug-section"></div>
     `;
+
+    renderDetailFormats(document.getElementById('book-formats-section'), book, () => {
+      api(`/books/${bookId}`).then(updated => {
+        renderDetailFormats(document.getElementById('book-formats-section'), updated, null);
+      }).catch(() => {});
+    });
 
     // HC match section
     const hcSection = document.getElementById('book-hc-section');
@@ -1420,53 +1575,6 @@ route('/library/book', async (params, qp) => {
       `;
     }).catch(() => {});
 
-    const reqSection = document.getElementById('book-requests-section');
-    const pendingRequests = book.requests || [];
-    if (pendingRequests.length) {
-      reqSection.innerHTML = `<div class="section-heading">Requests</div>`;
-      pendingRequests.forEach(req => {
-        const row = document.createElement('div');
-        row.className = 'collapsible-row';
-        row.innerHTML = `
-          <button class="collapsible-trigger">
-            <span class="badge badge-${req.status}">${typeIcon(req.type)} ${req.status}</span>
-            ${req.narrator ? `<span class="text-dim" style="font-size:0.85rem">— ${escapeHtml(req.narrator)}</span>` : ''}
-            <span style="margin-left:auto">${ICON_CHEVRON_DOWN}</span>
-          </button>
-          <div class="collapsible-content" style="display:none">
-            <div class="flex-gap mt-1" id="req-actions-${req.id}">
-              <a href="#/requests/${req.id}" class="btn btn-secondary btn-sm">View detail</a>
-              <button class="btn btn-ghost btn-sm" id="req-delete-${req.id}">Delete</button>
-            </div>
-          </div>
-        `;
-        const trigger = row.querySelector('.collapsible-trigger');
-        const content = row.querySelector('.collapsible-content');
-        trigger.onclick = () => {
-          const open = content.style.display !== 'none';
-          content.style.display = open ? 'none' : 'block';
-          trigger.querySelector('svg:last-child').outerHTML = open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_UP;
-        };
-        document.addEventListener('click', () => {}, { once: true });
-        reqSection.appendChild(row);
-
-        // Delete button
-        setTimeout(() => {
-          const deleteBtn = document.getElementById(`req-delete-${req.id}`);
-          if (deleteBtn) {
-            deleteBtn.onclick = () => confirmAction(deleteBtn, 'Confirm delete', async () => {
-              try {
-                await api(`/requests/${req.id}`, { method: 'DELETE' });
-                row.remove();
-                toast('Request deleted');
-              } catch {
-                toast('Delete failed', 'error');
-              }
-            });
-          }
-        }, 0);
-      });
-    }
   } catch (err) {
     renderError(app, render);
   }
