@@ -413,11 +413,14 @@ async def _get_book_requests(db, book_id: str) -> list:
 async def _get_book_formats(db, book_id: str) -> list:
     rows = await (
         await db.execute(
-            "SELECT type, narrator FROM book_formats WHERE book_id = ? ORDER BY type",
+            """SELECT id, type, narrator, abs_id, abs_url, fulfilled_by_request_id
+               FROM book_formats WHERE book_id = ? ORDER BY type""",
             (book_id,),
         )
     ).fetchall()
-    return [{"type": r["type"], "narrator": r["narrator"]} for r in rows]
+    return [{"id": r["id"], "type": r["type"], "narrator": r["narrator"],
+             "abs_id": r["abs_id"], "abs_url": r["abs_url"],
+             "fulfilled_by_request_id": r["fulfilled_by_request_id"]} for r in rows]
 
 
 # ── Search annotation helper ───────────────────────────────────────────────────
@@ -605,9 +608,9 @@ async def create_book(body: CreateBookBody):
                 book_id = title_match["id"]
 
         # 3. Create new book
+        now = _now()
         if not book_id:
             book_id = str(uuid.uuid4())
-            now = _now()
             await db.execute(
                 """INSERT INTO books (id, title, cover_url, metadata_source, metadata_url, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -620,28 +623,27 @@ async def create_book(body: CreateBookBody):
                     now, now,
                 ),
             )
-
-            # Authors
-            author_names = _split_authors(body.author) if body.author else []
-            for pos, name in enumerate(author_names, 1):
-                author_id = await _get_or_create_author(db, name)
-                await db.execute(
-                    "INSERT OR IGNORE INTO book_authors (book_id, author_id, author_position) VALUES (?, ?, ?)",
-                    (book_id, author_id, pos),
-                )
-
-            # Series
-            if body.series:
-                series_id = await _get_or_create_series(db, body.series.strip())
-                await db.execute(
-                    "INSERT OR IGNORE INTO book_series (book_id, series_id, position) VALUES (?, ?, ?)",
-                    (book_id, series_id, body.series_position or None),
-                )
-
-            # book_links row
+            # book_links row (only on creation — sync owns this for ABS-linked books)
             await db.execute(
                 "INSERT OR IGNORE INTO book_links (id, book_id, hardcover_id, linked_at) VALUES (?, ?, ?, ?)",
-                (str(uuid.uuid4()), book_id, body.metadata_id or None, _now()),
+                (str(uuid.uuid4()), book_id, body.metadata_id or None, now),
+            )
+
+        # Authors — always upsert so existing books without authors get filled in
+        author_names = _split_authors(body.author) if body.author else []
+        for pos, name in enumerate(author_names, 1):
+            author_id = await _get_or_create_author(db, name)
+            await db.execute(
+                "INSERT OR IGNORE INTO book_authors (id, book_id, author_id, author_position, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), book_id, author_id, pos, now),
+            )
+
+        # Series — always upsert
+        if body.series:
+            series_id = await _get_or_create_series(db, body.series.strip())
+            await db.execute(
+                "INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), book_id, series_id, body.series_position or None, now),
             )
 
         # 4. Create requests

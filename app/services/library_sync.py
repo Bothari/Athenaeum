@@ -1150,7 +1150,7 @@ async def _sync_item(item: dict) -> str:
                 if not fmt_type or fmt_type in seen_types:
                     continue
                 seen_types.add(fmt_type)
-                narrator = fmt.get("narrator") or None
+                narrator = fmt.get("narrator") or ''
                 await db.execute(
                     """INSERT OR IGNORE INTO book_formats
                            (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
@@ -1208,7 +1208,7 @@ async def _sync_item(item: dict) -> str:
                 if not fmt_type or fmt_type in seen_types:
                     continue
                 seen_types.add(fmt_type)
-                narrator = fmt.get("narrator") or None
+                narrator = fmt.get("narrator") or ''
                 r = await db.execute(
                     """INSERT OR IGNORE INTO book_formats
                            (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)

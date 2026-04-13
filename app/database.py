@@ -206,6 +206,36 @@ async def _run_migrations(db):
         await db.execute("DELETE FROM requests WHERE status = 'in_library'")
         await db.execute("PRAGMA user_version = 3")
 
+    if current < 4:
+        # Fix: UNIQUE(book_id, type, narrator) allows multiple NULLs in SQLite.
+        # Deduplicate then normalize narrator NULL -> '' and recreate with NOT NULL.
+        await db.execute("""
+            DELETE FROM book_formats WHERE id NOT IN (
+                SELECT MIN(id) FROM book_formats GROUP BY book_id, type, COALESCE(narrator, '')
+            )
+        """)
+        await db.execute("UPDATE book_formats SET narrator = '' WHERE narrator IS NULL")
+        await db.execute("UPDATE requests SET narrator = '' WHERE narrator IS NULL")
+        await db.execute("""
+            CREATE TABLE book_formats_new (
+                id                      TEXT PRIMARY KEY,
+                book_id                 TEXT NOT NULL REFERENCES books(id),
+                type                    TEXT NOT NULL,
+                narrator                TEXT NOT NULL DEFAULT '',
+                abs_id                  TEXT,
+                abs_url                 TEXT,
+                fulfilled_by_request_id TEXT REFERENCES requests(id),
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL,
+                UNIQUE(book_id, type, narrator)
+            )
+        """)
+        await db.execute("INSERT INTO book_formats_new SELECT * FROM book_formats")
+        await db.execute("DROP TABLE book_formats")
+        await db.execute("ALTER TABLE book_formats_new RENAME TO book_formats")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_book_formats_book ON book_formats(book_id)")
+        await db.execute("PRAGMA user_version = 4")
+
     await db.commit()
 
 

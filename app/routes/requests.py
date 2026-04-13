@@ -34,16 +34,16 @@ async def _create_request(db, book_id: str, req_type: str, narrator: str = None)
     if active:
         return None
 
-    if narrator:
-        in_lib = await (
-            await db.execute(
-                """SELECT id FROM book_formats
-                   WHERE book_id = ? AND type = ? AND lower(narrator) = lower(?)""",
-                (book_id, req_type, narrator),
-            )
-        ).fetchone()
-        if in_lib:
-            return None
+    narrator_norm = narrator or ''
+    in_lib = await (
+        await db.execute(
+            """SELECT id FROM book_formats
+               WHERE book_id = ? AND type = ? AND lower(narrator) = lower(?)""",
+            (book_id, req_type, narrator_norm),
+        )
+    ).fetchone()
+    if in_lib:
+        return None
 
     req_id = str(uuid.uuid4())
     now = _now()
@@ -113,7 +113,7 @@ async def create_request(body: CreateRequestBody):
         ).fetchone()
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
-        req = await _create_request(db, body.book_id, body.type, body.narrator or None)
+        req = await _create_request(db, body.book_id, body.type, body.narrator or '')
         if req is None:
             return {"skipped": True}
         await db.commit()
@@ -266,7 +266,7 @@ async def sync_library_requests():
                                    (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (str(uuid.uuid4()), row["book_id"], row["type"],
-                             fmt.get("narrator") or row["narrator"],
+                             fmt.get("narrator") or row["narrator"] or '',
                              item.get("abs_id"), item.get("abs_url"),
                              row["id"], now, now),
                         )
