@@ -1,6 +1,7 @@
 """Hardcover search service for user-facing book search."""
 import asyncio
 import logging
+import re
 
 import httpx
 
@@ -168,6 +169,72 @@ async def search_books(
 
     docs.sort(key=lambda d: d.get("users_count") or 0, reverse=True)
     return [normalize_hit(d, context_hc_series_id) for d in docs]
+
+
+_SERIES_GQL = (
+    'query GetSeriesBooks($id: Int!) {'
+    '  series_by_pk(id: $id) {'
+    '    id name books_count'
+    '    book_series(order_by: {position: asc}) {'
+    '      position details compilation'
+    '      book { id title slug users_count }'
+    '    }'
+    '  }'
+    '}'
+)
+
+
+def _normalize_position(pos) -> str:
+    if not pos:
+        return ""
+    pos = str(pos).strip()
+    try:
+        n = float(pos)
+        return str(int(n)) if n == int(n) else str(n)
+    except (ValueError, TypeError):
+        return pos.lower()
+
+
+def _is_compilation(entry: dict) -> bool:
+    if entry.get("compilation"):
+        return True
+    for field in (entry.get("details") or "", str(entry.get("position") or "")):
+        if re.search(r'\d+\s*[-,&]\s*\d+', field):
+            return True
+    return False
+
+
+async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
+    """Fetch all books in a Hardcover series. Returns list of {title, position, compilation, hc_book_id}."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={"query": _SERIES_GQL, "variables": {"id": int(hc_series_id)}},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        logger.warning("get_hc_series_books(%s) failed: %s", hc_series_id, e)
+        return []
+
+    series = (data.get("data") or {}).get("series_by_pk") or {}
+    books = []
+    for entry in (series.get("book_series") or []):
+        book = entry.get("book") or {}
+        title = book.get("title") or ""
+        if not title:
+            continue
+        position = _normalize_position(entry.get("position") or entry.get("details") or "")
+        books.append({
+            "title": title,
+            "position": position,
+            "compilation": _is_compilation(entry),
+            "hc_book_id": str(book.get("id") or ""),
+            "slug": book.get("slug") or "",
+        })
+    return books
 
 
 async def advanced_search_books(

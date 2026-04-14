@@ -204,7 +204,7 @@ class TestSyncLibrary:
         assert author_count == 1
         assert link_count == 1
 
-    async def test_in_library_requests_created(self, sync_client, monkeypatch):
+    async def test_in_library_formats_created(self, sync_client, monkeypatch):
         from app.services import library_sync
         async def mock_list_all_items(self):
             return ABS_ITEMS[1:2]  # Words of Radiance — has audiobook + ebook
@@ -221,7 +221,7 @@ class TestSyncLibrary:
         from app.database import get_db
         async with get_db() as db:
             rows = await (await db.execute(
-                "SELECT type, status FROM requests WHERE status = 'in_library'"
+                "SELECT type FROM book_formats"
             )).fetchall()
 
         types = {r["type"] for r in rows}
@@ -271,7 +271,7 @@ class TestSyncLibrary:
         assert count == 1
 
     async def test_new_format_added_on_resync(self, sync_client, monkeypatch):
-        """If a new format appears on resync, a new in_library request is created."""
+        """If a new format appears on resync, it is added to book_formats."""
         from app.services import library_sync
 
         audiobook_only = [{**ABS_ITEMS[0], "formats": [{"type": "audiobook", "narrator": "Michael Kramer"}]}]
@@ -297,7 +297,7 @@ class TestSyncLibrary:
         from app.database import get_db
         async with get_db() as db:
             rows = await (await db.execute(
-                "SELECT type FROM requests WHERE status = 'in_library'"
+                "SELECT type FROM book_formats"
             )).fetchall()
         types = {r["type"] for r in rows}
         assert "audiobook" in types
