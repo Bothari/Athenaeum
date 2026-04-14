@@ -1,11 +1,14 @@
+import asyncio
+import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from ..database import get_db
+from ..services import book_search as _book_search
 from ..settings import get_settings
 
 router = APIRouter(prefix="/api")
@@ -347,6 +350,119 @@ async def get_series_books(series_id: str):
             items.append(book)
 
     return items
+
+
+@router.get("/series/{series_id}/missing")
+async def get_series_missing(series_id: str):
+    """Return missing books for a series using HC series data vs locally owned positions."""
+
+    async with get_db() as db:
+        series_row = await (
+            await db.execute("SELECT id, name FROM series WHERE id = ?", (series_id,))
+        ).fetchone()
+        if not series_row:
+            raise HTTPException(status_code=404, detail="Series not found")
+
+        link_row = await (
+            await db.execute(
+                "SELECT hardcover_series_id FROM series_links WHERE series_id = ?",
+                (series_id,),
+            )
+        ).fetchone()
+        hc_series_id = (link_row["hardcover_series_id"] if link_row else None) or ""
+
+        if not hc_series_id:
+            return {"items": [], "truncated": False, "error": "Series not linked to Hardcover"}
+
+        settings = await get_settings()
+        api_key = settings.get("hardcover", {}).get("api_key", "")
+        if not api_key:
+            return {"items": [], "truncated": False, "error": "Hardcover API key not configured"}
+
+        # Check cache
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        cache_row = await (
+            await db.execute(
+                "SELECT results_json FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
+                (hc_series_id, "hardcover_series", now_iso),
+            )
+        ).fetchone()
+
+        if cache_row:
+            hc_books = json.loads(cache_row["results_json"])
+        else:
+            hc_books = await _book_search.get_hc_series_books(hc_series_id, api_key)
+            expires_iso = (now_dt + timedelta(days=14)).isoformat()
+            await db.execute(
+                """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(query, source) DO UPDATE SET
+                     results_json = excluded.results_json,
+                     created_at = excluded.created_at,
+                     expires_at = excluded.expires_at""",
+                (str(__import__("uuid").uuid4()), hc_series_id, "hardcover_series",
+                 json.dumps(hc_books), now_iso, expires_iso),
+            )
+            await db.commit()
+
+        # Get owned positions and HC book IDs
+        owned_rows = await (
+            await db.execute(
+                """SELECT bs.position, bl.hardcover_id
+                   FROM book_series bs
+                   JOIN books b ON b.id = bs.book_id
+                   LEFT JOIN book_links bl ON bl.book_id = b.id
+                   WHERE bs.series_id = ?""",
+                (series_id,),
+            )
+        ).fetchall()
+        owned_positions = {r["position"] for r in owned_rows if r["position"]}
+        owned_hc_ids = {r["hardcover_id"] for r in owned_rows if r["hardcover_id"]}
+
+        # Filter to missing: not owned by position or HC book ID, not compilations
+        TRUNCATE_AT = 50
+        truncated = len(hc_books) > TRUNCATE_AT
+        candidates = [
+            b for b in hc_books
+            if not b["compilation"]
+            and b["hc_book_id"] not in owned_hc_ids
+            and b["position"] not in owned_positions
+        ][:TRUNCATE_AT]
+
+    if not candidates:
+        return {"items": [], "truncated": truncated}
+
+    # For each missing book, search HC for best edition
+    results = []
+    for entry in candidates:
+        await asyncio.sleep(0.25)
+        try:
+            hits = await _book_search.search_books(entry["title"], api_key, pages=1,
+                                                   context_hc_series_id=hc_series_id)
+        except Exception as e:
+            logger.warning("series missing search failed for %r: %s", entry["title"], e)
+            hits = []
+
+        if hits:
+            best = hits[0]
+            best["series_position"] = entry["position"]
+            results.append(best)
+
+    # Annotate with local DB data
+    async with get_db() as db:
+        results = await _annotate_results(results, db)
+
+    # Sort by position numerically
+    def _pos_sort_key(item):
+        pos = item.get("series_position") or ""
+        try:
+            return (0, float(pos))
+        except (ValueError, TypeError):
+            return (1, pos)
+
+    results.sort(key=_pos_sort_key)
+    return {"items": results, "truncated": truncated}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

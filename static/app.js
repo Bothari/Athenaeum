@@ -1508,11 +1508,15 @@ route('/library/book', async (params, qp) => {
     const hcSlug = (book.link || {}).hardcover_slug;
     const hcUrl = hcSlug ? `https://hardcover.app/books/${hcSlug}` : '';
 
-    const authorStr = (book.authors || []).map(a => escapeHtml(a.name)).join(', ');
+    const authorHtml = (book.authors || []).map(a => {
+      const name = escapeHtml(a.name);
+      return a.id ? `<a href="#/library/authors/${a.id}" class="detail-link">${name}</a>` : name;
+    }).join(', ');
     const seriesItems = (book.series || []).map(s => {
       const pos = s.position;
       const posFmt = pos ? (() => { const n = parseFloat(pos); return isNaN(n) ? pos : (n % 1 === 0 ? String(Math.floor(n)) : String(n)); })() : '';
-      return escapeHtml(s.name) + (posFmt ? ' #' + posFmt : '');
+      const label = escapeHtml(s.name) + (posFmt ? ' #' + posFmt : '');
+      return s.id ? `<a href="#/library/series/${s.id}" class="detail-link">${label}</a>` : label;
     });
 
     app.innerHTML = `
@@ -1526,7 +1530,7 @@ route('/library/book', async (params, qp) => {
             : `<div class="detail-cover-placeholder">${ICON_EBOOK}</div>`
           }
           <div class="book-detail-card-meta">
-            ${authorStr ? `<div class="detail-author">${authorStr}</div>` : ''}
+            ${authorHtml ? `<div class="detail-author">${authorHtml}</div>` : ''}
             ${seriesItems.length ? `<div class="detail-series">${seriesItems.join('<br>')}</div>` : ''}
             ${book.rating ? `<div class="detail-rating">${ICON_STAR} ${book.rating.toFixed(1)} <span style="opacity:0.6">(${book.rating_count || 0})</span></div>` : ''}
             ${hcUrl ? `<a href="${escapeHtml(hcUrl)}" target="_blank" class="detail-hc-link">${ICON_HC()} Hardcover</a>` : ''}

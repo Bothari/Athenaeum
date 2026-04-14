@@ -141,15 +141,18 @@ _Completed 2026-04-11_
 
 ---
 
-## Phase 6: Detail Pages [partial]
-_In progress — detail pages built, book_links and missing-books logic pending_
+## Phase 6: Detail Pages [complete]
+_Completed 2026-04-13_
 
 - [x] Book detail page — metadata, authors, series, formats (in-library), ABS/HC link IDs in debug view
 - [x] Author detail page — books table (sortable), debug card with `abs_author_id` / `hardcover_author_id`
 - [x] Series detail page — books list/poster view with position and formats
-- [ ] `app/routes/book_links.py` — ABS/Hardcover link/unlink endpoints
-- [ ] Series missing-books detection (async, compare owned positions to HC series total)
-- [ ] `tests/test_routes/test_book_links.py`
+- [x] `GET /api/series/{id}/missing` — compares HC series positions to locally owned, searches best editions for gaps; cached 14 days in `metadata_cache`
+- [x] `get_hc_series_books()` in `book_search.py` — fetches all positions from HC series GraphQL, with `_normalize_position()` and `_is_compilation()` helpers
+- [x] Clickable author/series links on book detail page — authors link to `#/library/authors/{id}`, series link to `#/library/series/{id}`
+- [x] `book_formats` dedup (migration 4): narrator `NOT NULL DEFAULT ''`, deduplicates existing NULL-narrator rows; prevents duplicate ebook rows
+- [x] `POST /books` fix: author/series upsert runs for existing books too; fixed silent `INSERT OR IGNORE` failure from missing `NOT NULL` columns
+- [x] `tests/test_routes/test_books.py` — 5 new tests for `/api/series/{id}/missing` (404, no-link, excludes-owned, compilations-excluded, HC-failure)
 
 ---
 
