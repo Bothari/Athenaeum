@@ -396,6 +396,153 @@ auth:
 
 ---
 
+## Implementation Notes
+
+Non-obvious details and gotchas from BookOrganizeClaude (the predecessor). Referenced when building Phases 5 and 6.
+
+### Hardcover: Series Missing Books
+
+`series_by_pk` returns one entry per series position, but the book it returns is often an obscure or foreign-language edition with low `users_count`. Do **not** use its metadata directly for the missing-books feature.
+
+**Correct approach:**
+1. Fetch the series to get the canonical list of positions and titles.
+2. For each position, call `search(title)` and pick the most popular matching result.
+3. Keep `series_position` from the series endpoint; all other metadata (cover, description, ISBN) comes from the search result.
+
+**Best-edition selection** (applied to candidates from `search(title)`):
+1. Sort by `users_count DESC, ratings_count DESC, rating DESC`
+2. Language filter: prefer editions whose `language` matches `preferred_language` setting; pass through entries with no language set; drop entries with a known non-preferred language
+3. Take the first result
+
+### Hardcover: Compilation Detection
+
+A book is a compilation if any of:
+- `book_series.compilation` is truthy
+- `position` or `details` string contains a comma or ampersand
+- `position` or `details` matches `\d+\s*-\s*\d+` (a range like "1-3")
+
+Compilations sort after their last included book: `"1-3"` sorts after position `3`. Use `float(series_position)` for numeric sort; handle `ValueError` (non-numeric positions) by placing them last.
+
+### ABS: Fuzzy Author Matching
+
+When checking if a download matches a book in ABS, search by title only — combined title+author ABS search is unreliable. Filter results by fuzzy author:
+
+```python
+def _fuzzy_match(query, target):
+    q = query.lower().replace(".", "").replace(" ", "")
+    t = target.lower().replace(".", "").replace(" ", "")
+    return q in t or t in q
+```
+
+Handles `"S. A. Corey"` vs `"S.A. Corey"` and similar period/spacing variants.
+
+### ABS: Series Name Parsing
+
+ABS stores series in `metadata.seriesName` as a string like `"Honor Harrington #9"` or `"Series A #1, Series B #2"`. Newer ABS versions may provide `metadata.series` as an array of `{name, sequence}` objects — check that first, fall back to parsing the string.
+
+Parsing the string:
+1. Split on comma for multiple series
+2. For each part, regex-match position patterns: `#N`, `Book N`, `Vol N` (where N is `\d+(?:\.\d+)?`)
+3. Strip the position marker from the series name
+
+### qBittorrent: Auth
+
+Cookie-based session auth. Login: `POST /api/v2/auth/login` with form data `{username, password}`. On success the response sets a `SID` cookie — cache and reuse it globally. On any `403`, re-authenticate and retry the original request once.
+
+### qBittorrent: Hash Resolution
+
+qBittorrent does not return the torrent hash from the add call. Two strategies:
+
+- **Magnet link:** parse `btih:([a-fA-F0-9]{40})` from the URI directly.
+- **.torrent file URL:** download the file, extract the bencoded `info` dict, SHA1-hash it (requires a minimal bencode parser — just enough to extract the `info` key).
+
+After adding, poll `GET /api/v2/torrents/info?hashes={hash}` every 500ms up to 20 times (10s total). Raise an error if the torrent hasn't appeared after 20 polls.
+
+### qBittorrent: State Mapping
+
+| qBit states | Normalised |
+|---|---|
+| `uploading`, `stalledUP`, `forcedUP`, `pausedUP`, `queuedUP` | `completed` |
+| `downloading`, `stalledDL`, `forcedDL`, `metaDL` | `downloading` |
+| `pausedDL`, `queuedDL` | `paused` |
+| `error`, `missingFiles` | `failed` |
+
+For the completed download path, use `content_path` (the direct path to the file or folder). Fall back to `save_path + "/" + name` if `content_path` is absent.
+
+### Download Clients: Copy vs Move
+
+For qBittorrent (torrents): **copy** files to the output directory. Leave originals intact for seeding.
+For SABnzbd (usenet): **move** files — no seeding, safe to move.
+
+```python
+use_copy = (download_client == "qbittorrent")
+```
+
+### Prowlarr: API Details
+
+Auth header is `X-Api-Key: <key>` — not `Authorization: Bearer`.
+
+Search: `GET /api/v1/search?query={q}&type=search&limit=50`
+
+Each result: `{ protocol, downloadUrl, guid, title, indexer, size, infoUrl }`.
+Route by `protocol`: `"torrent"` → qBittorrent, `"usenet"` → SABnzbd.
+
+### M4B Merge: Codec Selection and File Order
+
+When all input files are `.m4a` or `.m4b`, use `-c copy` (stream copy, no re-encode — fast, no quality loss). Only fall back to `-c:a aac -b:a {avg_bitrate}k` for mixed-format inputs.
+
+Input files must be sorted by **natural/numeric order** before merging — plain alphabetical sort breaks on `Part01, Part2, Part10`.
+
+### metadata.json (ABS-compatible)
+
+Write to the organised target directory alongside the audio/ebook files. ABS reads this on library scan.
+
+```json
+{
+  "title": "...",
+  "subtitle": "...",
+  "authors": ["Author One", "Author Two"],
+  "narrators": ["Narrator Name"],
+  "series": ["Series Name #3"],
+  "genres": ["Science Fiction"],
+  "publishedYear": "2003",
+  "publisher": "Baen Books",
+  "description": "...",
+  "isbn": "9781234567890",
+  "asin": "B00XXXXX",
+  "language": "English"
+}
+```
+
+Rules:
+- `authors` and `narrators` are arrays
+- `series` entries are `"Name #Position"` strings — omit `#position` if unknown
+- `publishedYear` is a string, not integer
+- Omit keys entirely when the value is empty or null
+
+### Post-Organize: ABS Scan Polling
+
+After moving files to the output directory:
+1. Trigger `POST /api/libraries/{lib_id}/scan`
+2. Wait 5 seconds (ABS scan is asynchronous)
+3. Poll `check_library(title, author, type)` — up to 10 retries with 5s between each
+4. On match: update `book_links` with `abs_id`; set request to `completed` (it becomes a `book_formats` entry on the next library sync)
+5. On retries exhausted: set `requests.status = 'failed'`, log reason — the next library sync will pick it up
+
+### SQLite: GROUP_CONCAT with DISTINCT
+
+`GROUP_CONCAT(DISTINCT col, ', ')` is **not valid** in SQLite — the DISTINCT aggregate form accepts only one argument. Use `GROUP_CONCAT(col, ', ')` without DISTINCT, or deduplicate via a subquery first.
+
+### UI: Two-Click Destructive Actions
+
+Inline two-click confirmation for irreversible actions (delete request, unlink, etc.):
+1. First click: change button to warning colour with label "Confirm?"
+2. Second click: execute
+
+Do **not** use `window.confirm()` (blocks the thread, looks bad on mobile). Do **not** use `:contains()` CSS selectors (jQuery syntax, not valid in plain CSS).
+
+---
+
 ## Authentication
 
 > WARNING: THIS SECTION NEEDS REVIEW BEFORE IMPLEMENTATION
