@@ -1067,6 +1067,7 @@ async def sync_library() -> dict:
 
         items = await abs_svc.list_all_items()
         counters["synced"] = len(items)
+        seen_abs_ids = {i["abs_id"] for i in items if i.get("abs_id")}
 
         for item in items:
             try:
@@ -1078,6 +1079,40 @@ async def sync_library() -> dict:
             except Exception as e:
                 logger.error(f"Error syncing item {item.get('abs_id')}: {e}", exc_info=True)
                 counters["errors"] += 1
+
+        # Remove formats and clear abs links for items deleted from ABS
+        if seen_abs_ids:
+            placeholders = ",".join("?" * len(seen_abs_ids))
+            async with get_db() as db:
+                await db.execute(
+                    f"DELETE FROM book_formats WHERE abs_id IS NOT NULL AND abs_id != '' AND abs_id NOT IN ({placeholders})",
+                    list(seen_abs_ids),
+                )
+                await db.execute(
+                    f"UPDATE book_links SET abs_id = NULL WHERE abs_id IS NOT NULL AND abs_id != '' AND abs_id NOT IN ({placeholders})",
+                    list(seen_abs_ids),
+                )
+                # Delete orphaned books: no abs_id, no formats, no active requests
+                orphan_rows = await (
+                    await db.execute(
+                        """SELECT b.id FROM books b
+                           LEFT JOIN book_links bl ON bl.book_id = b.id
+                           LEFT JOIN book_formats bf ON bf.book_id = b.id
+                           LEFT JOIN requests r ON r.book_id = b.id
+                               AND r.status NOT IN ('completed', 'failed', 'in_library')
+                           WHERE (bl.abs_id IS NULL OR bl.abs_id = '')
+                             AND bf.id IS NULL
+                             AND r.id IS NULL"""
+                    )
+                ).fetchall()
+                orphan_ids = [r[0] for r in orphan_rows]
+                for oid in orphan_ids:
+                    await db.execute("DELETE FROM book_authors WHERE book_id = ?", (oid,))
+                    await db.execute("DELETE FROM book_series WHERE book_id = ?", (oid,))
+                    await db.execute("DELETE FROM book_links WHERE book_id = ?", (oid,))
+                    await db.execute("DELETE FROM requests WHERE book_id = ? AND status IN ('completed', 'failed', 'in_library')", (oid,))
+                    await db.execute("DELETE FROM books WHERE id = ?", (oid,))
+                await db.commit()
 
     except Exception as e:
         logger.error(f"sync_library failed: {e}", exc_info=True)
