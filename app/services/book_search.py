@@ -220,20 +220,47 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
         return []
 
     series = (data.get("data") or {}).get("series_by_pk") or {}
-    books = []
+
+    # Collect all entries, then deduplicate by position keeping highest users_count.
+    # HC stores every translation/edition as a separate book_series row, so a 14-book
+    # series can have 40+ raw entries.
+    best: dict[str, dict] = {}  # position -> best entry
     for entry in (series.get("book_series") or []):
         book = entry.get("book") or {}
         title = book.get("title") or ""
         if not title:
             continue
         position = _normalize_position(entry.get("position") or entry.get("details") or "")
-        books.append({
+        is_comp = _is_compilation(entry)
+        users_count = book.get("users_count") or 0
+        candidate = {
             "title": title,
             "position": position,
-            "compilation": _is_compilation(entry),
+            "compilation": is_comp,
             "hc_book_id": str(book.get("id") or ""),
             "slug": book.get("slug") or "",
-        })
+            "users_count": users_count,
+        }
+        existing = best.get(position)
+        if existing is None:
+            best[position] = candidate
+        else:
+            # Prefer non-compilation; break ties by users_count
+            if (not is_comp and existing["compilation"]) or (
+                is_comp == existing["compilation"] and users_count > existing["users_count"]
+            ):
+                best[position] = candidate
+
+    # Sort by position and strip internal users_count field
+    def _pos_sort(item):
+        try:
+            return (0, float(item["position"]))
+        except (ValueError, TypeError):
+            return (1, item["position"])
+
+    books = sorted(best.values(), key=_pos_sort)
+    for b in books:
+        b.pop("users_count", None)
     return books
 
 

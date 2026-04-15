@@ -245,7 +245,8 @@ function renderTable(config) {
       }
       data.items.forEach(item => {
         const tr = document.createElement('tr');
-        tr.innerHTML = renderRow(item);
+        const html = renderRow(item, tr);
+        if (typeof html === 'string') tr.innerHTML = html;
         tbody.appendChild(tr);
       });
       allLoaded = data.items.length < LIMIT;
@@ -547,29 +548,17 @@ function renderSeriesCard(series) {
 // stats: { inLibrary, total, requested, missing, loadingMissing }
 
 function renderDetailStats(name, stats) {
-  const missingText = stats.loadingMissing
-    ? `<span class="text-dim">${ICON_SPINNER} loading…</span>`
-    : (stats.missing != null ? `${stats.missing} missing` : '—');
-  const total = stats.total || '?';
-  const pct = (stats.inLibrary && stats.total)
-    ? Math.round(stats.inLibrary / stats.total * 100) + '%'
-    : '';
   return `
     <div class="card mb-2">
       <div class="stats-row" style="margin-bottom:0">
         <div class="stat-card">
           <div class="stat-value">${stats.inLibrary || 0}</div>
-          <div class="stat-label">In library${total !== '?' ? ' / ' + total : ''}</div>
+          <div class="stat-label">In library</div>
         </div>
         <div class="stat-card">
           <div class="stat-value">${stats.requested || 0}</div>
           <div class="stat-label">Requested</div>
         </div>
-        <div class="stat-card">
-          <div class="stat-value">${missingText}</div>
-          <div class="stat-label">Missing</div>
-        </div>
-        ${pct ? `<div class="stat-card"><div class="stat-value">${pct}</div><div class="stat-label">Complete</div></div>` : ''}
       </div>
     </div>
   `;
@@ -1258,10 +1247,9 @@ route('/library/series/:id', async ({ id }) => {
             <button class="view-toggle-btn${view === 'list' ? ' active' : ''}" id="vt-list" title="List">${ICON_LIST_V}</button>
           </div>
         </div>
-        <div id="series-stats">${renderDetailStats(seriesName, { inLibrary, total: booksData.length, requested, loadingMissing: true })}</div>
+        <div id="series-stats">${renderDetailStats(seriesName, { inLibrary, total: booksData.length, requested })}</div>
         <div class="section-heading">Books in Library</div>
         <div id="series-books"></div>
-        <div id="series-missing-section"></div>
         <div id="series-hc-section" class="mt-2"></div>
         <div id="series-debug-section"></div>
       `;
@@ -1295,53 +1283,15 @@ route('/library/series/:id', async ({ id }) => {
     }
     renderSeriesBooksView();
 
-    // Load missing books async
     async function loadSeriesExtras() {
-      const seriesLink = (booksData[0]?.series || []).find(s => s.id === id);
-      const hcSeriesId = seriesLink?.hardcover_series_id;
-      if (hcSeriesId) {
-        try {
-          const missing = await api(`/series/${id}/missing`);
-          const statsEl = document.getElementById('series-stats');
-          if (statsEl) statsEl.innerHTML = renderDetailStats(seriesName, {
-            inLibrary,
-            total: booksData.length + (missing.results || []).length,
-            requested,
-            missing: (missing.results || []).length,
-            loadingMissing: false,
-          });
-
-          const missingSection = document.getElementById('series-missing-section');
-          if (missingSection && missing.results && missing.results.length) {
-            missingSection.innerHTML = `<div class="section-heading mt-2">Missing Books</div><div id="missing-results"></div>`;
-            renderSearchResults(document.getElementById('missing-results'), missing.results, () => {});
-            if (missing.truncated) {
-              missingSection.innerHTML += `<p class="text-dim mt-1" style="font-size:0.85rem">Showing first 50 entries — this series is too large to display in full.</p>`;
-            }
-          } else {
-            const statsEl2 = document.getElementById('series-stats');
-            if (statsEl2) statsEl2.innerHTML = renderDetailStats(seriesName, {
-              inLibrary, total: booksData.length, requested, missing: 0, loadingMissing: false,
-            });
-          }
-        } catch {
-          const statsEl = document.getElementById('series-stats');
-          if (statsEl) statsEl.innerHTML = renderDetailStats(seriesName, {
-            inLibrary, total: booksData.length, requested, loadingMissing: false,
-          });
-        }
-      } else {
-        const statsEl = document.getElementById('series-stats');
-        if (statsEl) statsEl.innerHTML = renderDetailStats(seriesName, {
-          inLibrary, total: booksData.length, requested, loadingMissing: false,
-        });
-      }
-
-      // HC match section + debug card
       try {
-        const [s, seriesData] = await Promise.all([api('/settings'), api(`/series/${id}`)]);
+        const [s, seriesData] = await Promise.all([
+          api('/settings'),
+          api(`/series/${id}`),
+        ]);
         const hcSeriesId = (seriesData.link || {}).hardcover_series_id;
         const hcSeriesSlug = (seriesData.link || {}).hardcover_series_slug;
+
         const seriesHcSection = document.getElementById('series-hc-section');
         if (seriesHcSection) {
           setupHcCard(seriesHcSection, 'series', id, hcSeriesId, hcSeriesSlug);
@@ -1456,13 +1406,15 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
     `;
   } else if (row.status !== 'missing') {
     const req = row.request;
+    const canSearch = ['requested', 'failed', 'completed'].includes(req.status);
     container.innerHTML = `
       <div class="detail-fmt-detail">
         <div class="detail-fmt-kv"><span class="td-dim">Status</span> <span class="badge badge-${req.status}">${escapeHtml(req.status)}</span></div>
         <div class="detail-fmt-actions">
-          <a href="#/requests" class="btn btn-secondary btn-sm">View in Queue</a>
+          ${canSearch ? `<button class="btn btn-primary btn-sm detail-fmt-search">${ICON_SEARCH} Search Prowlarr</button>` : ''}
           <button class="btn btn-secondary btn-sm detail-fmt-cancel">Cancel</button>
         </div>
+        <div class="detail-fmt-search-results mt-1"></div>
       </div>
     `;
     container.querySelector('.detail-fmt-cancel').onclick = async () => {
@@ -1474,6 +1426,63 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
         toast('Failed to cancel request', 'error');
       }
     };
+    if (canSearch) {
+      container.querySelector('.detail-fmt-search').onclick = async (e) => {
+        const btn = e.currentTarget;
+        const resultsEl = container.querySelector('.detail-fmt-search-results');
+        btn.disabled = true;
+        btn.innerHTML = ICON_SPINNER + ' Searching…';
+        try {
+          const data = await api(`/requests/${req.id}/search-indexers`, { method: 'POST' });
+          const results = data.results || [];
+          if (data.error || !results.length) {
+            resultsEl.innerHTML = `<div class="text-dim">${escapeHtml(data.error || 'No results found.')}</div>`;
+          } else {
+            resultsEl.innerHTML = '';
+            results.forEach(res => {
+              // Extract format hint from release title (MP3, M4B, FLAC, EPUB, etc.)
+              const fmtMatch = (res.title || '').match(/\b(mp3|m4b|m4a|flac|opus|ogg|aac|epub|mobi|azw3?|pdf)\b/i);
+              const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
+              const row = document.createElement('div');
+              row.style.cssText = 'padding:0.5rem 0;border-top:1px solid var(--border);font-size:0.85rem';
+              row.innerHTML = `
+                <div style="word-break:break-word;margin-bottom:0.3rem">${escapeHtml(res.title || '—')}</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap">
+                  <div class="text-dim" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+                    ${fmt ? `<span class="badge" style="background:var(--surface2);color:var(--text)">${fmt}</span>` : ''}
+                    <span>${res.protocol === 'torrent' ? 'Torrent' : 'Usenet'}</span>
+                    <span>${formatBytes(res.size)}</span>
+                    ${res.seeders != null ? `<span title="seeders">${res.seeders}S</span>` : ''}
+                    <span>${escapeHtml(res.indexer || '—')}</span>
+                  </div>
+                  <button class="btn btn-primary btn-sm" style="flex-shrink:0">Download</button>
+                </div>
+              `;
+              row.querySelector('button').onclick = async (e) => {
+                e.target.disabled = true; e.target.textContent = '…';
+                try {
+                  await api(`/requests/${req.id}/download`, {
+                    method: 'POST',
+                    body: { download_url: res.download_url, protocol: res.protocol, indexer: res.indexer, guid: res.guid, title: res.title, info_url: res.info_url, size: res.size },
+                  });
+                  toast('Download started!');
+                  refresh();
+                } catch (err) {
+                  toast('Download failed: ' + err.message, 'error');
+                  e.target.disabled = false; e.target.textContent = 'Download';
+                }
+              };
+              resultsEl.appendChild(row);
+            });
+          }
+        } catch {
+          resultsEl.innerHTML = `<div class="text-dim">Search failed.</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = ICON_SEARCH + ' Search Prowlarr';
+        }
+      };
+    }
   } else {
     const isAudio = row.type === 'audiobook';
     container.innerHTML = `
@@ -1613,7 +1622,7 @@ route('/requests', async (params, qp) => {
   const statusFilter = qp.requests_status || '';
   const typeFilter = qp.requests_type || '';
 
-  const statusOptions = ['', 'requested', 'snatched', 'downloading', 'downloaded', 'merging', 'organizing', 'completed', 'failed'];
+  const statusOptions = ['', 'requested', 'snatched', 'downloading', 'downloaded', 'merging', 'organizing', 'in_library', 'completed', 'failed'];
   const statusSelect = `
     <select id="status-filter">
       ${statusOptions.map(s => `<option value="${s}" ${s === statusFilter ? 'selected' : ''}>${s || 'All statuses'}</option>`).join('')}
@@ -1647,14 +1656,25 @@ route('/requests', async (params, qp) => {
     ],
     fetchFn: fetchRequests,
     extraControls: statusSelect + typeSelect,
-    renderRow: (r) => `
-      <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a></td>
-      <td class="td-dim">${escapeHtml(r.author || '—')}</td>
-      <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}</span></td>
-      <td class="td-dim">${escapeHtml(r.narrator || '—')}</td>
-      <td class="td-dim">${formatDate(r.created_at)}</td>
-      <td></td>
-    `,
+    renderRow: (r, tr) => {
+      tr.innerHTML = `
+        <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a></td>
+        <td class="td-dim">${escapeHtml(r.author || '—')}</td>
+        <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)} ${r.status}</span></td>
+        <td class="td-dim">${escapeHtml(r.narrator || '—')}</td>
+        <td class="td-dim">${formatDate(r.created_at)}</td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-ghost btn-sm" data-delete style="color:var(--danger)">Delete</button>
+        </td>
+      `;
+      tr.querySelector('[data-delete]').onclick = () => confirmAction(
+        tr.querySelector('[data-delete]'), 'Confirm?', async () => {
+          await api(`/requests/${r.id}`, { method: 'DELETE' });
+          tr.remove();
+          toast('Request deleted.');
+        }
+      )();
+    },
     emptyMessage: statusFilter ? `No ${statusFilter} requests.` : 'No requests yet.',
   });
 
@@ -1675,111 +1695,6 @@ route('/requests', async (params, qp) => {
   }, 0);
 });
 
-// Request detail
-route('/requests/:id', async ({ id }) => {
-  renderLoading(app);
-  try {
-    const req = await api(`/requests/${id}`);
-    app.innerHTML = `
-      <div class="page-header">
-        <span class="page-title">${ICON_REQUESTS} Request</span>
-        <a href="#/requests" class="btn btn-ghost btn-sm">← Back</a>
-      </div>
-      <div class="card">
-        <div><strong>${escapeHtml(req.book_title || '—')}</strong></div>
-        <div class="text-dim mt-1">${typeIcon(req.type)} ${req.type}</div>
-        <div class="mt-1"><span class="badge badge-${req.status}">${req.status}</span></div>
-        ${req.narrator ? `<div class="text-dim mt-1">Narrator: ${escapeHtml(req.narrator)}</div>` : ''}
-        <div class="text-dim mt-1" style="font-size:0.8rem">Created: ${formatDate(req.created_at)}</div>
-      </div>
-      <div id="req-detail-actions" class="flex-gap mt-2">
-        <button class="btn btn-primary btn-sm" id="search-prowlarr-btn">${ICON_SEARCH} Search Prowlarr</button>
-      </div>
-      <div id="req-indexer-results" class="mt-2"></div>
-      <div id="req-downloads" class="mt-2"></div>
-    `;
-
-    // Load downloads
-    try {
-      const dlData = await api(`/requests/${id}/downloads`);
-      const dlSection = document.getElementById('req-downloads');
-      if (dlData && dlData.length) {
-        dlSection.innerHTML = `<div class="section-heading">Download History</div>`;
-        dlData.forEach(dl => {
-          const row = document.createElement('div');
-          row.className = 'card mt-1';
-          row.style.fontSize = '0.85rem';
-          row.innerHTML = `
-            <div>${escapeHtml(dl.title || '—')}</div>
-            <div class="text-dim">${escapeHtml(dl.indexer || '—')} · ${dl.protocol || '—'} · ${formatBytes(dl.size)}</div>
-            <div class="text-dim mt-1"><span class="badge badge-${dl.status}">${dl.status}</span> ${formatDate(dl.grabbed_at)}</div>
-            ${dl.download_path ? `<div class="text-mono mt-1">${escapeHtml(dl.download_path)}</div>` : ''}
-          `;
-          dlSection.appendChild(row);
-        });
-      }
-    } catch { /* no downloads yet */ }
-
-    // Prowlarr search
-    document.getElementById('search-prowlarr-btn').onclick = async () => {
-      const btn = document.getElementById('search-prowlarr-btn');
-      btn.disabled = true;
-      btn.innerHTML = ICON_SPINNER + ' Searching…';
-      const resultsDiv = document.getElementById('req-indexer-results');
-      renderLoading(resultsDiv);
-      try {
-        const results = await api(`/requests/${id}/search-indexers`, { method: 'POST' });
-        if (!results || !results.length) {
-          resultsDiv.innerHTML = `<div class="state-empty">No results found.</div>`;
-        } else {
-          resultsDiv.innerHTML = `<div class="section-heading">Indexer Results (${results.length})</div>`;
-          results.forEach(r => {
-            const row = document.createElement('div');
-            row.className = 'card mt-1';
-            row.style.fontSize = '0.85rem';
-            row.innerHTML = `
-              <div style="display:flex;justify-content:space-between;align-items:start;gap:0.5rem">
-                <div>
-                  <div>${escapeHtml(r.title || '—')}</div>
-                  <div class="text-dim">${escapeHtml(r.indexer || '—')} · ${r.protocol || '—'} · ${formatBytes(r.size)}</div>
-                </div>
-                <button class="btn btn-primary btn-sm" data-grab>Download</button>
-              </div>
-            `;
-            row.querySelector('[data-grab]').onclick = async () => {
-              try {
-                await api(`/requests/${id}/download`, {
-                  method: 'POST',
-                  body: {
-                    download_url: r.download_url,
-                    protocol: r.protocol,
-                    indexer: r.indexer,
-                    guid: r.guid,
-                    title: r.title,
-                    info_url: r.info_url,
-                    size: r.size,
-                  },
-                });
-                toast('Download started!');
-                navigate('/requests/' + id);
-              } catch (err) {
-                toast('Download failed: ' + err.message, 'error');
-              }
-            };
-            resultsDiv.appendChild(row);
-          });
-        }
-      } catch (err) {
-        renderError(resultsDiv, () => document.getElementById('search-prowlarr-btn')?.click());
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = ICON_SEARCH + ' Search Prowlarr';
-      }
-    };
-  } catch (err) {
-    renderError(app, render);
-  }
-});
 
 // Shared: render the downloads tab content into a container element
 function renderDownloadsTab(container) {
@@ -1825,12 +1740,12 @@ function renderDownloadsTab(container) {
           </div>
           ${dl.progress != null ? `
             <div class="progress-bar-track mt-1">
-              <div class="progress-bar-fill" style="width:${Math.round(dl.progress * 100)}%"></div>
+              <div class="progress-bar-fill" style="width:${Math.round(dl.progress)}%"></div>
             </div>
             <div class="text-dim mt-1" style="font-size:0.78rem">
-              ${Math.round(dl.progress * 100)}%
+              ${Math.round(dl.progress)}%
               ${dl.eta ? ' · ETA ' + dl.eta : ''}
-              ${dl.speed ? ' · ' + dl.speed : ''}
+              ${dl.speed ? ' · ' + formatBytes(dl.speed) + '/s' : ''}
             </div>
           ` : ''}
         </div>
@@ -2107,6 +2022,7 @@ route('/settings', async () => {
       return `
         ${field('URL', 'url', p.url)}
         ${field('API Key', 'api_key', p.api_key, 'password')}
+        ${field('Indexer tag filter', 'tag', p.tag || '', 'text', 'e.g. books — only search indexers with this tag')}
         <div class="form-actions">
           ${testButton('prowlarr')}
           <button class="btn btn-primary" data-save="prowlarr">Save</button>
