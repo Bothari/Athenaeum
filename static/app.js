@@ -1548,6 +1548,7 @@ route('/library/book', async (params, qp) => {
             ${authorHtml ? `<div class="detail-author">${authorHtml}</div>` : ''}
             ${seriesItems.length ? `<div class="detail-series">${seriesItems.join('<br>')}</div>` : ''}
             ${book.rating ? `<div class="detail-rating">${ICON_STAR} ${book.rating.toFixed(1)} <span style="opacity:0.6">(${book.rating_count || 0})</span></div>` : ''}
+            ${book.release_date ? `<div class="detail-release-date td-dim">${book.release_date >= new Date().toISOString().slice(0,10) ? '<span class="badge badge-unmonitored">Unreleased</span> ' : ''}${book.release_date}</div>` : ''}
             ${hcUrl ? `<a href="${escapeHtml(hcUrl)}" target="_blank" class="detail-hc-link">${ICON_HC()} Hardcover</a>` : ''}
           </div>
         </div>
@@ -1664,7 +1665,7 @@ route('/requests', async (params, qp) => {
     extraControls: statusSelect + typeSelect,
     renderRow: (r, tr) => {
       tr.innerHTML = `
-        <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a></td>
+        <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a>${r.release_date && r.release_date >= new Date().toISOString().slice(0,10) ? ` <span class="badge badge-unmonitored" title="Releases ${r.release_date}">Unreleased</span>` : ''}</td>
         <td class="td-dim">${escapeHtml(r.author || '—')}</td>
         <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)} ${r.status}</span></td>
         <td class="td-dim">${escapeHtml(r.narrator || '—')}</td>
