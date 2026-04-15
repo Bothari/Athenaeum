@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 
 from ..database import get_db
 from ..settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -145,7 +148,7 @@ async def list_requests(
         "type": "r.type",
     }[sort]
 
-    conditions = ["r.status != 'completed'"]
+    conditions = ["r.status != 'in_library'"]
     bind: list = []
 
     if status:
@@ -311,11 +314,150 @@ async def get_request_downloads(request_id: str):
 
 @router.post("/requests/{request_id}/search-indexers")
 async def search_indexers(request_id: str):
-    """Phase 5 — Prowlarr indexer search. Not yet implemented."""
+    """Search Prowlarr for releases matching this request."""
     async with get_db() as db:
         row = await (
-            await db.execute("SELECT id FROM requests WHERE id = ?", (request_id,))
+            await db.execute(
+                """SELECT r.type, r.narrator, b.title,
+                          (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
+                           WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
+                   FROM requests r JOIN books b ON b.id = r.book_id
+                   WHERE r.id = ?""",
+                (request_id,),
+            )
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Request not found")
-    return []
+
+    settings = await get_settings()
+    prowlarr_settings = settings.get("prowlarr", {})
+    if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
+        return {"results": [], "error": "Prowlarr not configured"}
+
+    from ..services.download_clients import prowlarr_search
+
+    query = row["title"]
+    if row["author"]:
+        query = f"{query} {row['author']}"
+
+    try:
+        raw_results = await prowlarr_search(prowlarr_settings, query, book_type=row["type"])
+    except Exception as e:
+        logger.warning("Prowlarr search failed: %s", e)
+        return {"results": [], "error": str(e)}
+
+    results = [
+        {
+            "protocol": r.get("protocol"),
+            "title": r.get("title"),
+            "indexer": r.get("indexer"),
+            "size": r.get("size"),
+            "guid": r.get("guid"),
+            "download_url": r.get("downloadUrl"),
+            "info_url": r.get("infoUrl"),
+            "seeders": r.get("seeders"),
+            "leechers": r.get("leechers"),
+            "age": r.get("age"),
+        }
+        for r in raw_results
+    ]
+    return {"results": results}
+
+
+class DownloadBody(BaseModel):
+    download_url: str
+    protocol: str
+    indexer: Optional[str] = None
+    guid: Optional[str] = None
+    title: Optional[str] = None
+    info_url: Optional[str] = None
+    size: Optional[int] = None
+
+
+@router.post("/requests/{request_id}/download")
+async def trigger_download(request_id: str, body: DownloadBody):
+    """Send a release to the appropriate download client and record it."""
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id, status FROM requests WHERE id = ?", (request_id,))
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    settings = await get_settings()
+
+    from ..services.download_clients import QBittorrentClient, SABnzbdClient
+
+    if body.protocol == "torrent":
+        client_settings = settings.get("qbittorrent", {})
+        if not client_settings.get("url"):
+            raise HTTPException(status_code=400, detail="qBittorrent not configured")
+        client = QBittorrentClient(client_settings)
+        client_name = "qbittorrent"
+    elif body.protocol == "usenet":
+        client_settings = settings.get("sabnzbd", {})
+        if not client_settings.get("url"):
+            raise HTTPException(status_code=400, detail="SABnzbd not configured")
+        client = SABnzbdClient(client_settings)
+        client_name = "sabnzbd"
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown protocol: {body.protocol}")
+
+    try:
+        download_id = await client.add(body.download_url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Download client error: {e}")
+
+    now = _now()
+    dl_id = str(uuid.uuid4())
+    async with get_db() as db:
+        await db.execute(
+            """INSERT INTO downloads
+               (id, request_id, title, indexer, guid, info_url, protocol,
+                size, download_client, download_id, status, grabbed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?)""",
+            (dl_id, request_id, body.title, body.indexer, body.guid,
+             body.info_url, body.protocol, body.size, client_name, download_id, now),
+        )
+        await db.execute(
+            "UPDATE requests SET status='snatched', updated_at=? WHERE id=?",
+            (now, request_id),
+        )
+        await db.commit()
+
+    return {"ok": True, "download_id": dl_id}
+
+
+class OrganizeBody(BaseModel):
+    path: Optional[str] = None
+
+
+@router.post("/requests/{request_id}/organize")
+async def organize_request(request_id: str, body: OrganizeBody = OrganizeBody()):
+    """Manually trigger organize pipeline for a request."""
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id, status FROM requests WHERE id = ?", (request_id,))
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Request not found")
+
+        # If a path override is provided, update the most recent downloads record
+        if body.path:
+            dl_row = await (
+                await db.execute(
+                    "SELECT id FROM downloads WHERE request_id = ? ORDER BY grabbed_at DESC LIMIT 1",
+                    (request_id,),
+                )
+            ).fetchone()
+            if dl_row:
+                await db.execute(
+                    "UPDATE downloads SET download_path=? WHERE id=?",
+                    (body.path, dl_row["id"]),
+                )
+                await db.commit()
+
+    import asyncio as _asyncio
+    from ..services.organizer import auto_organize
+    _asyncio.create_task(auto_organize(request_id))
+    return {"ok": True}

@@ -841,7 +841,7 @@ await db.execute(
 
 The organize sequence is designed to be **idempotent** — safe to re-run after a partial failure.
 
-1. Read request metadata: title, author, series, series_position, type
+1. Read request metadata: title, author, series, series_position, narrator, type. Also fetch HC metadata (description, genres, published_year, publisher, isbn, asin, language) from `metadata_cache` if available (source=`"hardcover_book"`, keyed by `hardcover_id`).
 2. **Detect multi-file:** if `path` is a directory containing audio files, note `file_count=N`
 3. **Merge step** (if `type='audiobook'` AND multi-file AND `settings.merge_multifile_audiobooks`):
    - Set `requests.status = 'merging'`; create `merge_jobs` row with `source_path`, `file_count`
@@ -852,12 +852,63 @@ The organize sequence is designed to be **idempotent** — safe to re-run after 
 5. Compute destination path from settings (separate_type_dirs, prefixes)
 6. Move file to destination: if source exists → move; if already at destination → skip (idempotent); if neither → `requests.status='failed'`, return
 7. Set `merge_jobs.organized_path` (if merge job exists)
-8. Trigger ABS library scan
-9. Poll ABS for match (title + author + type) — up to 10 retries with 5s delay
-10. On match: `UPDATE requests SET status='in_library', abs_id=?`; upsert `book_links`; delete any `merge_jobs` row for this request (merge details no longer needed once in library)
-11. On retries exhausted: `UPDATE requests SET status='failed'`; log reason
+8. **Write `metadata.json`** to the target directory (see Metadata File below)
+9. Trigger ABS library scan
+10. Poll ABS for match (title + author + type) — up to 10 retries with 5s delay
+11. On match: `UPDATE requests SET status='in_library', abs_id=?`; upsert `book_links`; delete any `merge_jobs` row for this request
+12. On retries exhausted: log warning, set `requests.status='completed'` — the next library sync will pick it up. Do not set `failed` here; the file is on disk and ABS will find it eventually.
 
 `POST /api/requests/{id}/organize` (manual retry) calls `_auto_organize(request_id, path)` as a new task, where `path` is the body param if supplied, otherwise the path from the most recent `downloads` record. Idempotency in step 6 handles the already-moved case.
+
+### Metadata File (`metadata.json`)
+
+Written to `{target_dir}/metadata.json` after the file is moved (step 8 above). ABS reads this file on library scan and applies it to the item — it is the primary mechanism for injecting correct title, author, series, and narrator data so ABS doesn't have to guess from filename or embedded tags.
+
+**Populating the fields:**
+
+All fields come from the local database for the book attached to this request, supplemented by HC metadata if available:
+
+| Field | Source |
+|---|---|
+| `title` | `books.title` |
+| `subtitle` | HC metadata cache (`subtitle`) if available |
+| `authors` | All authors from `book_authors` JOIN `authors`, ordered by `author_position` |
+| `narrators` | `requests.narrator` (split on `,` if multiple) |
+| `series` | All series from `book_series` JOIN `series`, formatted as `"Series Name #position"` (omit `#position` if position is empty) |
+| `genres` | HC metadata cache (`genres` list) if available |
+| `publishedYear` | HC metadata cache (`published_year`) if available |
+| `publisher` | HC metadata cache (`publisher`) if available |
+| `description` | HC metadata cache (`description`) if available |
+| `isbn` | HC metadata cache (`isbn`) if available |
+| `asin` | HC metadata cache (`asin`) if available |
+| `language` | HC metadata cache (`language`) if available |
+
+**Format rules:**
+- Only include keys where the value is non-empty (no null, no empty string, no empty list)
+- `authors` and `narrators` are arrays
+- `series` is an array of strings: `"The Stormlight Archive #1"` or `"The Stormlight Archive"` if no position
+- `publishedYear` is a string, not an integer
+
+**HC metadata cache lookup:** query `metadata_cache WHERE query = ? AND source = 'hardcover_book'` using `book_links.hardcover_id` as the key. The cache is populated lazily:
+1. Check cache — if a non-expired row exists, use it
+2. If missing or expired, fetch full book data from HC GraphQL (`books(where: {id: {_eq: $id}})` using the `BOOK_FIELDS` fragment), store it in `metadata_cache` with a 14-day TTL, then use it
+3. If the HC fetch fails (network error, no api_key, no hardcover_id), fall back to DB-only fields (title, authors, narrators, series) and proceed — never block organize on a HC fetch
+
+**Example output:**
+```json
+{
+  "title": "The Way of Kings",
+  "authors": ["Brandon Sanderson"],
+  "narrators": ["Michael Kramer"],
+  "series": ["The Stormlight Archive #1"],
+  "genres": ["Fantasy", "Epic Fantasy"],
+  "publishedYear": "2010",
+  "publisher": "Tor Books",
+  "description": "...",
+  "isbn": "9780765326355",
+  "language": "English"
+}
+```
 
 ### M4B Merge Algorithm
 

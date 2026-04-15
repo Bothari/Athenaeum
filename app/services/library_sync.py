@@ -1116,33 +1116,62 @@ async def _sync_item(item: dict) -> str:
         ).fetchone()
 
         if link_row is None:
-            book_id = str(uuid.uuid4())
-            await db.execute(
-                """INSERT INTO books (id, title, cover_url, metadata_source, abs_checked_at, created_at, updated_at)
-                   VALUES (?, ?, ?, 'abs', ?, ?, ?)""",
-                (book_id, title, cover_url, now, now, now),
-            )
+            # Before creating a new book, check if one with the same title + primary author
+            # already exists (e.g. organised by us and now appearing in ABS for the first time).
+            existing_book_id = None
+            primary_author = author_items[0]["name"] if author_items else ""
+            if title and primary_author:
+                match_row = await (
+                    await db.execute(
+                        """SELECT b.id FROM books b
+                           JOIN book_authors ba ON ba.book_id = b.id AND ba.author_position = 1
+                           JOIN authors a ON a.id = ba.author_id
+                           LEFT JOIN book_links bl ON bl.book_id = b.id
+                           WHERE lower(b.title) = lower(?)
+                             AND lower(a.name) = lower(?)
+                             AND (bl.abs_id IS NULL OR bl.abs_id = '')
+                           LIMIT 1""",
+                        (title, primary_author),
+                    )
+                ).fetchone()
+                if match_row:
+                    existing_book_id = match_row[0]
 
-            for pos, ai in enumerate(author_items, 1):
-                author_id = await _get_or_create_author(db, ai["name"], ai.get("abs_id", ""))
+            if existing_book_id:
+                # Link the existing book to this ABS ID instead of duplicating
+                book_id = existing_book_id
                 await db.execute(
-                    """INSERT OR IGNORE INTO book_authors (id, book_id, author_id, author_position, created_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), book_id, author_id, pos, now),
+                    """UPDATE book_links SET abs_id = ?, linked_at = ? WHERE book_id = ?""",
+                    (abs_id, now, book_id),
+                )
+            else:
+                book_id = str(uuid.uuid4())
+                await db.execute(
+                    """INSERT INTO books (id, title, cover_url, metadata_source, abs_checked_at, created_at, updated_at)
+                       VALUES (?, ?, ?, 'abs', ?, ?, ?)""",
+                    (book_id, title, cover_url, now, now, now),
                 )
 
-            for si in series_items:
-                series_id = await _get_or_create_series(db, si["name"], si.get("abs_id", ""))
-                await db.execute(
-                    """INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), book_id, series_id, si.get("sequence") or None, now),
-                )
+                for pos, ai in enumerate(author_items, 1):
+                    author_id = await _get_or_create_author(db, ai["name"], ai.get("abs_id", ""))
+                    await db.execute(
+                        """INSERT OR IGNORE INTO book_authors (id, book_id, author_id, author_position, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (str(uuid.uuid4()), book_id, author_id, pos, now),
+                    )
 
-            await db.execute(
-                "INSERT INTO book_links (id, book_id, abs_id, linked_at) VALUES (?, ?, ?, ?)",
-                (str(uuid.uuid4()), book_id, abs_id, now),
-            )
+                for si in series_items:
+                    series_id = await _get_or_create_series(db, si["name"], si.get("abs_id", ""))
+                    await db.execute(
+                        """INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (str(uuid.uuid4()), book_id, series_id, si.get("sequence") or None, now),
+                    )
+
+                await db.execute(
+                    "INSERT INTO book_links (id, book_id, abs_id, linked_at) VALUES (?, ?, ?, ?)",
+                    (str(uuid.uuid4()), book_id, abs_id, now),
+                )
 
             seen_types = set()
             for fmt in formats:
