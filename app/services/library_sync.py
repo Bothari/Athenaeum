@@ -1116,32 +1116,29 @@ async def _sync_item(item: dict) -> str:
         ).fetchone()
 
         if link_row is None:
-            # Before creating a new book, check if one with the same title + primary author
-            # already exists (e.g. organised by us and now appearing in ABS for the first time).
+            # Check if we organised this book ourselves: a completed/downloaded request
+            # for a book with no abs_id yet is an authoritative link.
             existing_book_id = None
-            primary_author = author_items[0]["name"] if author_items else ""
-            if title and primary_author:
-                match_row = await (
-                    await db.execute(
-                        """SELECT b.id FROM books b
-                           JOIN book_authors ba ON ba.book_id = b.id AND ba.author_position = 1
-                           JOIN authors a ON a.id = ba.author_id
-                           LEFT JOIN book_links bl ON bl.book_id = b.id
-                           WHERE lower(b.title) = lower(?)
-                             AND lower(a.name) = lower(?)
-                             AND (bl.abs_id IS NULL OR bl.abs_id = '')
-                           LIMIT 1""",
-                        (title, primary_author),
-                    )
-                ).fetchone()
-                if match_row:
-                    existing_book_id = match_row[0]
+            req_match = await (
+                await db.execute(
+                    """SELECT r.book_id FROM requests r
+                       JOIN book_links bl ON bl.book_id = r.book_id
+                       WHERE r.status IN ('completed', 'in_library', 'downloaded', 'organizing')
+                         AND (bl.abs_id IS NULL OR bl.abs_id = '')
+                         AND r.book_id IN (
+                             SELECT b.id FROM books b WHERE lower(b.title) = lower(?)
+                         )
+                       LIMIT 1""",
+                    (title,),
+                )
+            ).fetchone()
+            if req_match:
+                existing_book_id = req_match[0]
 
             if existing_book_id:
-                # Link the existing book to this ABS ID instead of duplicating
                 book_id = existing_book_id
                 await db.execute(
-                    """UPDATE book_links SET abs_id = ?, linked_at = ? WHERE book_id = ?""",
+                    "UPDATE book_links SET abs_id = ?, linked_at = ? WHERE book_id = ?",
                     (abs_id, now, book_id),
                 )
             else:

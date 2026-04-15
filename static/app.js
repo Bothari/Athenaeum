@@ -499,10 +499,16 @@ function renderBookCard(book) {
   const coverImg = book.cover_url
     ? `<img class="book-card-cover" src="${escapeHtml(book.cover_url)}" alt="" loading="lazy">`
     : `<div class="book-card-cover-placeholder">${ICON_EBOOK}</div>`;
+  const formats = Array.isArray(book.formats) ? book.formats : [];
   const requests = Array.isArray(book.requests) ? book.requests : [];
-  const badges = requests.map(r =>
-    `<span class="badge badge-${r.status}">${typeIcon(r.type)}</span>`
+  const fmtBadges = formats.map(f =>
+    `<span class="badge badge-in_library" title="${f.type}${f.narrator ? ' — ' + f.narrator : ''}">${typeIcon(f.type)}</span>`
   ).join('');
+  const reqBadges = requests
+    .filter(r => !formats.some(f => f.type === r.type))
+    .map(r => `<span class="badge badge-${r.status}">${typeIcon(r.type)}</span>`)
+    .join('');
+  const badges = fmtBadges + reqBadges;
 
   const el = document.createElement('div');
   el.className = 'book-card';
