@@ -29,6 +29,7 @@ def _book_row_to_dict(row) -> dict:
         "metadata_source": row["metadata_source"],
         "metadata_url": row["metadata_url"],
         "abs_checked_at": row["abs_checked_at"],
+        "release_date": row["release_date"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

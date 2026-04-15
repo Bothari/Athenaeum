@@ -81,6 +81,25 @@ async def set_book_link(book_id: str, body: SetLinkBody):
             (hc_id, hc_slug, book_id),
         )
         await db.commit()
+
+    # Fetch and store release_date from HC when a link is set
+    if hc_id:
+        try:
+            settings = await get_settings()
+            api_key = settings.get("hardcover", {}).get("api_key") or ""
+            if api_key:
+                from ..services.library_sync import _fetch_hc_release_date
+                release_date = await _fetch_hc_release_date(int(hc_id), api_key)
+                if release_date:
+                    async with get_db() as db:
+                        await db.execute(
+                            "UPDATE books SET release_date = ? WHERE id = ?",
+                            (release_date, book_id),
+                        )
+                        await db.commit()
+        except Exception as e:
+            logger.warning("Failed to fetch release_date for book %s: %s", book_id, e)
+
     return {"ok": True, "hardcover_id": hc_id, "hardcover_slug": hc_slug}
 
 

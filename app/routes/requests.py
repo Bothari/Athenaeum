@@ -184,7 +184,7 @@ async def list_requests(
         ).fetchone()
         rows = await (
             await db.execute(
-                f"""SELECT r.*, b.title as book_title, a2.name as author
+                f"""SELECT r.*, b.title as book_title, b.release_date as release_date, a2.name as author
                     {base_sql}
                     ORDER BY {sort_expr} {dir}
                     LIMIT ? OFFSET ?""",
@@ -201,6 +201,7 @@ async def list_requests(
             "type": r["type"],
             "status": r["status"],
             "narrator": r["narrator"],
+            "release_date": r["release_date"],
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
         }

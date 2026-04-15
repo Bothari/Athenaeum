@@ -236,6 +236,10 @@ async def _run_migrations(db):
         await db.execute("CREATE INDEX IF NOT EXISTS idx_book_formats_book ON book_formats(book_id)")
         await db.execute("PRAGMA user_version = 4")
 
+    if current < 5:
+        await db.execute("ALTER TABLE books ADD COLUMN release_date TEXT")
+        await db.execute("PRAGMA user_version = 5")
+
     await db.commit()
 
 

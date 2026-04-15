@@ -192,6 +192,24 @@ async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int
     return sorted(deduped, key=lambda h: h.get("document", {}).get("users_count") or 0, reverse=True)
 
 
+async def _fetch_hc_release_date(hc_book_id: int, api_key: str) -> str:
+    """Fetch release_date for a single HC book. Returns ISO date string or ''."""
+    gql = "query ReleaseDate($id: Int!) { books_by_pk(id: $id) { release_date } }"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={"query": gql, "variables": {"id": hc_book_id}},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+        book = (resp.json().get("data") or {}).get("books_by_pk") or {}
+        return book.get("release_date") or ""
+    except Exception as e:
+        logger.warning("_fetch_hc_release_date(%s) failed: %s", hc_book_id, e)
+        return ""
+
+
 async def _hc_series_for_book(hc_book_id: str, api_key: str) -> list:
     """Return HC series that a given HC book belongs to (list of dicts with id/name/slug/books_count)."""
     gql = """
@@ -315,6 +333,9 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
     if not hardcover_id:
         return False
 
+    # Fetch exact release_date from HC GraphQL (more reliable than Typesense field)
+    release_date = await _fetch_hc_release_date(int(hardcover_id), api_key)
+
     # Extract series from featured_series and series_names (confirmed present in HC Typesense docs)
     featured = best.get("featured_series") or {}
     featured_series_name = ((featured.get("series") or {}).get("name") or "").strip()
@@ -354,6 +375,11 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
             "UPDATE book_links SET hardcover_id = ?, hardcover_slug = ? WHERE book_id = ?",
             (hardcover_id, hardcover_slug, book_id),
         )
+        if release_date:
+            await db.execute(
+                "UPDATE books SET release_date = ? WHERE id = ?",
+                (release_date, book_id),
+            )
         for local_series_id, local_series_name in book_series_rows:
             best_match_name = None
             best_s_score = 0
