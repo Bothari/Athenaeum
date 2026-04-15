@@ -94,7 +94,7 @@ async def list_books(
             book["requests"] = await _get_book_requests(db, row["id"])
             book["formats"] = await _get_book_formats(db, row["id"])
             if book["link"].get("abs_id"):
-                book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
+                book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}?t={book.get('updated_at','')}"
             items.append(book)
 
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
@@ -115,7 +115,7 @@ async def get_book(book_id: str):
         book["requests"] = await _get_book_requests(db, book_id)
         book["formats"] = await _get_book_formats(db, book_id)
         if book["link"].get("abs_id"):
-            book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
+            book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}?t={book.get('updated_at','')}"
     return book
 
 
@@ -217,7 +217,7 @@ async def get_author_books(author_id: str):
             book["requests"] = await _get_book_requests(db, row["id"])
             book["formats"] = await _get_book_formats(db, row["id"])
             if book["link"].get("abs_id"):
-                book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
+                book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}?t={book.get('updated_at','')}"
             items.append(book)
 
     return items
@@ -346,7 +346,7 @@ async def get_series_books(series_id: str):
             book["requests"] = await _get_book_requests(db, row["id"])
             book["formats"] = await _get_book_formats(db, row["id"])
             if book["link"].get("abs_id"):
-                book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}"
+                book["cover_url"] = f"/api/abs/cover/{book['link']['abs_id']}?t={book.get('updated_at','')}"
             items.append(book)
 
     return items
