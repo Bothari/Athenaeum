@@ -225,7 +225,8 @@ function renderTable(config) {
       const active = h.key === sort ? ' sort-active' : '';
       const sortable = h.sortable !== false ? ' sortable' : '';
       const style = h.style ? ` style="${h.style}"` : '';
-      return `<th class="${sortable}${active}" data-key="${h.key}"${style}>${escapeHtml(h.label)} ${h.sortable !== false ? sortIcon(h.key) : ''}</th>`;
+      const klass = [sortable, active, h.klass || ''].join(' ').trim();
+      return `<th class="${klass}" data-key="${h.key}"${style}>${escapeHtml(h.label)} ${h.sortable !== false ? sortIcon(h.key) : ''}</th>`;
     }).join('');
   }
 
@@ -279,7 +280,7 @@ function renderTable(config) {
       ${config.extraControls || ''}
     </div>
     <div class="table-wrap">
-      <table>
+      <table class="table-${stateKey}">
         <thead><tr>${renderHeaders()}</tr></thead>
         <tbody></tbody>
       </table>
@@ -651,6 +652,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
             metadata_source: result.metadata_source || null,
             metadata_id: result.metadata_id || null,
             metadata_url: result.metadata_url || null,
+            hardcover_slug: result.slug || null,
           }});
           result.book_id = book.id;
           bookId = book.id;
@@ -1398,6 +1400,56 @@ function renderDetailFormats(container, book, onRefresh) {
   });
 }
 
+// ── Shared: Prowlarr result list ──────────────────────────────────────────────
+// Renders Prowlarr search results into `container`. Each result gets a Download
+// button wired to POST /requests/{reqId}/download. onSuccess() called after.
+function renderProwlarrResults(container, results, reqId, onSuccess) {
+  if (!results || !results.length) {
+    container.innerHTML = `<div class="text-dim">No results found.</div>`;
+    return;
+  }
+  container.innerHTML = '';
+  results.forEach(res => {
+    const fmtMatch = (res.title || '').match(/\b(mp3|m4b|m4a|flac|opus|ogg|aac|epub|mobi|azw3?|pdf)\b/i);
+    const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
+    const row = document.createElement('div');
+    row.className = 'prowlarr-result-row';
+    row.innerHTML = `
+      <div class="prowlarr-result-title">${escapeHtml(res.title || '—')}</div>
+      <div class="prowlarr-result-meta">
+        <div class="prowlarr-result-info">
+          ${fmt ? `<span class="badge" style="background:var(--surface2);color:var(--text)">${fmt}</span>` : ''}
+          <span>${res.protocol === 'torrent' ? 'Torrent' : 'Usenet'}</span>
+          <span>${formatBytes(res.size)}</span>
+          ${res.seeders != null ? `<span>${res.seeders}S</span>` : ''}
+          <span>${escapeHtml(res.indexer || '—')}</span>
+        </div>
+        <button class="btn btn-primary btn-sm prowlarr-dl-btn" style="flex-shrink:0">${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span></button>
+      </div>
+    `;
+    row.querySelector('.prowlarr-dl-btn').onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.innerHTML = ICON_SPINNER;
+      try {
+        await api(`/requests/${reqId}/download`, {
+          method: 'POST',
+          body: { download_url: res.download_url, protocol: res.protocol, indexer: res.indexer, guid: res.guid, title: res.title, info_url: res.info_url, size: res.size },
+        });
+        btn.innerHTML = ICON_CHECK;
+        btn.classList.replace('btn-primary', 'btn-success');
+        toast('Download started!');
+        if (onSuccess) onSuccess();
+      } catch (err) {
+        toast('Download failed: ' + err.message, 'error');
+        btn.disabled = false;
+        btn.innerHTML = `${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span>`;
+      }
+    };
+    container.appendChild(row);
+  });
+}
+
 function renderDetailFormatContent(container, row, bookId, onRefresh) {
   const refresh = onRefresh || (() => {});
   if (row.status === 'in_library') {
@@ -1441,45 +1493,10 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
         try {
           const data = await api(`/requests/${req.id}/search-indexers`, { method: 'POST' });
           const results = data.results || [];
-          if (data.error || !results.length) {
-            resultsEl.innerHTML = `<div class="text-dim">${escapeHtml(data.error || 'No results found.')}</div>`;
+          if (data.error) {
+            resultsEl.innerHTML = `<div class="text-dim">${escapeHtml(data.error)}</div>`;
           } else {
-            resultsEl.innerHTML = '';
-            results.forEach(res => {
-              // Extract format hint from release title (MP3, M4B, FLAC, EPUB, etc.)
-              const fmtMatch = (res.title || '').match(/\b(mp3|m4b|m4a|flac|opus|ogg|aac|epub|mobi|azw3?|pdf)\b/i);
-              const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
-              const row = document.createElement('div');
-              row.style.cssText = 'padding:0.5rem 0;border-top:1px solid var(--border);font-size:0.85rem';
-              row.innerHTML = `
-                <div style="word-break:break-word;margin-bottom:0.3rem">${escapeHtml(res.title || '—')}</div>
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap">
-                  <div class="text-dim" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
-                    ${fmt ? `<span class="badge" style="background:var(--surface2);color:var(--text)">${fmt}</span>` : ''}
-                    <span>${res.protocol === 'torrent' ? 'Torrent' : 'Usenet'}</span>
-                    <span>${formatBytes(res.size)}</span>
-                    ${res.seeders != null ? `<span title="seeders">${res.seeders}S</span>` : ''}
-                    <span>${escapeHtml(res.indexer || '—')}</span>
-                  </div>
-                  <button class="btn btn-primary btn-sm" style="flex-shrink:0">Download</button>
-                </div>
-              `;
-              row.querySelector('button').onclick = async (e) => {
-                e.target.disabled = true; e.target.textContent = '…';
-                try {
-                  await api(`/requests/${req.id}/download`, {
-                    method: 'POST',
-                    body: { download_url: res.download_url, protocol: res.protocol, indexer: res.indexer, guid: res.guid, title: res.title, info_url: res.info_url, size: res.size },
-                  });
-                  toast('Download started!');
-                  refresh();
-                } catch (err) {
-                  toast('Download failed: ' + err.message, 'error');
-                  e.target.disabled = false; e.target.textContent = 'Download';
-                }
-              };
-              resultsEl.appendChild(row);
-            });
+            renderProwlarrResults(resultsEl, results, req.id, refresh);
           }
         } catch {
           resultsEl.innerHTML = `<div class="text-dim">Search failed.</div>`;
@@ -1605,7 +1622,10 @@ route('/requests', async (params, qp) => {
   const tab = qp.tab === 'downloads' ? 'downloads' : 'requests';
 
   app.innerHTML = `
-    <div class="page-header"><span class="page-title">${ICON_REQUESTS} Queue</span></div>
+    <div class="page-header">
+      <span class="page-title">${ICON_REQUESTS} Queue</span>
+      <button class="btn btn-primary btn-sm" id="search-all-btn">Search all</button>
+    </div>
     <div class="tabs">
       <button class="tab-btn${tab === 'requests' ? ' active' : ''}" data-tab="requests">Requests</button>
       <button class="tab-btn${tab === 'downloads' ? ' active' : ''}" data-tab="downloads">Downloads</button>
@@ -1655,21 +1675,24 @@ route('/requests', async (params, qp) => {
     stateKey: 'requests',
     headers: [
       { label: 'Book', key: 'book_title', sortable: true },
-      { label: 'Author', key: 'author', sortable: false },
+      { label: 'Author', key: 'author', sortable: false, klass: 'col-hide-mobile' },
       { label: 'Format', key: 'type', sortable: false },
-      { label: 'Narrator', key: 'narrator', sortable: false },
-      { label: 'Created', key: 'created_at', sortable: true },
+      { label: 'Narrator', key: 'narrator', sortable: false, klass: 'col-hide-mobile' },
+      { label: 'Created', key: 'created_at', sortable: true, klass: 'col-hide-mobile' },
       { label: '', key: '_actions', sortable: false, style: 'width:100px' },
     ],
     fetchFn: fetchRequests,
     extraControls: statusSelect + typeSelect,
     renderRow: (r, tr) => {
+      tr.dataset.requestId = r.id;
+      tr.dataset.reqStatus = r.status;
+      tr.dataset.releaseDate = r.release_date || '';
       tr.innerHTML = `
         <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a>${r.release_date && r.release_date >= new Date().toISOString().slice(0,10) ? ` <span class="badge badge-unmonitored" title="Releases ${r.release_date}">Unreleased</span>` : ''}</td>
-        <td class="td-dim">${escapeHtml(r.author || '—')}</td>
+        <td class="td-dim col-hide-mobile">${escapeHtml(r.author || '—')}</td>
         <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)} ${r.status}</span></td>
-        <td class="td-dim">${escapeHtml(r.narrator || '—')}</td>
-        <td class="td-dim">${formatDate(r.created_at)}</td>
+        <td class="td-dim col-hide-mobile">${escapeHtml(r.narrator || '—')}</td>
+        <td class="td-dim col-hide-mobile">${formatDate(r.created_at)}</td>
         <td style="white-space:nowrap">
           <button class="btn btn-ghost btn-sm" data-delete style="color:var(--danger)">Delete</button>
         </td>
@@ -1677,12 +1700,78 @@ route('/requests', async (params, qp) => {
       tr.querySelector('[data-delete]').onclick = () => confirmAction(
         tr.querySelector('[data-delete]'), 'Confirm?', async () => {
           await api(`/requests/${r.id}`, { method: 'DELETE' });
+          tr.nextElementSibling?.classList.contains('search-expansion-row') && tr.nextElementSibling.remove();
           tr.remove();
           toast('Request deleted.');
         }
       )();
     },
     emptyMessage: statusFilter ? `No ${statusFilter} requests.` : 'No requests yet.',
+  });
+
+  // Allow expansion rows to overflow the scroll container on mobile
+  content.querySelector('.table-wrap')?.style.setProperty('overflow-x', 'visible');
+
+  // Search all — fires individual searches per row, results expand inline
+  document.getElementById('search-all-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('search-all-btn');
+    document.querySelectorAll('.search-expansion-row').forEach(r => r.remove());
+
+    const requestedRows = [...document.querySelectorAll('tr[data-req-status="requested"]')];
+    if (!requestedRows.length) { toast('No requested items.'); return; }
+
+    btn.disabled = true; btn.textContent = 'Searching…';
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    function makeExpansion(tr) {
+      const expRow = document.createElement('tr');
+      expRow.className = 'search-expansion-row';
+      const expCell = document.createElement('td');
+      expCell.colSpan = 999;
+      expCell.className = 'search-expansion-cell';
+      const expDiv = document.createElement('div');
+      expDiv.className = 'search-expansion';
+      expRow.appendChild(expCell);
+      expCell.appendChild(expDiv);
+      tr.after(expRow);
+      return expDiv;
+    }
+
+    // Build expansion rows immediately — unreleased skipped, others show spinner
+    const toSearch = [];
+    requestedRows.forEach(tr => {
+      const expDiv = makeExpansion(tr);
+      const rd = tr.dataset.releaseDate;
+      if (rd && rd > today) {
+        expDiv.innerHTML = `<span class="text-dim">Skipped — unreleased${rd ? ` (releases ${rd})` : ''}</span>`;
+      } else {
+        expDiv.innerHTML = `<span class="text-dim">${ICON_SPINNER} Searching…</span>`;
+        toSearch.push({ tr, expDiv, reqId: tr.dataset.requestId });
+      }
+    });
+
+    // Search concurrently, max 3 at a time
+    const sem = 3;
+    let idx = 0;
+    async function worker() {
+      while (idx < toSearch.length) {
+        const { expDiv, reqId } = toSearch[idx++];
+        try {
+          const data = await api(`/requests/${reqId}/search-indexers`, { method: 'POST' });
+          if (data.error) {
+            expDiv.innerHTML = `<span class="text-dim">${escapeHtml(data.error)}</span>`;
+          } else {
+            renderProwlarrResults(expDiv, data.results || [], reqId, null);
+          }
+        } catch {
+          expDiv.innerHTML = `<span class="text-dim">Search failed.</span>`;
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(sem, toSearch.length) }, worker));
+
+    btn.disabled = false; btn.textContent = 'Search all';
   });
 
   // Wire up filter selects

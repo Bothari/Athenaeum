@@ -365,6 +365,77 @@ async def search_indexers(request_id: str):
     return {"results": results}
 
 
+@router.post("/requests/search-all")
+async def search_all_requests():
+    """Search Prowlarr for all requested items concurrently. Skips unreleased books."""
+    import asyncio
+    from datetime import date
+
+    settings = await get_settings()
+    prowlarr_settings = settings.get("prowlarr", {})
+    if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
+        return {"results": [], "error": "Prowlarr not configured"}
+
+    from ..services.download_clients import prowlarr_search
+
+    today = date.today().isoformat()
+
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                """SELECT r.id, r.type, r.narrator, b.title, b.release_date,
+                          (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
+                           WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
+                   FROM requests r JOIN books b ON b.id = r.book_id
+                   WHERE r.status = 'requested'"""
+            )
+        ).fetchall()
+
+    skipped_unreleased = 0
+    to_search = []
+    for row in rows:
+        rd = row["release_date"] or ""
+        if rd and rd >= today:
+            skipped_unreleased += 1
+            continue
+        to_search.append(row)
+
+    async def _search_one(row):
+        query = f"{row['title']} {row['author'] or ''}".strip()
+        try:
+            raw = await prowlarr_search(prowlarr_settings, query, book_type=row["type"])
+        except Exception as e:
+            return {"request_id": row["id"], "book_title": row["title"],
+                    "author": row["author"], "type": row["type"],
+                    "top_result": None, "error": str(e)}
+        top = None
+        if raw:
+            r = raw[0]
+            top = {
+                "protocol": r.get("protocol"),
+                "title": r.get("title"),
+                "indexer": r.get("indexer"),
+                "size": r.get("size"),
+                "guid": r.get("guid"),
+                "download_url": r.get("downloadUrl"),
+                "info_url": r.get("infoUrl"),
+                "seeders": r.get("seeders"),
+                "age": r.get("age"),
+            }
+        return {"request_id": row["id"], "book_title": row["title"],
+                "author": row["author"] or "", "type": row["type"],
+                "narrator": row["narrator"] or "",
+                "top_result": top, "error": None}
+
+    sem = asyncio.Semaphore(5)
+    async def _search_limited(row):
+        async with sem:
+            return await _search_one(row)
+
+    results = await asyncio.gather(*[_search_limited(r) for r in to_search])
+    return {"results": list(results), "skipped_unreleased": skipped_unreleased}
+
+
 class DownloadBody(BaseModel):
     download_url: str
     protocol: str
