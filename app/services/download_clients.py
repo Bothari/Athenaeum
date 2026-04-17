@@ -44,8 +44,51 @@ PROWLARR_CATEGORIES = {
 }
 
 
-async def prowlarr_search(settings: dict, query: str, book_type: str = "") -> list[dict]:
-    """Search Prowlarr indexers. Filtered to configured tag if set."""
+def _strip_subtitle(title: str) -> str:
+    """Return the title with any subtitle after ': ' removed.
+
+    Indexers almost never include the colon-separated subtitle in their release
+    titles, so including it tends to produce zero results.  We keep everything
+    before the first ': ' (e.g. 'You with the Sad Eyes: A Memoir' →
+    'You with the Sad Eyes').  Single-word or no-space colons (e.g. URLs) are
+    left untouched.
+    """
+    return re.split(r':\s+', title, maxsplit=1)[0].strip()
+
+
+def _score_result(result_title: str, original_title: str, author: str = "") -> int:
+    """Score a Prowlarr result title against the book title+author (0–100).
+
+    Uses token-set ratio so word order and extra tokens (e.g. '[MP3]', narrator
+    name) don't hurt the score.
+    """
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        return 50
+    clean_result = result_title.lower()
+    # Score against main title (no subtitle) — that's what indexers use
+    main = _strip_subtitle(original_title).lower()
+    t_score = fuzz.token_set_ratio(main, clean_result)
+    if author:
+        a_score = fuzz.token_set_ratio(author.lower(), clean_result)
+        # Weight title more heavily
+        return int(t_score * 0.7 + a_score * 0.3)
+    return t_score
+
+
+def build_prowlarr_query(title: str, author: str = "") -> str:
+    """Build a Prowlarr search query, stripping subtitles indexers typically omit."""
+    main = _strip_subtitle(title)
+    return f"{main} {author}".strip() if author else main
+
+
+async def prowlarr_search(settings: dict, query: str, book_type: str = "", title: str = "", author: str = "") -> list[dict]:
+    """Search Prowlarr indexers. Filtered to configured tag if set.
+
+    Pass `title` and `author` to enable relevance scoring — results are sorted
+    by score descending so the best match surfaces first.
+    """
     url = (settings.get("url") or "").rstrip("/")
     api_key = settings.get("api_key") or ""
     if not url or not api_key:
@@ -77,7 +120,15 @@ async def prowlarr_search(settings: dict, query: str, book_type: str = "") -> li
             headers={"X-Api-Key": api_key},
         )
         resp.raise_for_status()
-        return resp.json()
+        results = resp.json()
+
+    if title and results:
+        results = sorted(
+            results,
+            key=lambda r: _score_result(r.get("title", ""), title, author),
+            reverse=True,
+        )
+    return results
 
 
 # ── qBittorrent ────────────────────────────────────────────────────────────────

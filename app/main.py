@@ -71,7 +71,7 @@ async def _library_sync_task():
 
 async def _auto_search_task():
     """Search Prowlarr for all requested items and snatch the first result."""
-    from .services.download_clients import prowlarr_search, QBittorrentClient, SABnzbdClient
+    from .services.download_clients import prowlarr_search, build_prowlarr_query, QBittorrentClient, SABnzbdClient
 
     settings = await get_settings()
     prowlarr_settings = settings.get("prowlarr", {})
@@ -91,8 +91,12 @@ async def _auto_search_task():
 
     for row in rows:
         try:
-            query = f"{row['title']} {row['author'] or ''}".strip()
-            results = await prowlarr_search(prowlarr_settings, query, book_type=row["type"])
+            query = build_prowlarr_query(row["title"], row["author"] or "")
+            results = await prowlarr_search(
+                prowlarr_settings, query,
+                book_type=row["type"],
+                title=row["title"], author=row["author"] or "",
+            )
             if not results:
                 continue
 
