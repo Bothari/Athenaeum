@@ -192,6 +192,23 @@ async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int
     return sorted(deduped, key=lambda h: h.get("document", {}).get("users_count") or 0, reverse=True)
 
 
+async def _fetch_hc_book_meta(hc_book_id: int, api_key: str) -> dict:
+    """Fetch slug and release_date for a single HC book. Returns dict with those keys."""
+    gql = "query Meta($id: Int!) { books_by_pk(id: $id) { slug release_date } }"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={"query": gql, "variables": {"id": hc_book_id}},
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            )
+            resp.raise_for_status()
+        return (resp.json().get("data") or {}).get("books_by_pk") or {}
+    except Exception as e:
+        logger.warning("_fetch_hc_book_meta(%s) failed: %s", hc_book_id, e)
+        return {}
+
+
 async def _fetch_hc_release_date(hc_book_id: int, api_key: str) -> str:
     """Fetch release_date for a single HC book. Returns ISO date string or ''."""
     gql = "query ReleaseDate($id: Int!) { books_by_pk(id: $id) { release_date } }"
@@ -1144,6 +1161,46 @@ async def sync_library() -> dict:
         logger.error(f"sync_library failed: {e}", exc_info=True)
         await _upsert_task_state("library_sync", running=False, last_result=f"error: {e}")
         raise
+
+    # Refresh slug/release_date for HC-linked books that are missing either,
+    # or where release_date is still in the future (it may have changed).
+    today = datetime.now(timezone.utc).date().isoformat()
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if api_key:
+        async with get_db() as db:
+            stale_rows = await (
+                await db.execute(
+                    """SELECT b.id, bl.hardcover_id FROM books b
+                       JOIN book_links bl ON bl.book_id = b.id
+                       WHERE bl.hardcover_id IS NOT NULL AND bl.hardcover_id != ''
+                         AND (
+                           b.release_date IS NULL OR b.release_date = '' OR b.release_date >= ?
+                           OR bl.hardcover_slug IS NULL OR bl.hardcover_slug = ''
+                         )""",
+                    (today,),
+                )
+            ).fetchall()
+        if stale_rows:
+            sem = asyncio.Semaphore(2)
+            async def _refresh_one(book_id: str, hc_id: str) -> None:
+                async with sem:
+                    await asyncio.sleep(0.3)
+                    meta = await _fetch_hc_book_meta(int(hc_id), api_key)
+                    if not meta:
+                        return
+                    async with get_db() as db:
+                        if meta.get("release_date"):
+                            await db.execute(
+                                "UPDATE books SET release_date = ? WHERE id = ?",
+                                (meta["release_date"], book_id),
+                            )
+                        if meta.get("slug"):
+                            await db.execute(
+                                "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
+                                (meta["slug"], book_id),
+                            )
+                        await db.commit()
+            await asyncio.gather(*[_refresh_one(r[0], r[1]) for r in stale_rows])
 
     await _upsert_task_state("library_sync", running=False, last_result="ok")
     return counters

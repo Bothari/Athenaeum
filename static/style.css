@@ -303,6 +303,7 @@ html.light .badge-unmonitored { background: var(--surface2); color: var(--text-d
 .btn-primary:hover:not(:disabled)  { opacity: 0.85; }
 .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
 .btn-secondary:hover:not(:disabled) { border-color: var(--text-dim); }
+.btn-success  { background: var(--green); color: #fff; border: none; }
 .btn-danger   { background: var(--red); color: #fff; border: none; }
 .btn-danger:hover:not(:disabled) { opacity: 0.85; }
 .btn-ghost    { background: none; color: var(--text-dim); border: none; padding: 0.4rem 0.6rem; }
@@ -932,4 +933,44 @@ body.square-covers .book-card-cover-placeholder,
 body.square-covers .detail-cover.abs-cover,
 body.square-covers .detail-cover-placeholder.abs-cover {
   aspect-ratio: 1 / 1;
+}
+
+/* ── Search-all inline expansion ── */
+@media (max-width: 640px) {
+  .col-hide-mobile { display: none; }
+}
+
+.search-expansion-cell { padding: 0 !important; border-top: none !important; }
+.search-expansion {
+  padding: 0.25rem 1rem 0.75rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.prowlarr-result-row {
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.prowlarr-result-row:first-child { border-top: none; }
+.prowlarr-result-title {
+  word-break: break-word;
+  margin-bottom: 0.3rem;
+}
+.prowlarr-result-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.prowlarr-result-info {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--text-dim);
+}
+@media (max-width: 640px) {
+  .prowlarr-dl-label { display: none; }
+  .prowlarr-dl-btn { padding: 0.4rem 0.6rem; }
 }

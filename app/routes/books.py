@@ -690,6 +690,7 @@ class CreateBookBody(BaseModel):
     metadata_source: Optional[str] = None
     metadata_id: Optional[str] = None
     metadata_url: Optional[str] = None
+    hardcover_slug: Optional[str] = None
     requests: list[BookRequestItem] = []
 
 
@@ -742,8 +743,15 @@ async def create_book(body: CreateBookBody):
             )
             # book_links row (only on creation — sync owns this for ABS-linked books)
             await db.execute(
-                "INSERT OR IGNORE INTO book_links (id, book_id, hardcover_id, linked_at) VALUES (?, ?, ?, ?)",
-                (str(uuid.uuid4()), book_id, body.metadata_id or None, now),
+                "INSERT OR IGNORE INTO book_links (id, book_id, hardcover_id, hardcover_slug, linked_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), book_id, body.metadata_id or None, body.hardcover_slug or None, now),
+            )
+
+        # Backfill slug if we have one and it's not already set
+        if body.hardcover_slug:
+            await db.execute(
+                "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
+                (body.hardcover_slug, book_id),
             )
 
         # Authors — always upsert so existing books without authors get filled in
