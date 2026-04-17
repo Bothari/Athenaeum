@@ -335,14 +335,16 @@ async def search_indexers(request_id: str):
     if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
         return {"results": [], "error": "Prowlarr not configured"}
 
-    from ..services.download_clients import prowlarr_search
+    from ..services.download_clients import prowlarr_search, build_prowlarr_query
 
-    query = row["title"]
-    if row["author"]:
-        query = f"{query} {row['author']}"
+    query = build_prowlarr_query(row["title"], row["author"] or "")
 
     try:
-        raw_results = await prowlarr_search(prowlarr_settings, query, book_type=row["type"])
+        raw_results = await prowlarr_search(
+            prowlarr_settings, query,
+            book_type=row["type"],
+            title=row["title"], author=row["author"] or "",
+        )
     except Exception as e:
         logger.warning("Prowlarr search failed: %s", e)
         return {"results": [], "error": str(e)}
@@ -376,7 +378,7 @@ async def search_all_requests():
     if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
         return {"results": [], "error": "Prowlarr not configured"}
 
-    from ..services.download_clients import prowlarr_search
+    from ..services.download_clients import prowlarr_search, build_prowlarr_query
 
     today = date.today().isoformat()
 
@@ -401,9 +403,13 @@ async def search_all_requests():
         to_search.append(row)
 
     async def _search_one(row):
-        query = f"{row['title']} {row['author'] or ''}".strip()
+        query = build_prowlarr_query(row["title"], row["author"] or "")
         try:
-            raw = await prowlarr_search(prowlarr_settings, query, book_type=row["type"])
+            raw = await prowlarr_search(
+                prowlarr_settings, query,
+                book_type=row["type"],
+                title=row["title"], author=row["author"] or "",
+            )
         except Exception as e:
             return {"request_id": row["id"], "book_title": row["title"],
                     "author": row["author"], "type": row["type"],
