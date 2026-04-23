@@ -1258,6 +1258,7 @@ route('/library/series/:id', async ({ id }) => {
         <div id="series-stats">${renderDetailStats(seriesName, { inLibrary, total: booksData.length, requested })}</div>
         <div class="section-heading">Books in Library</div>
         <div id="series-books"></div>
+        <div id="series-missing-section"></div>
         <div id="series-hc-section" class="mt-2"></div>
         <div id="series-debug-section"></div>
       `;
@@ -1319,7 +1320,45 @@ route('/library/series/:id', async ({ id }) => {
         `;
       } catch {}
     }
+
+    async function loadMissing() {
+      const sec = document.getElementById('series-missing-section');
+      if (!sec) return;
+      sec.innerHTML = `<div class="section-heading mt-2">Missing from Series</div><div class="state-loading">Checking Hardcover…</div>`;
+      try {
+        const data = await api(`/series/${id}/missing`);
+        if (data.error || !data.items || !data.items.length) {
+          sec.innerHTML = data.items && !data.items.length
+            ? `<div class="section-heading mt-2">Missing from Series</div><p class="td-dim" style="padding:0.5rem 0">All books accounted for.</p>`
+            : '';
+          return;
+        }
+        const label = `Missing from Series (${data.items.length}${data.truncated ? '+' : ''})`;
+        sec.innerHTML = `<div class="section-heading mt-2">${label}</div>`;
+        data.items.forEach(result => {
+          const card = document.createElement('div');
+          card.className = 'search-card';
+          populateBookCard(card, result, () => loadMissing());
+          if (result.series_position) {
+            const titleRow = card.querySelector('.search-card-title-row');
+            const titleEl = titleRow && titleRow.querySelector('.search-card-title');
+            if (titleRow && titleEl) {
+              const badge = document.createElement('span');
+              badge.className = 'badge';
+              badge.style.cssText = 'background:var(--surface2);color:var(--text-dim);margin-right:0.4rem;font-size:0.75rem;vertical-align:middle;flex-shrink:0';
+              badge.textContent = `#${result.series_position}`;
+              titleRow.insertBefore(badge, titleEl);
+            }
+          }
+          sec.appendChild(card);
+        });
+      } catch {
+        sec.innerHTML = '';
+      }
+    }
+
     loadSeriesExtras();
+    loadMissing();
   } catch (err) {
     renderError(app, render);
   }

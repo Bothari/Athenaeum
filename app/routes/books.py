@@ -434,23 +434,48 @@ async def get_series_missing(series_id: str):
     if not candidates:
         return {"items": [], "truncated": truncated}
 
-    # For each missing book, search HC for best edition
-    results = []
-    for entry in candidates:
-        await asyncio.sleep(0.25)
-        try:
-            hits = await _book_search.search_books(entry["title"], api_key, pages=1,
-                                                   context_hc_series_id=hc_series_id)
-        except Exception as e:
-            logger.warning("series missing search failed for %r: %s", entry["title"], e)
-            hits = []
+    # Check cache for per-book edition search results (the slow part)
+    async with get_db() as db:
+        editions_row = await (
+            await db.execute(
+                "SELECT results_json FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
+                (hc_series_id, "series_missing_editions", now_iso),
+            )
+        ).fetchone()
 
-        if hits:
-            best = hits[0]
-            best["series_position"] = entry["position"]
-            results.append(best)
+    if editions_row:
+        results = json.loads(editions_row["results_json"])
+    else:
+        results = []
+        for entry in candidates:
+            await asyncio.sleep(0.25)
+            try:
+                hits = await _book_search.search_books(entry["title"], api_key, pages=1,
+                                                       context_hc_series_id=hc_series_id)
+            except Exception as e:
+                logger.warning("series missing search failed for %r: %s", entry["title"], e)
+                hits = []
+            if hits:
+                hc_id = entry["hc_book_id"]
+                best = next((h for h in hits if str(h.get("metadata_id") or "") == hc_id), hits[0])
+                best["series_position"] = entry["position"]
+                results.append(best)
 
-    # Annotate with local DB data
+        async with get_db() as db:
+            expires_iso = (now_dt + timedelta(days=14)).isoformat()
+            await db.execute(
+                """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(query, source) DO UPDATE SET
+                     results_json = excluded.results_json,
+                     created_at = excluded.created_at,
+                     expires_at = excluded.expires_at""",
+                (str(__import__("uuid").uuid4()), hc_series_id, "series_missing_editions",
+                 json.dumps(results), now_iso, expires_iso),
+            )
+            await db.commit()
+
+    # Annotate with fresh local DB data (always live — not cached)
     async with get_db() as db:
         results = await _annotate_results(results, db)
 
