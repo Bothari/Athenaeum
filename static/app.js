@@ -1690,7 +1690,7 @@ route('/requests', async (params, qp) => {
       tr.innerHTML = `
         <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a>${r.release_date && r.release_date >= new Date().toISOString().slice(0,10) ? ` <span class="badge badge-unmonitored" title="Releases ${r.release_date}">Unreleased</span>` : ''}</td>
         <td class="td-dim col-hide-mobile">${escapeHtml(r.author || '—')}</td>
-        <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)} ${r.status}</span></td>
+        <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}<span class="col-hide-mobile"> ${r.status}</span></span></td>
         <td class="td-dim col-hide-mobile">${escapeHtml(r.narrator || '—')}</td>
         <td class="td-dim col-hide-mobile">${formatDate(r.created_at)}</td>
         <td style="white-space:nowrap">
