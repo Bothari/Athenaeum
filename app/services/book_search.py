@@ -171,17 +171,33 @@ async def search_books(
     return [normalize_hit(d, context_hc_series_id) for d in docs]
 
 
-_SERIES_GQL = (
-    'query GetSeriesBooks($id: Int!) {'
-    '  series_by_pk(id: $id) {'
-    '    id name books_count'
-    '    book_series(order_by: {position: asc}) {'
-    '      position details compilation'
-    '      book { id title slug users_count }'
-    '    }'
-    '  }'
-    '}'
-)
+_SERIES_GQL = """
+query GetSeriesBooks($id: Int!) {
+  series_by_pk(id: $id) {
+    id name
+    book_series(
+      distinct_on: position
+      order_by: [{position: asc}, {book: {users_count: desc}}]
+      where: {
+        book: {canonical_id: {_is_null: true}, is_partial_book: {_eq: false}}
+        compilation: {_eq: false}
+      }
+    ) {
+      position
+      details
+      book {
+        id slug title users_count
+        rating
+        ratings_count
+        image { url }
+        contributions(limit: 5) {
+          author { id name }
+        }
+      }
+    }
+  }
+}
+"""
 
 
 def _normalize_position(pos) -> str:
@@ -195,17 +211,12 @@ def _normalize_position(pos) -> str:
         return pos.lower()
 
 
-def _is_compilation(entry: dict) -> bool:
-    if entry.get("compilation"):
-        return True
-    for field in (entry.get("details") or "", str(entry.get("position") or "")):
-        if re.search(r'\d+\s*[-,&]\s*\d+', field):
-            return True
-    return False
-
-
 async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
-    """Fetch all books in a Hardcover series. Returns list of {title, position, compilation, hc_book_id}."""
+    """Fetch all books in a series using the official distinct_on dedup approach.
+
+    Returns full normalised results (same shape as normalize_hit) with series_position set.
+    Deduplication, merged-book filtering, and partial-edition filtering all happen server-side.
+    """
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
@@ -220,48 +231,69 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
         return []
 
     series = (data.get("data") or {}).get("series_by_pk") or {}
+    results = []
 
-    # Collect all entries, then deduplicate by position keeping highest users_count.
-    # HC stores every translation/edition as a separate book_series row, so a 14-book
-    # series can have 40+ raw entries.
-    best: dict[str, dict] = {}  # position -> best entry
     for entry in (series.get("book_series") or []):
         book = entry.get("book") or {}
         title = book.get("title") or ""
         if not title:
             continue
-        position = _normalize_position(entry.get("position") or entry.get("details") or "")
-        is_comp = _is_compilation(entry)
-        users_count = book.get("users_count") or 0
-        candidate = {
+
+        position = _normalize_position(entry.get("details") or entry.get("position") or "")
+        if not position:
+            continue
+
+        slug = book.get("slug") or ""
+        book_id = str(book.get("id") or "")
+        cover_url = (book.get("image") or {}).get("url") or ""
+        rating_raw = book.get("rating") or 0
+
+        authors = []
+        seen_names: set = set()
+        for c in (book.get("contributions") or []):
+            a = c.get("author") or {}
+            name = a.get("name") or ""
+            if name and name not in seen_names:
+                seen_names.add(name)
+                authors.append({"name": name, "id": str(a.get("id") or "")})
+
+        result = {
             "title": title,
-            "position": position,
-            "compilation": is_comp,
-            "hc_book_id": str(book.get("id") or ""),
-            "slug": book.get("slug") or "",
-            "users_count": users_count,
+            "subtitle": "",
+            "author": authors[0]["name"] if authors else "",
+            "author_id": authors[0]["id"] if authors else "",
+            "authors": authors,
+            "narrator": "",
+            "description": "",
+            "cover_url": cover_url,
+            "isbn": "",
+            "asin": "",
+            "pages": None,
+            "publisher": "",
+            "published_year": None,
+            "language": "",
+            "genres": [],
+            "rating": round(float(rating_raw), 1) if rating_raw else None,
+            "rating_count": book.get("ratings_count") or 0,
+            "users_count": book.get("users_count") or 0,
+            "series": [{"id": None, "hardcover_series_id": hc_series_id, "name": series.get("name") or "", "position": position}],
+            "is_compilation": False,
+            "compilation": False,
+            "metadata_source": "hardcover",
+            "metadata_id": book_id,
+            "slug": slug,
+            "metadata_url": f"https://hardcover.app/books/{slug}" if slug else "",
+            "hardcover_url": f"https://hardcover.app/books/{slug}" if slug else "",
+            "book_id": None,
+            "in_library": False,
+            "library_formats": [],
+            "existing_requests": [],
+            "abs_links": [],
+            "series_position": position,
         }
-        existing = best.get(position)
-        if existing is None:
-            best[position] = candidate
-        else:
-            # Prefer non-compilation; break ties by users_count
-            if (not is_comp and existing["compilation"]) or (
-                is_comp == existing["compilation"] and users_count > existing["users_count"]
-            ):
-                best[position] = candidate
+        results.append(result)
 
-    # Sort by position and strip internal users_count field
-    def _pos_sort(item):
-        try:
-            return (0, float(item["position"]))
-        except (ValueError, TypeError):
-            return (1, item["position"])
-
-    books = sorted(best.values(), key=_pos_sort)
-    for b in books:
-        b.pop("users_count", None)
-    return books
+    return results
 
 
 async def advanced_search_books(
