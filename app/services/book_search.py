@@ -176,7 +176,6 @@ query GetSeriesBooks($id: Int!) {
   series_by_pk(id: $id) {
     id name
     book_series(
-      distinct_on: position
       order_by: [{position: asc}, {book: {users_count: desc}}]
       where: {
         book: {canonical_id: {_is_null: true}, is_partial_book: {_eq: false}}
@@ -198,6 +197,48 @@ query GetSeriesBooks($id: Int!) {
   }
 }
 """
+
+
+def _is_pure_position(details: str) -> bool:
+    """True if details is purely numeric (e.g. '8', '4.5') — no text modifiers."""
+    return bool(re.match(r'^[\d.]+$', details.strip()))
+
+
+def _dedup_series_entries(entries: list[dict]) -> list[dict]:
+    """
+    Deduplicate raw book_series entries fetched without distinct_on.
+
+    Two-pass strategy:
+    1. Group by exact details string; keep the highest-users_count book per group.
+    2. Group by numeric position; within each position, prefer pure-number details
+       (e.g. '8') over split-book strings (e.g. '8 part 1', 'tome 1').
+       If no pure-number entry exists at a position, keep the most popular.
+    """
+    # Pass 1: best book per exact details string
+    by_details: dict[str, dict] = {}
+    for e in entries:
+        key = e.get("details") or ""
+        cur = by_details.get(key)
+        if not cur or (e.get("users_count") or 0) > (cur.get("users_count") or 0):
+            by_details[key] = e
+
+    # Pass 2: group by numeric position, prefer pure-number details
+    by_pos: dict[float, list[dict]] = {}
+    for e in by_details.values():
+        pos = e.get("position_num")
+        if pos is None:
+            continue
+        by_pos.setdefault(pos, []).append(e)
+
+    result = []
+    for pos in sorted(by_pos):
+        candidates = by_pos[pos]
+        pure = [c for c in candidates if _is_pure_position(c.get("details") or "")]
+        pool = pure if pure else candidates
+        best = max(pool, key=lambda c: c.get("users_count") or 0)
+        result.append(best)
+
+    return result
 
 
 def _normalize_position(pos) -> str:
@@ -231,14 +272,35 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
         return []
 
     series = (data.get("data") or {}).get("series_by_pk") or {}
-    results = []
+    series_name = series.get("name") or ""
 
+    # Collect raw entries with dedup metadata attached
+    raw: list[dict] = []
     for entry in (series.get("book_series") or []):
         book = entry.get("book") or {}
-        title = book.get("title") or ""
-        if not title:
+        if not book.get("title"):
             continue
+        pos_raw = entry.get("position")
+        try:
+            pos_num = float(pos_raw) if pos_raw is not None else None
+        except (ValueError, TypeError):
+            pos_num = None
+        if pos_num is None:
+            continue
+        raw.append({
+            "entry": entry,
+            "book": book,
+            "details": entry.get("details") or "",
+            "position_num": pos_num,
+            "users_count": book.get("users_count") or 0,
+        })
 
+    deduped = _dedup_series_entries(raw)
+
+    results = []
+    for item in deduped:
+        entry = item["entry"]
+        book = item["book"]
         position = _normalize_position(entry.get("details") or entry.get("position") or "")
         if not position:
             continue
@@ -258,7 +320,7 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
                 authors.append({"name": name, "id": str(a.get("id") or "")})
 
         result = {
-            "title": title,
+            "title": book.get("title") or "",
             "subtitle": "",
             "author": authors[0]["name"] if authors else "",
             "author_id": authors[0]["id"] if authors else "",
@@ -276,7 +338,7 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
             "rating": round(float(rating_raw), 1) if rating_raw else None,
             "rating_count": book.get("ratings_count") or 0,
             "users_count": book.get("users_count") or 0,
-            "series": [{"id": None, "hardcover_series_id": hc_series_id, "name": series.get("name") or "", "position": position}],
+            "series": [{"id": None, "hardcover_series_id": hc_series_id, "name": series_name, "position": position}],
             "is_compilation": False,
             "compilation": False,
             "metadata_source": "hardcover",
