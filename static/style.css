@@ -67,7 +67,7 @@ input::placeholder { color: var(--text-dim); }
   border-bottom: 1px solid var(--border);
 }
 .nav-inner {
-  max-width: 1100px;
+  max-width: 860px;
   margin: 0 auto;
   height: 100%;
   display: flex;
@@ -156,6 +156,11 @@ input::placeholder { color: var(--text-dim); }
   max-width: 1100px;
   margin: 0 auto;
   padding: 1.5rem 1rem;
+}
+.narrow-page {
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 /* ── Cards ── */
@@ -653,6 +658,8 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
 .stat-card.clickable { cursor: pointer; transition: border-color 0.15s; }
 .stat-card.clickable:hover { border-color: var(--accent); }
 .stat-card.stat-card-disabled { opacity: 0.45; }
+.tasks-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.25rem; }
+.tasks-list .stat-card { text-align: left; }
 .stat-value { font-size: 2rem; font-weight: 700; line-height: 1; }
 .stat-label { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.35rem; }
 .stat-value.red { color: var(--red); }

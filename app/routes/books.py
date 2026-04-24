@@ -233,12 +233,12 @@ async def list_series(
     offset: int = Query(default=0, ge=0),
     unlinked: bool = Query(default=False),
 ):
-    if sort not in {"name", "book_count"}:
+    if sort not in {"name", "library_count"}:
         sort = "name"
     if dir not in VALID_DIR:
         dir = "asc"
 
-    order_expr = "lower(s.name)" if sort == "name" else f"book_count {dir}, lower(s.name)"
+    order_expr = "lower(s.name)" if sort == "name" else f"library_count {dir}, lower(s.name)"
     order_clause = f"{order_expr} {dir}" if sort == "name" else order_expr
 
     joins = ""
@@ -262,7 +262,16 @@ async def list_series(
         ).fetchone()
         rows = await (
             await db.execute(
-                f"""SELECT s.*, COUNT(bs.book_id) as book_count
+                f"""SELECT s.*,
+                    COUNT(DISTINCT CASE WHEN EXISTS (
+                        SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id
+                    ) THEN bs.book_id END) as library_count,
+                    COUNT(DISTINCT CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id
+                    ) AND EXISTS (
+                        SELECT 1 FROM requests r WHERE r.book_id = bs.book_id
+                        AND r.status NOT IN ('completed', 'failed')
+                    ) THEN bs.book_id END) as requested_count
                     FROM series s{joins}
                     LEFT JOIN book_series bs ON bs.series_id = s.id
                     {where}
@@ -284,7 +293,8 @@ async def list_series(
             items.append({
                 "id": row["id"],
                 "name": row["name"],
-                "book_count": row["book_count"],
+                "library_count": row["library_count"],
+                "requested_count": row["requested_count"],
                 "link": {
                     "hardcover_series_id": link_row["hardcover_series_id"] if link_row else None,
                     "hardcover_series_slug": link_row["hardcover_series_slug"] if link_row else None,
@@ -307,9 +317,27 @@ async def get_series(series_id: str):
                 "SELECT * FROM series_links WHERE series_id = ?", (series_id,)
             )
         ).fetchone()
+        counts_row = await (
+            await db.execute(
+                """SELECT
+                    COUNT(DISTINCT CASE WHEN EXISTS (
+                        SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id
+                    ) THEN bs.book_id END) as library_count,
+                    COUNT(DISTINCT CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id
+                    ) AND EXISTS (
+                        SELECT 1 FROM requests r WHERE r.book_id = bs.book_id
+                        AND r.status NOT IN ('completed', 'failed')
+                    ) THEN bs.book_id END) as requested_count
+                   FROM book_series bs WHERE bs.series_id = ?""",
+                (series_id,),
+            )
+        ).fetchone()
     return {
         "id": row["id"],
         "name": row["name"],
+        "library_count": counts_row["library_count"] if counts_row else 0,
+        "requested_count": counts_row["requested_count"] if counts_row else 0,
         "link": {
             "hardcover_series_id": link_row["hardcover_series_id"] if link_row else None,
             "hardcover_series_slug": link_row["hardcover_series_slug"] if link_row else None,
@@ -332,6 +360,7 @@ async def get_series_books(series_id: str):
                 """SELECT b.*, bs.position FROM books b
                    JOIN book_series bs ON bs.book_id = b.id
                    WHERE bs.series_id = ?
+                   AND EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = b.id)
                    ORDER BY CAST(bs.position AS REAL), bs.position""",
                 (series_id,),
             )
