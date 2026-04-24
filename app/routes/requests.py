@@ -223,11 +223,22 @@ async def get_request(request_id: str):
 async def delete_request(request_id: str):
     async with get_db() as db:
         row = await (
-            await db.execute("SELECT id FROM requests WHERE id = ?", (request_id,))
+            await db.execute("SELECT id, book_id FROM requests WHERE id = ?", (request_id,))
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Request not found")
+        book_id = row["book_id"]
         await db.execute("DELETE FROM requests WHERE id = ?", (request_id,))
+        # If the book has no formats and no remaining requests it only exists due to this
+        # request — remove it from book_series so it reappears correctly in missing sections
+        remaining = await (
+            await db.execute("SELECT COUNT(*) FROM requests WHERE book_id = ?", (book_id,))
+        ).fetchone()
+        has_formats = await (
+            await db.execute("SELECT 1 FROM book_formats WHERE book_id = ? LIMIT 1", (book_id,))
+        ).fetchone()
+        if remaining[0] == 0 and not has_formats:
+            await db.execute("DELETE FROM book_series WHERE book_id = ?", (book_id,))
         await db.commit()
     return {"ok": True}
 
