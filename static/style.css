@@ -556,6 +556,7 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   color: var(--text);
   margin-bottom: 1.25rem;
 }
+body.home-page .home-title { display: block; }
 
 /* ── Search page ── */
 .search-page {
