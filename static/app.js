@@ -545,7 +545,7 @@ function renderSeriesCard(series) {
   el.className = 'entity-card';
   el.innerHTML = `
     <div class="entity-card-name">${escapeHtml(series.name)}</div>
-    <div class="entity-card-meta">${series.book_count || 0} book${series.book_count !== 1 ? 's' : ''}</div>
+    <div class="entity-card-meta">${series.library_count || 0} book${series.library_count !== 1 ? 's' : ''}${series.requested_count > 0 ? ` <span class="td-dim">(+${series.requested_count})</span>` : ''}</div>
   `;
   el.onclick = () => navigate('/library/series/' + series.id);
   return el;
@@ -555,6 +555,9 @@ function renderSeriesCard(series) {
 // stats: { inLibrary, total, requested, missing, loadingMissing }
 
 function renderDetailStats(name, stats) {
+  const missingVal = stats.loadingMissing
+    ? `<span class="spin" style="font-size:1.2rem;line-height:1">⟳</span>`
+    : (stats.missing != null ? stats.missing : '—');
   return `
     <div class="card mb-2">
       <div class="stats-row" style="margin-bottom:0">
@@ -565,6 +568,10 @@ function renderDetailStats(name, stats) {
         <div class="stat-card">
           <div class="stat-value">${stats.requested || 0}</div>
           <div class="stat-label">Requested</div>
+        </div>
+        <div class="stat-card" id="series-stat-missing">
+          <div class="stat-value">${missingVal}</div>
+          <div class="stat-label">Missing</div>
         </div>
       </div>
     </div>
@@ -867,7 +874,7 @@ route('/', async (params, qp) => {
 
   if (!hasValue) document.body.classList.add('home-page');
 
-  app.innerHTML = `
+  app.innerHTML = `<div class="narrow-page">
     <div class="search-page ${hasValue ? '' : 'empty'}" id="search-page">
       <div class="home-title">Athenaeum</div>
       <div class="search-container" id="search-container">
@@ -898,7 +905,7 @@ route('/', async (params, qp) => {
       </div>
       <div class="search-results" id="search-results"></div>
     </div>
-  `;
+  </div>`;
 
   const qInput = document.getElementById('search-q');
   const advBtn = document.getElementById('search-adv-btn');
@@ -1004,10 +1011,10 @@ route('/', async (params, qp) => {
 route('/library/books', async (params, qp) => {
   renderLoading(app);
   try {
-    app.innerHTML = `
+    app.innerHTML = `<div class="narrow-page">
       <div class="page-header"><span class="page-title">${ICON_LIBRARY} Books</span></div>
       <div id="books-content"></div>
-    `;
+    </div>`;
 
     const content = document.getElementById('books-content');
 
@@ -1052,10 +1059,10 @@ route('/library/books', async (params, qp) => {
 
 // Library: Authors list
 route('/library/authors', async (params, qp) => {
-  app.innerHTML = `
+  app.innerHTML = `<div class="narrow-page">
     <div class="page-header"><span class="page-title">${ICON_AUTHOR} Authors</span></div>
     <div id="authors-content"></div>
-  `;
+  </div>`;
   const content = document.getElementById('authors-content');
   let authorsUnlinked = false;
   const authorsTable = renderTable({
@@ -1095,7 +1102,7 @@ route('/library/authors/:id', async ({ id }) => {
 
     function renderAuthorBooksView() {
       const view = localStorage.getItem('detail_view') || 'list';
-      app.innerHTML = `
+      app.innerHTML = `<div class="narrow-page">
         <div class="page-header">
           <span class="page-title">${ICON_AUTHOR} ${escapeHtml(authorName)}</span>
           <div class="view-toggle">
@@ -1106,7 +1113,7 @@ route('/library/authors/:id', async ({ id }) => {
         <div id="author-books"></div>
         <div id="author-hc-section" class="mt-2"></div>
         <div id="author-debug-section"></div>
-      `;
+      </div>`;
       document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderAuthorBooksView(); };
       document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderAuthorBooksView(); };
 
@@ -1200,10 +1207,10 @@ route('/library/authors/:id', async ({ id }) => {
 
 // Library: Series list
 route('/library/series', async () => {
-  app.innerHTML = `
+  app.innerHTML = `<div class="narrow-page">
     <div class="page-header"><span class="page-title">${ICON_SERIES} Series</span></div>
     <div id="series-content"></div>
-  `;
+  </div>`;
   const content = document.getElementById('series-content');
   let seriesUnlinked = false;
   const seriesTable = renderTable({
@@ -1211,14 +1218,14 @@ route('/library/series', async () => {
     stateKey: 'series',
     headers: [
       { label: 'Name', key: 'name', sortable: true },
-      { label: 'Books', key: 'book_count', sortable: true, style: 'width:80px' },
+      { label: 'Books', key: 'library_count', sortable: true, style: 'width:80px' },
     ],
     fetchFn: (p) => api('/series?' + new URLSearchParams(p).toString()),
     extraFetchParams: () => seriesUnlinked ? { unlinked: '1' } : {},
     extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="series-unlinked-cb"> Unlinked only</label>`,
     renderRow: (s) => `
       <td><a href="#/library/series/${s.id}">${escapeHtml(s.name)}</a></td>
-      <td class="td-dim">${s.book_count || 0}</td>
+      <td class="td-dim">${s.library_count || 0}${s.requested_count > 0 ? ` <span style="opacity:0.6">(+${s.requested_count})</span>` : ''}</td>
     `,
     emptyMessage: 'No series yet. Series are added automatically when books with series data are synced.',
   });
@@ -1234,20 +1241,22 @@ route('/library/series/:id', async ({ id }) => {
   const ICON_GRID_V = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>`;
   renderLoading(app);
   try {
-    const [booksData] = await Promise.all([
+    const [booksData, seriesData] = await Promise.all([
       api(`/series/${id}/books`),
+      api(`/series/${id}`),
     ]);
 
-    const seriesName = booksData.length && booksData[0].series
-      ? (booksData[0].series.find(s => s.id === id) || booksData[0].series[0] || {}).name || 'Series'
-      : 'Series';
+    const seriesName = seriesData.name
+      || (booksData.length && booksData[0].series
+        ? (booksData[0].series.find(s => s.id === id) || booksData[0].series[0] || {}).name
+        : '') || 'Series';
 
-    const inLibrary = booksData.filter(b => (b.formats || []).length > 0).length;
-    const requested = booksData.filter(b => (b.requests || []).length > 0).length;
+    const inLibrary = seriesData.library_count || 0;
+    const requested = seriesData.requested_count || 0;
 
     function renderSeriesBooksView() {
       const view = localStorage.getItem('detail_view') || 'list';
-      app.innerHTML = `
+      app.innerHTML = `<div class="narrow-page">
         <div class="page-header">
           <span class="page-title">${ICON_SERIES} ${escapeHtml(seriesName)}</span>
           <div class="view-toggle">
@@ -1255,13 +1264,13 @@ route('/library/series/:id', async ({ id }) => {
             <button class="view-toggle-btn${view === 'list' ? ' active' : ''}" id="vt-list" title="List">${ICON_LIST_V}</button>
           </div>
         </div>
-        <div id="series-stats">${renderDetailStats(seriesName, { inLibrary, total: booksData.length, requested })}</div>
+        <div id="series-stats">${renderDetailStats(seriesName, { inLibrary, total: booksData.length, requested, loadingMissing: true })}</div>
         <div class="section-heading">Books in Library</div>
         <div id="series-books"></div>
         <div id="series-missing-section"></div>
         <div id="series-hc-section" class="mt-2"></div>
         <div id="series-debug-section"></div>
-      `;
+      </div>`;
       document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); };
       document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); };
 
@@ -1343,6 +1352,11 @@ route('/library/series/:id', async ({ id }) => {
       sec.innerHTML = `<div class="section-heading mt-2">Missing from Series</div><div class="state-loading">Checking Hardcover…</div>`;
       try {
         const data = await api(`/series/${id}/missing`);
+        const missingCard = document.getElementById('series-stat-missing');
+        if (missingCard) {
+          const count = (data.items && !data.error) ? data.items.length : null;
+          missingCard.querySelector('.stat-value').textContent = count != null ? String(count) : '—';
+        }
         if (data.error || !data.items || !data.items.length) {
           sec.innerHTML = data.items && !data.items.length
             ? `<div class="section-heading mt-2">Missing from Series</div><p class="td-dim" style="padding:0.5rem 0">All books accounted for.</p>`
@@ -1370,6 +1384,8 @@ route('/library/series/:id', async ({ id }) => {
         });
       } catch {
         sec.innerHTML = '';
+        const missingCard = document.getElementById('series-stat-missing');
+        if (missingCard) missingCard.querySelector('.stat-value').textContent = '—';
       }
     }
 
@@ -1606,7 +1622,7 @@ route('/library/book', async (params, qp) => {
       return s.id ? `<a href="#/library/series/${s.id}" class="detail-link">${label}</a>` : label;
     });
 
-    app.innerHTML = `
+    app.innerHTML = `<div class="narrow-page">
       <div class="page-header">
         <span class="page-title">${ICON_EBOOK} ${escapeHtml(book.title)}</span>
       </div>
@@ -1630,7 +1646,7 @@ route('/library/book', async (params, qp) => {
       <div id="book-abs-section" class="mt-2"></div>
       <div id="book-hc-section" class="mt-2"></div>
       <div id="book-debug-section"></div>
-    `;
+    </div>`;
 
     renderDetailFormats(document.getElementById('book-formats-section'), book, () => {
       api(`/books/${bookId}`).then(updated => {
@@ -1676,7 +1692,7 @@ route('/library/book', async (params, qp) => {
 route('/requests', async (params, qp) => {
   const tab = qp.tab === 'downloads' ? 'downloads' : 'requests';
 
-  app.innerHTML = `
+  app.innerHTML = `<div class="narrow-page">
     <div class="page-header">
       <span class="page-title">${ICON_REQUESTS} Queue</span>
       <button class="btn btn-primary btn-sm" id="search-all-btn">Search all</button>
@@ -1686,7 +1702,7 @@ route('/requests', async (params, qp) => {
       <button class="tab-btn${tab === 'downloads' ? ' active' : ''}" data-tab="downloads">Downloads</button>
     </div>
     <div id="queue-content"></div>
-  `;
+  </div>`;
 
   app.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
     btn.onclick = () => {
@@ -1926,7 +1942,7 @@ route('/dashboard', async () => {
       api('/sync/status'),
     ]);
 
-    app.innerHTML = `
+    app.innerHTML = `<div class="narrow-page">
       <div class="page-header"><span class="page-title">Dashboard</span></div>
 
       <div class="section-heading">Library</div>
@@ -1962,8 +1978,8 @@ route('/dashboard', async () => {
       </div>
 
       <div class="section-heading">Scheduled Tasks</div>
-      <div class="stats-row tasks-row" id="dash-tasks"></div>
-    `;
+      <div class="tasks-list" id="dash-tasks"></div>
+    </div>`;
 
     const DASH_TASKS = [
       { key: 'library_sync',  label: 'Library sync',  endpoint: '/sync/library'       },
@@ -2047,7 +2063,7 @@ route('/settings', async () => {
 
     const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Pushover', 'Tasks'];
 
-    app.innerHTML = `
+    app.innerHTML = `<div class="narrow-page">
       <div class="page-header"><span class="page-title">${ICON_SETTINGS} Settings</span></div>
       <div class="tabs-wrap">
         <div class="tabs">
@@ -2055,7 +2071,7 @@ route('/settings', async () => {
         </div>
       </div>
       <div id="settings-content"></div>
-    `;
+    </div>`;
 
     const content = document.getElementById('settings-content');
     setupTabScrollHints(app.querySelector('.tabs-wrap'));

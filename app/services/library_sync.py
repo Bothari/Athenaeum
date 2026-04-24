@@ -18,6 +18,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _norm_pos(pos) -> str | None:
+    if not pos:
+        return pos
+    try:
+        n = float(pos)
+        return str(int(n)) if n == int(n) else str(n)
+    except (ValueError, TypeError):
+        return str(pos)
+
+
 def _norm_title(s: str) -> str:
     """Normalise a title for fuzzy comparison."""
     s = re.sub(r'[\u200b-\u200f\u00ad\ufeff]', '', s)  # strip zero-width / soft-hyphen / BOM chars
@@ -1155,6 +1165,11 @@ async def sync_library() -> dict:
                     await db.execute("DELETE FROM book_links WHERE book_id = ?", (oid,))
                     await db.execute("DELETE FROM requests WHERE book_id = ? AND status IN ('completed', 'failed', 'in_library')", (oid,))
                     await db.execute("DELETE FROM books WHERE id = ?", (oid,))
+
+                # Remove series that have no books left
+                await db.execute(
+                    """DELETE FROM series WHERE id NOT IN (SELECT DISTINCT series_id FROM book_series)"""
+                )
                 await db.commit()
 
     except Exception as e:
@@ -1280,7 +1295,7 @@ async def _sync_item(item: dict) -> str:
                     await db.execute(
                         """INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at)
                            VALUES (?, ?, ?, ?, ?)""",
-                        (str(uuid.uuid4()), book_id, series_id, si.get("sequence") or None, now),
+                        (str(uuid.uuid4()), book_id, series_id, _norm_pos(si.get("sequence")), now),
                     )
 
                 await db.execute(
@@ -1336,15 +1351,29 @@ async def _sync_item(item: dict) -> str:
                 if r.rowcount:
                     changed = True
 
+            current_series_ids = []
             for si in series_items:
                 series_id = await _get_or_create_series(db, si["name"], si.get("abs_id", ""))
+                current_series_ids.append(series_id)
                 r = await db.execute(
                     """INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at)
                        VALUES (?, ?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), book_id, series_id, si.get("sequence") or None, now),
+                    (str(uuid.uuid4()), book_id, series_id, _norm_pos(si.get("sequence")), now),
                 )
                 if r.rowcount:
                     changed = True
+
+            # Remove series links that are no longer present in ABS
+            if current_series_ids:
+                placeholders = ",".join("?" * len(current_series_ids))
+                r = await db.execute(
+                    f"DELETE FROM book_series WHERE book_id = ? AND series_id NOT IN ({placeholders})",
+                    [book_id, *current_series_ids],
+                )
+            else:
+                r = await db.execute("DELETE FROM book_series WHERE book_id = ?", (book_id,))
+            if r.rowcount:
+                changed = True
 
             seen_types = set()
             for fmt in formats:
