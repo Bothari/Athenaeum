@@ -267,37 +267,39 @@ class TestGetSeriesMissing:
             )
             await db.commit()
 
+        def _rich(title, position):
+            return {
+                "title": title, "subtitle": "", "author": "Brandon Sanderson", "author_id": "",
+                "authors": [{"name": "Brandon Sanderson", "id": ""}],
+                "narrator": "", "description": "", "cover_url": "", "isbn": "", "asin": "",
+                "pages": None, "publisher": "", "published_year": None, "language": "",
+                "genres": [], "rating": None, "rating_count": 0, "users_count": 100,
+                "series": [{"id": None, "hardcover_series_id": "999", "name": "The Stormlight Archive", "position": position}],
+                "is_compilation": False, "compilation": False,
+                "metadata_source": "hardcover", "metadata_id": f"hc-{title[:5]}",
+                "slug": "", "metadata_url": "", "hardcover_url": "",
+                "book_id": None, "in_library": False, "library_formats": [],
+                "existing_requests": [], "abs_links": [],
+                "series_position": position,
+            }
+
         hc_books = [
-            {"title": "The Way of Kings", "position": "1", "compilation": False, "hc_book_id": "", "slug": ""},
-            {"title": "Words of Radiance", "position": "2", "compilation": False, "hc_book_id": "", "slug": ""},
-            {"title": "Oathbringer", "position": "3", "compilation": False, "hc_book_id": "", "slug": ""},
-            {"title": "Rhythm of War", "position": "4", "compilation": False, "hc_book_id": "", "slug": ""},
+            _rich("The Way of Kings", "1"),
+            _rich("Words of Radiance", "2"),
+            _rich("Oathbringer", "3"),
+            _rich("Rhythm of War", "4"),
         ]
 
         async def mock_hc_series(hc_series_id, api_key):
             return hc_books
 
-        async def mock_search(query, api_key, pages=1, context_hc_series_id=""):
-            return [{"title": query, "author": "Brandon Sanderson", "author_id": "",
-                     "authors": [], "subtitle": "", "narrator": "", "description": "",
-                     "cover_url": "", "isbn": "", "asin": "", "pages": None,
-                     "publisher": "", "published_year": None, "language": "",
-                     "genres": [], "rating": None, "rating_count": 0, "users_count": 100,
-                     "series": [], "is_compilation": False, "compilation_details": "",
-                     "metadata_source": "hardcover", "metadata_id": f"hc-{query[:5]}",
-                     "slug": "", "metadata_url": "", "hardcover_url": "",
-                     "book_id": None, "in_library": False, "library_formats": [],
-                     "existing_requests": [], "abs_links": []}]
-
         monkeypatch.setattr(books_module._book_search, "get_hc_series_books", mock_hc_series)
-        monkeypatch.setattr(books_module._book_search, "search_books", mock_search)
 
         resp = await seeded_client.get(f"/api/series/{series_id}/missing")
         assert resp.status_code == 200
         data = resp.json()
         assert "error" not in data
-        assert data["truncated"] is False
-        # positions 1 and 2 owned, so only 3 and 4 are missing
+        # positions 1 and 2 owned (have formats), so only 3 and 4 are missing
         assert len(data["items"]) == 2
         titles = [i["title"] for i in data["items"]]
         assert "Oathbringer" in titles
@@ -322,28 +324,31 @@ class TestGetSeriesMissing:
             )
             await db.commit()
 
+        def _rich(title, position, compilation=False):
+            return {
+                "title": title, "subtitle": "", "author": "Brandon Sanderson", "author_id": "",
+                "authors": [{"name": "Brandon Sanderson", "id": ""}],
+                "narrator": "", "description": "", "cover_url": "", "isbn": "", "asin": "",
+                "pages": None, "publisher": "", "published_year": None, "language": "",
+                "genres": [], "rating": None, "rating_count": 0, "users_count": 10,
+                "series": [{"id": None, "hardcover_series_id": "888", "name": "The Stormlight Archive", "position": position}],
+                "is_compilation": compilation, "compilation": compilation,
+                "metadata_source": "hardcover", "metadata_id": f"hc-{title[:8]}",
+                "slug": "", "metadata_url": "", "hardcover_url": "",
+                "book_id": None, "in_library": False, "library_formats": [],
+                "existing_requests": [], "abs_links": [],
+                "series_position": position,
+            }
+
         hc_books = [
-            {"title": "Stormlight 1-2 Boxset", "position": "1-2", "compilation": True, "hc_book_id": "", "slug": ""},
-            {"title": "Oathbringer", "position": "3", "compilation": False, "hc_book_id": "", "slug": ""},
+            _rich("Stormlight 1-2 Boxset", "1-2", compilation=True),
+            _rich("Oathbringer", "3"),
         ]
 
         async def mock_hc_series(hc_series_id, api_key):
             return hc_books
 
-        async def mock_search(query, api_key, pages=1, context_hc_series_id=""):
-            return [{"title": query, "author": "", "author_id": "", "authors": [],
-                     "subtitle": "", "narrator": "", "description": "", "cover_url": "",
-                     "isbn": "", "asin": "", "pages": None, "publisher": "",
-                     "published_year": None, "language": "", "genres": [],
-                     "rating": None, "rating_count": 0, "users_count": 10,
-                     "series": [], "is_compilation": False, "compilation_details": "",
-                     "metadata_source": "hardcover", "metadata_id": "hc-oathbringer",
-                     "slug": "", "metadata_url": "", "hardcover_url": "",
-                     "book_id": None, "in_library": False, "library_formats": [],
-                     "existing_requests": [], "abs_links": []}]
-
         monkeypatch.setattr(books_module._book_search, "get_hc_series_books", mock_hc_series)
-        monkeypatch.setattr(books_module._book_search, "search_books", mock_search)
 
         resp = await seeded_client.get(f"/api/series/{series_id}/missing")
         assert resp.status_code == 200
@@ -381,4 +386,62 @@ class TestGetSeriesMissing:
         assert resp.status_code == 200
         data = resp.json()
         assert data["items"] == []
-        assert data["truncated"] is False
+
+    async def test_requested_book_still_shows_as_missing(self, seeded_client, monkeypatch):
+        """A requested but not yet downloaded book should still appear in the missing section."""
+        import app.routes.books as books_module
+        from app.database import get_db
+
+        await seeded_client.put("/api/settings", json={
+            "audiobookshelf": {"url": "http://abs.local", "api_key": "k", "library_id": []},
+            "hardcover": {"api_key": "test-key"},
+        })
+
+        series = (await seeded_client.get("/api/series")).json()["items"]
+        series_id = series[0]["id"]
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ?",
+                ("111", series_id),
+            )
+            await db.commit()
+
+        def _rich(title, position):
+            return {
+                "title": title, "subtitle": "", "author": "Brandon Sanderson", "author_id": "",
+                "authors": [{"name": "Brandon Sanderson", "id": ""}],
+                "narrator": "", "description": "", "cover_url": "", "isbn": "", "asin": "",
+                "pages": None, "publisher": "", "published_year": None, "language": "",
+                "genres": [], "rating": None, "rating_count": 0, "users_count": 100,
+                "series": [{"id": None, "hardcover_series_id": "111", "name": "The Stormlight Archive", "position": position}],
+                "is_compilation": False, "compilation": False,
+                "metadata_source": "hardcover", "metadata_id": f"hc-{title[:5]}",
+                "slug": "", "metadata_url": "", "hardcover_url": "",
+                "book_id": None, "in_library": False, "library_formats": [],
+                "existing_requests": [], "abs_links": [],
+                "series_position": position,
+            }
+
+        hc_books = [_rich("The Way of Kings", "1"), _rich("Oathbringer", "3")]
+
+        async def mock_hc_series(hc_series_id, api_key):
+            return hc_books
+
+        monkeypatch.setattr(books_module._book_search, "get_hc_series_books", mock_hc_series)
+
+        # Get Way of Kings book_id and add a request for it (no formats — just requested)
+        books = (await seeded_client.get("/api/books")).json()["items"]
+        wok = next(b for b in books if b["title"] == "The Way of Kings")
+        await seeded_client.post("/api/requests", json={"book_id": wok["id"], "type": "ebook"})
+
+        # Remove formats so it looks like a request-only book (simulates pre-download state)
+        async with get_db() as db:
+            await db.execute("DELETE FROM book_formats WHERE book_id = ?", (wok["id"],))
+            await db.commit()
+
+        resp = await seeded_client.get(f"/api/series/{series_id}/missing")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Way of Kings has no formats, so it is not "owned" — must still appear as missing
+        titles = [i["title"] for i in data["items"]]
+        assert "The Way of Kings" in titles
