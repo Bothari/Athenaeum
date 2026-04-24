@@ -1354,7 +1354,7 @@ route('/library/series/:id', async ({ id }) => {
         data.items.forEach(result => {
           const card = document.createElement('div');
           card.className = 'search-card';
-          populateBookCard(card, result, () => loadMissing());
+          populateBookCard(card, result, null);
           if (result.series_position) {
             const titleRow = card.querySelector('.search-card-title-row');
             const titleEl = titleRow && titleRow.querySelector('.search-card-title');
