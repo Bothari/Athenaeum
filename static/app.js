@@ -663,6 +663,8 @@ function buildFormatRows(card, result, onRequestSuccess) {
           }});
           result.book_id = book.id;
           bookId = book.id;
+          const bookUrl = buildHash('/library/book', { book_id: bookId });
+          card.querySelectorAll('.search-card-cover-link, .search-card-title-link').forEach(a => { a.href = bookUrl; });
         }
 
         const req = await api('/requests', { method: 'POST', body: { book_id: bookId, type, narrator: narratorVal } });
@@ -684,6 +686,9 @@ function buildFormatRows(card, result, onRequestSuccess) {
         s.reqId = null;
         s.narrator = '';
         render();
+        if (state.audiobook.mode === 'unmonitored' && state.ebook.mode === 'unmonitored') {
+          card.querySelectorAll('.search-card-cover-link, .search-card-title-link').forEach(a => a.removeAttribute('href'));
+        }
       } catch (err) {
         toast('Cancel failed: ' + err.message, 'error');
         dot.disabled = false;
@@ -715,23 +720,43 @@ function populateBookCard(el, result, onRequestSuccess, { showFmtRows = true } =
     ? `<a href="${escapeHtml(result.hardcover_url)}" target="_blank" class="search-card-hc-link" title="Open on Hardcover">${ICON_HC()}</a>`
     : '';
 
-  const authorStr = (result.authors && result.authors.length > 1
-    ? result.authors.map(a => a.name)
-    : [result.author]
-  ).filter(Boolean).join(', ');
+  const authorEntries = (result.authors && result.authors.length > 0
+    ? result.authors
+    : (result.author ? [{ name: result.author, id: result.author_id || '' }] : [])
+  ).filter(a => a.name);
+  const authorHtml = authorEntries.map(a =>
+    a.id
+      ? `<a href="${buildHash('/', { hc_author_id: a.id, advanced: '1' })}" class="search-card-link">${escapeHtml(a.name)}</a>`
+      : `<span class="search-card-link">${escapeHtml(a.name)}</span>`
+  ).join(', ');
+
+  const seriesItem = result.series && result.series[0];
+  const seriesHtml = seriesItem
+    ? seriesItem.hardcover_series_id
+      ? `<a href="${buildHash('/', { hc_series_id: seriesItem.hardcover_series_id, advanced: '1' })}" class="search-card-link">${escapeHtml(seriesItem.name)}${posFmt ? ' #' + posFmt : ''}</a>`
+      : `<a href="${buildHash('/', { series: seriesItem.name, advanced: '1' })}" class="search-card-link">${escapeHtml(seriesItem.name)}${posFmt ? ' #' + posFmt : ''}</a>`
+    : '';
+
+  const hasActiveLink = result.book_id && (
+    (result.library_formats && result.library_formats.length > 0) ||
+    (result.existing_requests && result.existing_requests.some(r => r.status !== 'failed'))
+  );
+  const bookHash = hasActiveLink ? buildHash('/library/book', { book_id: result.book_id }) : '';
 
   el.innerHTML = `
-    ${result.cover_url
-      ? `<img class="search-card-cover" src="${escapeHtml(result.cover_url)}" alt="" loading="lazy">`
-      : `<div class="search-card-cover-placeholder">${ICON_EBOOK}</div>`
-    }
+    <a class="search-card-cover-link"${bookHash ? ` href="${bookHash}"` : ''}>
+      ${result.cover_url
+        ? `<img class="search-card-cover" src="${escapeHtml(result.cover_url)}" alt="" loading="lazy">`
+        : `<div class="search-card-cover-placeholder">${ICON_EBOOK}</div>`
+      }
+    </a>
     <div class="search-card-body">
       <div class="search-card-title-row">
-        <div class="search-card-title">${escapeHtml(result.title)}</div>
+        <a class="search-card-title search-card-title-link"${bookHash ? ` href="${bookHash}"` : ''}>${escapeHtml(result.title)}</a>
         ${hcLink}
       </div>
-      <div class="search-card-author">${escapeHtml(authorStr)}</div>
-      ${seriesStr ? `<div class="search-card-series">${seriesStr}</div>` : ''}
+      <div class="search-card-author">${authorHtml}</div>
+      ${seriesHtml ? `<div class="search-card-series">${seriesHtml}</div>` : ''}
       <div class="search-card-meta">
         ${ratingStr ? `<span class="search-card-rating">${ratingStr}</span>` : ''}
       </div>
@@ -869,8 +894,10 @@ route('/', async (params, qp) => {
   const q = qp.q || '';
   const author = qp.author || '';
   const series = qp.series || '';
+  const hcAuthorId = qp.hc_author_id || '';
+  const hcSeriesId = qp.hc_series_id || '';
   const advanced = qp.advanced === '1';
-  const hasValue = !!(q || author || series);
+  const hasValue = !!(q || author || series || hcAuthorId || hcSeriesId);
 
   if (!hasValue) document.body.classList.add('home-page');
 
@@ -922,19 +949,30 @@ route('/', async (params, qp) => {
   }
 
   async function runSearch() {
+    const currentQp = getHashParams();
+    const hcAuthorIdVal = currentQp.hc_author_id || '';
+    const hcSeriesIdVal = currentQp.hc_series_id || '';
     const qVal = qInput.value.trim();
     const authorVal = document.getElementById('search-author')?.value.trim() || '';
     const seriesVal = document.getElementById('search-series')?.value.trim() || '';
     const isAdv = advFields.classList.contains('open');
 
-    if (!qVal && !authorVal && !seriesVal) return;
+    if (!qVal && !authorVal && !seriesVal && !hcAuthorIdVal && !hcSeriesIdVal) return;
 
     // Update URL
     const newParams = {};
-    if (qVal) newParams.q = qVal;
-    if (authorVal) newParams.author = authorVal;
-    if (seriesVal) newParams.series = seriesVal;
-    if (isAdv) newParams.advanced = '1';
+    if (hcAuthorIdVal && !qVal && !authorVal && !seriesVal) {
+      newParams.hc_author_id = hcAuthorIdVal;
+      newParams.advanced = '1';
+    } else if (hcSeriesIdVal && !qVal && !authorVal && !seriesVal) {
+      newParams.hc_series_id = hcSeriesIdVal;
+      newParams.advanced = '1';
+    } else {
+      if (qVal) newParams.q = qVal;
+      if (authorVal) newParams.author = authorVal;
+      if (seriesVal) newParams.series = seriesVal;
+      if (isAdv) newParams.advanced = '1';
+    }
     history.replaceState(null, '', buildHash('/', newParams));
 
     // Move input to top, switch to normal nav layout
@@ -945,7 +983,11 @@ route('/', async (params, qp) => {
 
     try {
       let data;
-      if (isAdv) {
+      if (hcAuthorIdVal && !qVal && !authorVal && !seriesVal) {
+        data = await api('/search/advanced?author_id=' + encodeURIComponent(hcAuthorIdVal));
+      } else if (hcSeriesIdVal && !qVal && !authorVal && !seriesVal) {
+        data = await api('/search/advanced?hc_series_id=' + encodeURIComponent(hcSeriesIdVal));
+      } else if (isAdv || authorVal || seriesVal) {
         const qStr = new URLSearchParams();
         if (qVal) qStr.set('title', qVal);
         if (authorVal) qStr.set('author', authorVal);
