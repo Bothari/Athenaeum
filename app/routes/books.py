@@ -408,14 +408,15 @@ async def get_series_missing(series_id: str):
             )
             await db.commit()
 
-        # Get owned positions and HC book IDs (always fresh)
+        # Get owned positions and HC book IDs — only books actually in the library (have formats)
         owned_rows = await (
             await db.execute(
                 """SELECT bs.position, bl.hardcover_id
                    FROM book_series bs
                    JOIN books b ON b.id = bs.book_id
                    LEFT JOIN book_links bl ON bl.book_id = b.id
-                   WHERE bs.series_id = ?""",
+                   WHERE bs.series_id = ?
+                   AND EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = b.id)""",
                 (series_id,),
             )
         ).fetchall()
