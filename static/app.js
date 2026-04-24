@@ -1262,8 +1262,8 @@ route('/library/series/:id', async ({ id }) => {
         <div id="series-hc-section" class="mt-2"></div>
         <div id="series-debug-section"></div>
       `;
-      document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderSeriesBooksView(); loadSeriesExtras(); };
-      document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderSeriesBooksView(); loadSeriesExtras(); };
+      document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); };
+      document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); };
 
       const booksContainer = document.getElementById('series-books');
       if (view === 'list') {
@@ -1286,7 +1286,23 @@ route('/library/series/:id', async ({ id }) => {
       } else {
         const grid = document.createElement('div');
         grid.className = 'card-grid';
-        booksData.forEach(b => grid.appendChild(renderBookCard(b)));
+        booksData.forEach(b => {
+          const card = renderBookCard(b);
+          if (b.series_position != null) {
+            const cover = card.querySelector('.book-card-cover, .book-card-cover-placeholder');
+            if (cover) {
+              const wrap = document.createElement('div');
+              wrap.style.cssText = 'position:relative';
+              cover.replaceWith(wrap);
+              wrap.appendChild(cover);
+              const badge = document.createElement('span');
+              badge.className = 'series-pos-badge';
+              badge.textContent = `#${b.series_position}`;
+              wrap.appendChild(badge);
+            }
+          }
+          grid.appendChild(card);
+        });
         booksContainer.appendChild(grid);
       }
     }

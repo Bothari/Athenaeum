@@ -186,6 +186,19 @@ input::placeholder { color: var(--text-dim); }
   display: block;
   background: var(--surface2);
 }
+.series-pos-badge {
+  position: absolute;
+  top: 0.3rem;
+  left: 0.3rem;
+  background: rgba(0,0,0,0.65);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  pointer-events: none;
+  line-height: 1.3;
+}
 .book-card-cover-placeholder {
   width: 100%;
   aspect-ratio: 2/3;
