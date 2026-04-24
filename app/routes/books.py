@@ -640,14 +640,30 @@ async def search_advanced(
     author: str = Query(default=""),
     series: str = Query(default=""),
     series_id: str = Query(default=""),
+    author_id: str = Query(default=""),
+    hc_series_id: str = Query(default=""),
 ):
-    if not title.strip() and not author.strip() and not series.strip():
-        return {"results": []}
-
     settings = await get_settings()
     api_key = settings.get("hardcover", {}).get("api_key", "")
     if not api_key:
         return {"results": [], "error": "Hardcover API key not configured"}
+
+    if author_id:
+        from ..services.book_search import get_hc_author_books
+        results = await get_hc_author_books(author_id, api_key)
+        async with get_db() as db:
+            results = await _annotate_results(results, db)
+        return {"results": results}
+
+    if hc_series_id:
+        from ..services.book_search import get_hc_series_books
+        results = await get_hc_series_books(hc_series_id, api_key)
+        async with get_db() as db:
+            results = await _annotate_results(results, db)
+        return {"results": results}
+
+    if not title.strip() and not author.strip() and not series.strip():
+        return {"results": []}
 
     context_hc_series_id = ""
     if series_id:

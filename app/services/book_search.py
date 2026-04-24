@@ -309,3 +309,121 @@ async def advanced_search_books(
         return []
     query = " ".join(parts)
     return await search_books(query, api_key, pages=3, context_hc_series_id=context_hc_series_id)
+
+
+_AUTHOR_GQL = """
+query GetAuthorBooks($id: Int!) {
+  authors_by_pk(id: $id) {
+    id name
+    contributions(
+      where: {book: {canonical_id: {_is_null: true}}}
+      order_by: [{book: {users_count: desc}}]
+      limit: 50
+    ) {
+      book {
+        id slug title users_count rating ratings_count
+        image { url }
+        contributions(limit: 5) { author { id name } }
+        book_series(order_by: [{position: asc}], limit: 3) {
+          position details
+          series { id name }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+async def get_hc_author_books(hc_author_id: str, api_key: str) -> list[dict]:
+    """Fetch books by HC author ID. Returns normalised results sorted by popularity."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.hardcover.app/v1/graphql",
+                json={"query": _AUTHOR_GQL, "variables": {"id": int(hc_author_id)}},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        logger.warning("get_hc_author_books(%s) failed: %s", hc_author_id, e)
+        return []
+
+    author_data = (data.get("data") or {}).get("authors_by_pk") or {}
+    results = []
+
+    for contrib in (author_data.get("contributions") or []):
+        book = contrib.get("book") or {}
+        title = book.get("title") or ""
+        if not title:
+            continue
+
+        slug = book.get("slug") or ""
+        book_id = str(book.get("id") or "")
+        cover_url = (book.get("image") or {}).get("url") or ""
+        rating_raw = book.get("rating") or 0
+
+        authors = []
+        seen_names: set = set()
+        for c in (book.get("contributions") or []):
+            a = c.get("author") or {}
+            name = a.get("name") or ""
+            if name and name not in seen_names:
+                seen_names.add(name)
+                authors.append({"name": name, "id": str(a.get("id") or "")})
+
+        series_list = []
+        seen_series: set = set()
+        for bs in (book.get("book_series") or []):
+            s = bs.get("series") or {}
+            s_id = str(s.get("id") or "")
+            s_name = s.get("name") or ""
+            if not s_name and not s_id:
+                continue
+            if s_id in seen_series:
+                continue
+            seen_series.add(s_id or s_name)
+            position = _normalize_position(bs.get("details") or bs.get("position") or "")
+            series_list.append({
+                "id": None,
+                "hardcover_series_id": s_id,
+                "name": s_name,
+                "position": position,
+            })
+
+        result = {
+            "title": title,
+            "subtitle": "",
+            "author": authors[0]["name"] if authors else "",
+            "author_id": authors[0]["id"] if authors else "",
+            "authors": authors,
+            "narrator": "",
+            "description": "",
+            "cover_url": cover_url,
+            "isbn": "",
+            "asin": "",
+            "pages": None,
+            "publisher": "",
+            "published_year": None,
+            "language": "",
+            "genres": [],
+            "rating": round(float(rating_raw), 1) if rating_raw else None,
+            "rating_count": book.get("ratings_count") or 0,
+            "users_count": book.get("users_count") or 0,
+            "series": series_list,
+            "is_compilation": False,
+            "metadata_source": "hardcover",
+            "metadata_id": book_id,
+            "slug": slug,
+            "metadata_url": f"https://hardcover.app/books/{slug}" if slug else "",
+            "hardcover_url": f"https://hardcover.app/books/{slug}" if slug else "",
+            "book_id": None,
+            "in_library": False,
+            "library_formats": [],
+            "existing_requests": [],
+            "abs_links": [],
+        }
+        results.append(result)
+
+    return results
