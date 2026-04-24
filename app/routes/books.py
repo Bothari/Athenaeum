@@ -355,7 +355,7 @@ async def get_series_books(series_id: str):
 
 @router.get("/series/{series_id}/missing")
 async def get_series_missing(series_id: str):
-    """Return missing books for a series using HC series data vs locally owned positions."""
+    """Return missing books for a series, with full metadata per entry."""
 
     async with get_db() as db:
         series_row = await (
@@ -373,27 +373,28 @@ async def get_series_missing(series_id: str):
         hc_series_id = (link_row["hardcover_series_id"] if link_row else None) or ""
 
         if not hc_series_id:
-            return {"items": [], "truncated": False, "error": "Series not linked to Hardcover"}
+            return {"items": [], "error": "Series not linked to Hardcover"}
 
         settings = await get_settings()
         api_key = settings.get("hardcover", {}).get("api_key", "")
         if not api_key:
-            return {"items": [], "truncated": False, "error": "Hardcover API key not configured"}
+            return {"items": [], "error": "Hardcover API key not configured"}
 
-        # Check cache
         now_dt = datetime.now(timezone.utc)
         now_iso = now_dt.isoformat()
+
+        # Check cache — stores full normalised book data for all series entries
         cache_row = await (
             await db.execute(
                 "SELECT results_json FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
-                (hc_series_id, "hardcover_series", now_iso),
+                (hc_series_id, "series_books_rich", now_iso),
             )
         ).fetchone()
 
         if cache_row:
-            hc_books = json.loads(cache_row["results_json"])
+            all_books = json.loads(cache_row["results_json"])
         else:
-            hc_books = await _book_search.get_hc_series_books(hc_series_id, api_key)
+            all_books = await _book_search.get_hc_series_books(hc_series_id, api_key)
             expires_iso = (now_dt + timedelta(days=14)).isoformat()
             await db.execute(
                 """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
@@ -402,12 +403,12 @@ async def get_series_missing(series_id: str):
                      results_json = excluded.results_json,
                      created_at = excluded.created_at,
                      expires_at = excluded.expires_at""",
-                (str(__import__("uuid").uuid4()), hc_series_id, "hardcover_series",
-                 json.dumps(hc_books), now_iso, expires_iso),
+                (str(__import__("uuid").uuid4()), hc_series_id, "series_books_rich",
+                 json.dumps(all_books), now_iso, expires_iso),
             )
             await db.commit()
 
-        # Get owned positions and HC book IDs
+        # Get owned positions and HC book IDs (always fresh)
         owned_rows = await (
             await db.execute(
                 """SELECT bs.position, bl.hardcover_id
@@ -421,74 +422,17 @@ async def get_series_missing(series_id: str):
         owned_positions = {r["position"] for r in owned_rows if r["position"]}
         owned_hc_ids = {r["hardcover_id"] for r in owned_rows if r["hardcover_id"]}
 
-        # Filter to missing: not owned by position or HC book ID, not compilations
-        TRUNCATE_AT = 50
-        truncated = len(hc_books) > TRUNCATE_AT
         candidates = [
-            b for b in hc_books
-            if not b["compilation"]
-            and b["hc_book_id"] not in owned_hc_ids
-            and b["position"] not in owned_positions
-        ][:TRUNCATE_AT]
+            b for b in all_books
+            if not b.get("compilation")
+            and b.get("metadata_id") not in owned_hc_ids
+            and b.get("series_position") not in owned_positions
+        ]
 
-    if not candidates:
-        return {"items": [], "truncated": truncated}
+        # Annotate with live library/request state
+        candidates = await _annotate_results(candidates, db)
 
-    # Check cache for per-book edition search results (the slow part)
-    async with get_db() as db:
-        editions_row = await (
-            await db.execute(
-                "SELECT results_json FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
-                (hc_series_id, "series_missing_editions", now_iso),
-            )
-        ).fetchone()
-
-    if editions_row:
-        results = json.loads(editions_row["results_json"])
-    else:
-        results = []
-        for entry in candidates:
-            await asyncio.sleep(0.25)
-            try:
-                hits = await _book_search.search_books(entry["title"], api_key, pages=1,
-                                                       context_hc_series_id=hc_series_id)
-            except Exception as e:
-                logger.warning("series missing search failed for %r: %s", entry["title"], e)
-                hits = []
-            if hits:
-                hc_id = entry["hc_book_id"]
-                best = next((h for h in hits if str(h.get("metadata_id") or "") == hc_id), hits[0])
-                best["series_position"] = entry["position"]
-                results.append(best)
-
-        async with get_db() as db:
-            expires_iso = (now_dt + timedelta(days=14)).isoformat()
-            await db.execute(
-                """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(query, source) DO UPDATE SET
-                     results_json = excluded.results_json,
-                     created_at = excluded.created_at,
-                     expires_at = excluded.expires_at""",
-                (str(__import__("uuid").uuid4()), hc_series_id, "series_missing_editions",
-                 json.dumps(results), now_iso, expires_iso),
-            )
-            await db.commit()
-
-    # Annotate with fresh local DB data (always live — not cached)
-    async with get_db() as db:
-        results = await _annotate_results(results, db)
-
-    # Sort by position numerically
-    def _pos_sort_key(item):
-        pos = item.get("series_position") or ""
-        try:
-            return (0, float(pos))
-        except (ValueError, TypeError):
-            return (1, pos)
-
-    results.sort(key=_pos_sort_key)
-    return {"items": results, "truncated": truncated}
+    return {"items": candidates}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
