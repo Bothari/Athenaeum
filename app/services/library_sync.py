@@ -1166,7 +1166,10 @@ async def sync_library() -> dict:
                     await db.execute("DELETE FROM requests WHERE book_id = ? AND status IN ('completed', 'failed', 'in_library')", (oid,))
                     await db.execute("DELETE FROM books WHERE id = ?", (oid,))
 
-                # Remove series that have no books left
+                # Remove series that have no books left (clean links first to avoid FK violation)
+                await db.execute(
+                    """DELETE FROM series_links WHERE series_id NOT IN (SELECT DISTINCT series_id FROM book_series)"""
+                )
                 await db.execute(
                     """DELETE FROM series WHERE id NOT IN (SELECT DISTINCT series_id FROM book_series)"""
                 )
@@ -1318,6 +1321,10 @@ async def _sync_item(item: dict) -> str:
                      abs_id, item.get("abs_url"), now, now),
                 )
 
+            # Clean up in_library requests now that formats exist in DB
+            await db.execute(
+                "DELETE FROM requests WHERE book_id = ? AND status = 'in_library'", (book_id,)
+            )
             await db.commit()
 
         else:
@@ -1393,6 +1400,10 @@ async def _sync_item(item: dict) -> str:
                     changed = True
 
             await db.execute("UPDATE books SET abs_checked_at = ? WHERE id = ?", (now, book_id))
+            # Clean up in_library requests now that formats exist in DB
+            await db.execute(
+                "DELETE FROM requests WHERE book_id = ? AND status = 'in_library'", (book_id,)
+            )
             await db.commit()
 
     if link_row is None:

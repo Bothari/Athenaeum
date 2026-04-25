@@ -240,6 +240,10 @@ async def _run_migrations(db):
         await db.execute("ALTER TABLE books ADD COLUMN release_date TEXT")
         await db.execute("PRAGMA user_version = 5")
 
+    if current < 6:
+        await db.execute("ALTER TABLE series ADD COLUMN show_secondary_works INTEGER DEFAULT 0")
+        await db.execute("PRAGMA user_version = 6")
+
     await db.commit()
 
 

@@ -663,9 +663,9 @@ function buildFormatRows(card, result, onRequestSuccess) {
           }});
           result.book_id = book.id;
           bookId = book.id;
-          const bookUrl = buildHash('/library/book', { book_id: bookId });
-          card.querySelectorAll('.search-card-cover-link, .search-card-title-link').forEach(a => { a.href = bookUrl; });
         }
+        const bookUrl = buildHash('/library/book', { book_id: bookId });
+        card.querySelectorAll('.search-card-cover-link, .search-card-title-link').forEach(a => { a.href = bookUrl; });
 
         const req = await api('/requests', { method: 'POST', body: { book_id: bookId, type, narrator: narratorVal } });
         if (req.skipped) toast('Already requested', 'info');
@@ -1399,31 +1399,44 @@ route('/library/series/:id', async ({ id }) => {
           const count = (data.items && !data.error) ? data.items.length : null;
           missingCard.querySelector('.stat-value').textContent = count != null ? String(count) : '—';
         }
+
+        const showSecondary = !!data.show_secondary_works;
+        const toggleBtn = `<button class="btn-subtle missing-secondary-toggle" id="missing-secondary-toggle" title="${showSecondary ? 'Hide non-primary works' : 'Show non-primary works'}">${showSecondary ? 'Hide non-primary works' : 'Show non-primary works'}</button>`;
+
         if (data.error || !data.items || !data.items.length) {
           sec.innerHTML = data.items && !data.items.length
-            ? `<div class="section-heading mt-2">Missing from Series</div><p class="td-dim" style="padding:0.5rem 0">All books accounted for.</p>`
+            ? `<div class="section-heading-row mt-2"><span class="section-heading" style="margin:0">Missing from Series</span>${toggleBtn}</div><p class="td-dim" style="padding:0.5rem 0">All books accounted for.</p>`
             : '';
-          return;
-        }
-        const label = `Missing from Series (${data.items.length}${data.truncated ? '+' : ''})`;
-        sec.innerHTML = `<div class="section-heading mt-2">${label}</div>`;
-        data.items.forEach(result => {
-          const card = document.createElement('div');
-          card.className = 'search-card';
-          populateBookCard(card, result, null);
-          if (result.series_position) {
-            const titleRow = card.querySelector('.search-card-title-row');
-            const titleEl = titleRow && titleRow.querySelector('.search-card-title');
-            if (titleRow && titleEl) {
-              const badge = document.createElement('span');
-              badge.className = 'badge';
-              badge.style.cssText = 'background:var(--surface2);color:var(--text-dim);margin-right:0.4rem;font-size:0.75rem;vertical-align:middle;flex-shrink:0';
-              badge.textContent = `#${result.series_position}`;
-              titleRow.insertBefore(badge, titleEl);
+        } else {
+          const label = `Missing from Series (${data.items.length}${data.truncated ? '+' : ''})`;
+          sec.innerHTML = `<div class="section-heading-row mt-2"><span class="section-heading" style="margin:0">${label}</span>${toggleBtn}</div>`;
+          data.items.forEach(result => {
+            const card = document.createElement('div');
+            card.className = 'search-card';
+            populateBookCard(card, result, null);
+            if (result.series_position) {
+              const titleRow = card.querySelector('.search-card-title-row');
+              const titleEl = titleRow && titleRow.querySelector('.search-card-title');
+              if (titleRow && titleEl) {
+                const badge = document.createElement('span');
+                badge.className = 'badge';
+                badge.style.cssText = 'background:var(--surface2);color:var(--text-dim);margin-right:0.4rem;font-size:0.75rem;vertical-align:middle;flex-shrink:0';
+                badge.textContent = `#${result.series_position}`;
+                titleRow.insertBefore(badge, titleEl);
+              }
             }
-          }
-          sec.appendChild(card);
-        });
+            sec.appendChild(card);
+          });
+        }
+
+        const toggleEl = document.getElementById('missing-secondary-toggle');
+        if (toggleEl) {
+          toggleEl.addEventListener('click', async () => {
+            toggleEl.disabled = true;
+            await api(`/series/${id}`, { method: 'PATCH', body: { show_secondary_works: !showSecondary } });
+            loadMissing();
+          });
+        }
       } catch {
         sec.innerHTML = '';
         const missingCard = document.getElementById('series-stat-missing');
@@ -1661,7 +1674,7 @@ route('/library/book', async (params, qp) => {
       const pos = s.position;
       const posFmt = pos ? (() => { const n = parseFloat(pos); return isNaN(n) ? pos : (n % 1 === 0 ? String(Math.floor(n)) : String(n)); })() : '';
       const label = escapeHtml(s.name) + (posFmt ? ' #' + posFmt : '');
-      return s.id ? `<a href="#/library/series/${s.id}" class="detail-link">${label}</a>` : label;
+      return (s.id && s.library_count > 0) ? `<a href="#/library/series/${s.id}" class="detail-link">${label}</a>` : label;
     });
 
     app.innerHTML = `<div class="narrow-page">
