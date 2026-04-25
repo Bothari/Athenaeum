@@ -1401,15 +1401,15 @@ route('/library/series/:id', async ({ id }) => {
         }
 
         const showSecondary = !!data.show_secondary_works;
-        const toggleBtn = `<button class="btn-subtle missing-secondary-toggle" id="missing-secondary-toggle" title="${showSecondary ? 'Hide non-primary works' : 'Show non-primary works'}">${showSecondary ? 'Hide non-primary works' : 'Show non-primary works'}</button>`;
+        const toggleChk = `<label class="missing-secondary-label"><input type="checkbox" id="missing-secondary-toggle"${showSecondary ? ' checked' : ''}> Non-primary works</label>`;
 
         if (data.error || !data.items || !data.items.length) {
           sec.innerHTML = data.items && !data.items.length
-            ? `<div class="section-heading-row mt-2"><span class="section-heading" style="margin:0">Missing from Series</span>${toggleBtn}</div><p class="td-dim" style="padding:0.5rem 0">All books accounted for.</p>`
+            ? `<div class="section-heading-row mt-2"><span class="section-heading">Missing from Series</span>${toggleChk}</div><p class="td-dim" style="padding:0.5rem 0">All books accounted for.</p>`
             : '';
         } else {
           const label = `Missing from Series (${data.items.length}${data.truncated ? '+' : ''})`;
-          sec.innerHTML = `<div class="section-heading-row mt-2"><span class="section-heading" style="margin:0">${label}</span>${toggleBtn}</div>`;
+          sec.innerHTML = `<div class="section-heading-row mt-2"><span class="section-heading">${label}</span>${toggleChk}</div>`;
           data.items.forEach(result => {
             const card = document.createElement('div');
             card.className = 'search-card';
@@ -1431,9 +1431,9 @@ route('/library/series/:id', async ({ id }) => {
 
         const toggleEl = document.getElementById('missing-secondary-toggle');
         if (toggleEl) {
-          toggleEl.addEventListener('click', async () => {
+          toggleEl.addEventListener('change', async () => {
             toggleEl.disabled = true;
-            await api(`/series/${id}`, { method: 'PATCH', body: { show_secondary_works: !showSecondary } });
+            await api(`/series/${id}`, { method: 'PATCH', body: { show_secondary_works: toggleEl.checked } });
             loadMissing();
           });
         }
