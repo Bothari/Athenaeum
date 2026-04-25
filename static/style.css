@@ -800,17 +800,22 @@ body.home-page .home-title { display: block; }
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--border);
 }
-.btn-subtle {
-  font-size: 0.75rem;
-  color: var(--text-dim);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+.section-heading-row .section-heading {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
 }
-.btn-subtle:hover { color: var(--accent); }
+.missing-secondary-label {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  margin-left: auto;
+}
+.missing-secondary-label input[type="checkbox"] { cursor: pointer; }
 
 /* ── ABS linking section ── */
 .abs-link-candidate {
