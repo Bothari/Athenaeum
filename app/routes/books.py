@@ -336,6 +336,7 @@ async def get_series(series_id: str):
     return {
         "id": row["id"],
         "name": row["name"],
+        "show_secondary_works": bool(row["show_secondary_works"]),
         "library_count": counts_row["library_count"] if counts_row else 0,
         "requested_count": counts_row["requested_count"] if counts_row else 0,
         "link": {
@@ -344,6 +345,27 @@ async def get_series(series_id: str):
             "abs_series_id": link_row["abs_series_id"] if link_row else None,
         },
     }
+
+
+class PatchSeriesBody(BaseModel):
+    show_secondary_works: Optional[bool] = None
+
+
+@router.patch("/series/{series_id}")
+async def patch_series(series_id: str, body: PatchSeriesBody):
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id FROM series WHERE id = ?", (series_id,))
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Series not found")
+        if body.show_secondary_works is not None:
+            await db.execute(
+                "UPDATE series SET show_secondary_works = ? WHERE id = ?",
+                (1 if body.show_secondary_works else 0, series_id),
+            )
+        await db.commit()
+    return {"ok": True}
 
 
 @router.get("/series/{series_id}/books")
@@ -388,10 +410,11 @@ async def get_series_missing(series_id: str):
 
     async with get_db() as db:
         series_row = await (
-            await db.execute("SELECT id, name FROM series WHERE id = ?", (series_id,))
+            await db.execute("SELECT id, name, show_secondary_works FROM series WHERE id = ?", (series_id,))
         ).fetchone()
         if not series_row:
             raise HTTPException(status_code=404, detail="Series not found")
+        show_secondary = bool(series_row["show_secondary_works"])
 
         link_row = await (
             await db.execute(
@@ -459,13 +482,24 @@ async def get_series_missing(series_id: str):
             and b.get("series_position") not in owned_positions
         ]
 
+        if not show_secondary:
+            candidates = [b for b in candidates if _is_primary_position(b.get("series_position") or "")]
+
         # Annotate with live library/request state
         candidates = await _annotate_results(candidates, db)
 
-    return {"items": candidates}
+    return {"items": candidates, "show_secondary_works": show_secondary}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _is_primary_position(pos: str) -> bool:
+    """True if the series position is a whole number (primary work)."""
+    try:
+        n = float(pos)
+        return n == int(n)
+    except (ValueError, TypeError):
+        return False
 
 async def _get_book_authors(db, book_id: str) -> list:
     rows = await (
@@ -495,13 +529,17 @@ async def _get_book_authors(db, book_id: str) -> list:
 async def _get_book_series(db, book_id: str) -> list:
     rows = await (
         await db.execute(
-            """SELECT s.id, s.name, bs.position
+            """SELECT s.id, s.name, bs.position,
+                  (SELECT COUNT(*) FROM book_series bs2
+                   JOIN book_formats bf ON bf.book_id = bs2.book_id
+                   WHERE bs2.series_id = s.id) as library_count
                FROM series s JOIN book_series bs ON bs.series_id = s.id
                WHERE bs.book_id = ?""",
             (book_id,),
         )
     ).fetchall()
-    return [{"id": r["id"], "name": r["name"], "position": r["position"]} for r in rows]
+    return [{"id": r["id"], "name": r["name"], "position": r["position"],
+             "library_count": r["library_count"]} for r in rows]
 
 
 async def _get_book_link(db, book_id: str) -> dict:
