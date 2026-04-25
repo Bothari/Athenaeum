@@ -464,7 +464,7 @@ async def get_series_missing(series_id: str):
         # Get owned positions and HC book IDs — only books actually in the library (have formats)
         owned_rows = await (
             await db.execute(
-                """SELECT bs.position, bl.hardcover_id
+                """SELECT bl.hardcover_id
                    FROM book_series bs
                    JOIN books b ON b.id = bs.book_id
                    LEFT JOIN book_links bl ON bl.book_id = b.id
@@ -473,14 +473,12 @@ async def get_series_missing(series_id: str):
                 (series_id,),
             )
         ).fetchall()
-        owned_positions = {r["position"] for r in owned_rows if r["position"]}
         owned_hc_ids = {r["hardcover_id"] for r in owned_rows if r["hardcover_id"]}
 
         candidates = [
             b for b in all_books
             if not b.get("compilation")
             and b.get("metadata_id") not in owned_hc_ids
-            and b.get("series_position") not in owned_positions
         ]
 
         if not show_secondary:

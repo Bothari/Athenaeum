@@ -248,11 +248,10 @@ class TestGetSeriesMissing:
         assert "error" in data
 
     async def test_missing_books_excludes_owned(self, seeded_client, monkeypatch):
-        """Missing books list excludes positions already in library."""
+        """Missing books list excludes books already in library, matched by HC book ID."""
         import app.routes.books as books_module
         from app.database import get_db
 
-        # Set HC api key via settings API so the endpoint doesn't short-circuit
         await seeded_client.put("/api/settings", json={
             "audiobookshelf": {"url": "http://abs.local", "api_key": "k", "library_id": []},
             "hardcover": {"api_key": "test-key"},
@@ -260,14 +259,22 @@ class TestGetSeriesMissing:
 
         series = (await seeded_client.get("/api/series")).json()["items"]
         series_id = series[0]["id"]
+
+        # Link the two seeded library books to known HC IDs and set the series HC link
         async with get_db() as db:
             await db.execute(
                 "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ?",
                 ("999", series_id),
             )
+            await db.execute(
+                "UPDATE book_links SET hardcover_id = 'hc-wok' WHERE abs_id = 'abs-001'"
+            )
+            await db.execute(
+                "UPDATE book_links SET hardcover_id = 'hc-wor' WHERE abs_id = 'abs-002'"
+            )
             await db.commit()
 
-        def _rich(title, position):
+        def _rich(title, position, metadata_id):
             return {
                 "title": title, "subtitle": "", "author": "Brandon Sanderson", "author_id": "",
                 "authors": [{"name": "Brandon Sanderson", "id": ""}],
@@ -276,7 +283,7 @@ class TestGetSeriesMissing:
                 "genres": [], "rating": None, "rating_count": 0, "users_count": 100,
                 "series": [{"id": None, "hardcover_series_id": "999", "name": "The Stormlight Archive", "position": position}],
                 "is_compilation": False, "compilation": False,
-                "metadata_source": "hardcover", "metadata_id": f"hc-{title[:5]}",
+                "metadata_source": "hardcover", "metadata_id": metadata_id,
                 "slug": "", "metadata_url": "", "hardcover_url": "",
                 "book_id": None, "in_library": False, "library_formats": [],
                 "existing_requests": [], "abs_links": [],
@@ -284,10 +291,10 @@ class TestGetSeriesMissing:
             }
 
         hc_books = [
-            _rich("The Way of Kings", "1"),
-            _rich("Words of Radiance", "2"),
-            _rich("Oathbringer", "3"),
-            _rich("Rhythm of War", "4"),
+            _rich("The Way of Kings", "1", "hc-wok"),
+            _rich("Words of Radiance", "2", "hc-wor"),
+            _rich("Oathbringer", "3", "hc-ob"),
+            _rich("Rhythm of War", "4", "hc-row"),
         ]
 
         async def mock_hc_series(hc_series_id, api_key):
@@ -299,7 +306,7 @@ class TestGetSeriesMissing:
         assert resp.status_code == 200
         data = resp.json()
         assert "error" not in data
-        # positions 1 and 2 owned (have formats), so only 3 and 4 are missing
+        # Way of Kings and Words of Radiance are owned (matched by HC ID), so only 3 and 4 are missing
         assert len(data["items"]) == 2
         titles = [i["title"] for i in data["items"]]
         assert "Oathbringer" in titles
