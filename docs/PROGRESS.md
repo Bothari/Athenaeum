@@ -162,40 +162,55 @@ _Completed 2026-04-11_
 - [x] `app/services/book_search.py` — HC Typesense search, `normalize_hit()`, `search_books()`, `advanced_search_books()`
 - [x] `GET /api/search/metadata?q=...` and `GET /api/search/advanced?title=...&author=...&series=...` — annotated with `in_library`, `book_id`, `library_formats`, `existing_requests`, local series UUIDs
 - [x] `POST /api/books` — create book from HC result + attach requests; dedup by hardcover_id then title match
-- [x] `app/routes/requests.py` — `POST`, `GET` (paginated, filterable), `GET /:id`, `DELETE /:id`, `POST /sync-library`, `GET /:id/downloads`, `POST /:id/search-indexers` (Phase 5 stub)
+- [x] `app/routes/requests.py` — `POST`, `GET` (paginated, filterable), `GET /:id`, `DELETE /:id`, `POST /sync-library`, `GET /:id/downloads`, `POST /:id/search-indexers`
 - [x] `_create_request()` shared helper — dedup-aware, blocks duplicate active requests and matching narrator in_library entries
-- [x] Search page wired (quick + advanced, URL-persisted state, in-place request success) — frontend already built in Phase 1
-- [x] Requests list page wired — frontend already built in Phase 1
+- [x] Search page wired (quick + advanced, URL-persisted state, in-place request success)
+- [x] Requests list page wired
 
 ---
 
-## Phase 5: Downloads
-_Not started_
+## Phase 5: Downloads [complete]
+_Completed 2026-04-14_
 
-- [ ] `app/routes/requests.py` — search-indexers, download, organize endpoints
-- [ ] `app/routes/downloads.py`
-- [ ] `app/main.py` — `download_monitor` background task
-- [ ] Request detail page, Downloads page
+- [x] `app/services/prowlarr.py` — search indexers, grab download, score/rank results
+- [x] `app/services/organizer.py` — monitor downloads, merge multi-file grabs, move to ABS, trigger scan
+- [x] `app/routes/requests.py` — search-indexers, trigger-download, organize endpoints
+- [x] `app/main.py` — `download_monitor` background task (polls Prowlarr/SABnzbd/qBittorrent)
+- [x] Request detail page — search results table, download trigger, organize button
+- [x] Downloads tab in Queue page
+- [x] "Search all" button — concurrent Prowlarr search across all requested items, skips unreleased
 
 ---
 
-## Phase 6: Detail Pages
-_Not started_
+## Post-Phase-5 polish (v0.6.x)
+_Completed 2026-04-25_
 
-- [ ] `GET /api/book/detail` endpoint
-- [ ] Book detail page — metadata, ABS linking, request management
-- [ ] Author detail page
-- [ ] Series detail page — completion, missing books (async)
-- [ ] `app/routes/book_links.py`
-- [ ] `app/routes/sync.py`
+- [x] Series search dedup — prefer pure-number positions over split-book translations (e.g. French editions)
+- [x] Clickable cover/title on search cards — activates on first request, deactivates on last cancel
+- [x] ID-based author/series advanced search (`hc_author_id=`, `hc_series_id=` params)
+- [x] Series detail: "Show non-primary works" checkbox (per-series, default off; non-integer positions = secondary)
+- [x] Series detail: never link to HC-orphan series with no library books
+- [x] Library sync FK fix — delete `series_links` before orphaned `series` to avoid constraint error
+- [x] `in_library` request cleanup — deleted during `_sync_item` once `book_formats` are written
+- [x] `cache_refresh` fix — `_set_hc_series_id` guards against UNIQUE constraint on `hardcover_series_id`
+- [x] Release date tracking — `release_date_fetched` flag (migration 7) distinguishes "never checked" from "HC has no date"; auto-search and queue badge both use it
+- [x] `cache_refresh` now runs `_hc_refresh_meta` pass — refreshes `release_date` and `hardcover_slug` for all HC-linked books
+- [x] `POST /books` fetches HC meta (release date + slug) immediately for newly created books
+- [x] Release badges on search/missing cards — Unreleased (future date), No date (fetched, none known), fallback to `published_year`
+- [x] `POST /books` always called on request (not skipped for existing books) — ensures series association is always backfilled
+- [x] Series missing owned-check by HC book ID instead of position — fixes custom/alternate numbering (e.g. Cosmere)
 
 ---
 
 ## Future Work / Backlog
 
-- **Author deduplication on HC conflict**: when two local authors match the same HC author ID (e.g. "James S. A. Corey" / "James S.A. Corey"), merge the duplicate into the winner — re-point all `book_authors` rows, delete the duplicate author and its `author_links` row. Currently the second match is skipped and the duplicate stays unlinked.
+- **Author deduplication on HC conflict**: when two local authors match the same HC author ID, merge the duplicate — re-point all `book_authors` rows, delete the duplicate author and `author_links` row.
 
-- **Multiple narrators per audiobook**: ABS handles multiple narrator editions by putting them in separate directories with distinct naming schemes. Athenaeum currently tracks only one narrator per request. Supporting multiple editions would require a separate request per narrator, or a richer request model. Deferred — not needed for typical single-narrator libraries.
+- **Multiple narrators per audiobook**: deferred — not needed for typical single-narrator libraries.
+
+- **Phase 7: Polish** — dashboard stats, active download progress polling, library sync progress display.
+
+- **Phase 8: Authentication** — login page, JWT sessions, `require_auth` on all routes, optional OIDC.
 
 ---
 
