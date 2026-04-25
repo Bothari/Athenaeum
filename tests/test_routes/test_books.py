@@ -201,9 +201,9 @@ class TestListSeries:
         s = resp.json()["items"][0]
         assert "id" in s
         assert "name" in s
-        assert "book_count" in s
+        assert "library_count" in s
         assert "link" in s
-        assert s["book_count"] == 2
+        assert s["library_count"] == 2
 
     async def test_filter_by_name(self, seeded_client):
         resp = await seeded_client.get("/api/series?q=Stormlight")
