@@ -650,20 +650,19 @@ function buildFormatRows(card, result, onRequestSuccess) {
         const narratorVal = type === 'audiobook' ? (s.narrator.trim() || null) : null;
         let bookId = result.book_id;
 
-        if (!bookId) {
-          const book = await api('/books', { method: 'POST', body: {
-            title: result.title, author: result.author,
-            cover_url: result.cover_url || null,
-            series: result.series?.[0]?.name || null,
-            series_position: result.series?.[0]?.position || null,
-            metadata_source: result.metadata_source || null,
-            metadata_id: result.metadata_id || null,
-            metadata_url: result.metadata_url || null,
-            hardcover_slug: result.slug || null,
-          }});
-          result.book_id = book.id;
-          bookId = book.id;
-        }
+        // Always POST /books to ensure series association is created even for existing books
+        const book = await api('/books', { method: 'POST', body: {
+          title: result.title, author: result.author,
+          cover_url: result.cover_url || null,
+          series: result.series?.[0]?.name || null,
+          series_position: result.series?.[0]?.position || null,
+          metadata_source: result.metadata_source || null,
+          metadata_id: result.metadata_id || null,
+          metadata_url: result.metadata_url || null,
+          hardcover_slug: result.slug || null,
+        }});
+        result.book_id = book.id;
+        bookId = book.id;
         const bookUrl = buildHash('/library/book', { book_id: bookId });
         card.querySelectorAll('.search-card-cover-link, .search-card-title-link').forEach(a => { a.href = bookUrl; });
 
@@ -716,6 +715,16 @@ function populateBookCard(el, result, onRequestSuccess, { showFmtRows = true } =
     ? `${ICON_STAR} ${result.rating.toFixed(1)} <span style="opacity:0.6">(${result.rating_count || 0})</span>`
     : '';
 
+  const today = new Date().toISOString().slice(0, 10);
+  const rd = result.release_date || '';
+  const releaseBadge = (rd && rd >= today)
+    ? `<span class="badge badge-unmonitored" title="Releases ${rd}">Unreleased</span>`
+    : (!rd && result.release_date_fetched)
+      ? `<span class="badge badge-unmonitored" title="No release date known">No date</span>`
+      : (!rd && result.published_year && String(result.published_year) > String(new Date().getFullYear()))
+        ? `<span class="badge badge-unmonitored" title="Expected ${result.published_year}">Unreleased</span>`
+        : '';
+
   const hcLink = result.hardcover_url
     ? `<a href="${escapeHtml(result.hardcover_url)}" target="_blank" class="search-card-hc-link" title="Open on Hardcover">${ICON_HC()}</a>`
     : '';
@@ -759,6 +768,7 @@ function populateBookCard(el, result, onRequestSuccess, { showFmtRows = true } =
       ${seriesHtml ? `<div class="search-card-series">${seriesHtml}</div>` : ''}
       <div class="search-card-meta">
         ${ratingStr ? `<span class="search-card-rating">${ratingStr}</span>` : ''}
+        ${releaseBadge}
       </div>
     </div>
     ${showFmtRows ? '<div class="search-card-fmt-rows"></div>' : ''}

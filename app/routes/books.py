@@ -598,6 +598,15 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
         book_id = link_row["book_id"]
         result["book_id"] = book_id
 
+        book_row = await (
+            await db.execute(
+                "SELECT release_date, release_date_fetched FROM books WHERE id = ?", (book_id,)
+            )
+        ).fetchone()
+        if book_row:
+            result["release_date"] = book_row["release_date"] or ""
+            result["release_date_fetched"] = bool(book_row["release_date_fetched"])
+
         fmt_rows = await (
             await db.execute(
                 "SELECT type, narrator FROM book_formats WHERE book_id = ?",
@@ -781,6 +790,7 @@ async def create_book(body: CreateBookBody):
 
         # 3. Create new book
         now = _now()
+        book_is_new = not book_id
         if not book_id:
             book_id = str(uuid.uuid4())
             await db.execute(
@@ -839,8 +849,8 @@ async def create_book(body: CreateBookBody):
 
         await db.commit()
 
-    # Fetch release_date and slug from HC if we have an ID and they're not yet set
-    if body.metadata_id:
+    # Fetch release_date and slug from HC for new books, or existing books not yet fetched
+    if body.metadata_id and book_is_new:
         from ..services.library_sync import _fetch_hc_book_meta
         from ..settings import get_settings
         settings = await get_settings()
