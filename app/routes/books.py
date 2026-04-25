@@ -30,6 +30,7 @@ def _book_row_to_dict(row) -> dict:
         "metadata_url": row["metadata_url"],
         "abs_checked_at": row["abs_checked_at"],
         "release_date": row["release_date"],
+        "release_date_fetched": bool(row["release_date_fetched"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -838,6 +839,37 @@ async def create_book(body: CreateBookBody):
 
         await db.commit()
 
+    # Fetch release_date and slug from HC if we have an ID and they're not yet set
+    if body.metadata_id:
+        from ..services.library_sync import _fetch_hc_book_meta
+        from ..settings import get_settings
+        settings = await get_settings()
+        api_key = settings.get("hardcover", {}).get("api_key", "")
+        if api_key:
+            try:
+                meta = await _fetch_hc_book_meta(int(body.metadata_id), api_key)
+                if meta:
+                    async with get_db() as db:
+                        if meta.get("release_date"):
+                            await db.execute(
+                                "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ?",
+                                (meta["release_date"], book_id),
+                            )
+                        else:
+                            await db.execute(
+                                "UPDATE books SET release_date_fetched = 1 WHERE id = ?",
+                                (book_id,),
+                            )
+                        if meta.get("slug"):
+                            await db.execute(
+                                "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
+                                (meta["slug"], book_id),
+                            )
+                        await db.commit()
+            except Exception:
+                pass  # non-fatal; cache_refresh will backfill
+
+    async with get_db() as db:
         # Return the book record
         book_row = await (
             await db.execute("SELECT * FROM books WHERE id = ?", (book_id,))

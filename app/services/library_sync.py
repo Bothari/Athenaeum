@@ -103,6 +103,23 @@ async def _set_hc_author_id(db, author_id: str, hc_author_id: str, hc_author_slu
     return True
 
 
+async def _set_hc_series_id(db, series_id: str, hc_series_id: str, hc_series_slug: str = "") -> bool:
+    """Set hardcover_series_id (and slug) on series_links, skipping if already claimed. Returns True if set."""
+    conflict = await (
+        await db.execute(
+            "SELECT series_id FROM series_links WHERE hardcover_series_id = ?", (hc_series_id,)
+        )
+    ).fetchone()
+    if conflict and conflict[0] != series_id:
+        logger.warning(f"HC series {hc_series_id} already linked to {conflict[0]}, skipping {series_id}")
+        return False
+    await db.execute(
+        "UPDATE series_links SET hardcover_series_id = ?, hardcover_series_slug = ? WHERE series_id = ? AND (hardcover_series_id IS NULL OR hardcover_series_id = '')",
+        (hc_series_id, hc_series_slug or None, series_id),
+    )
+    return True
+
+
 async def _get_or_create_author(db, name: str, abs_author_id: str = "") -> str:
     """Return author_id, creating author and author_links rows if needed."""
     row = await (
@@ -404,8 +421,13 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
         )
         if release_date:
             await db.execute(
-                "UPDATE books SET release_date = ? WHERE id = ?",
+                "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ?",
                 (release_date, book_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE books SET release_date_fetched = 1 WHERE id = ?",
+                (book_id,),
             )
         for local_series_id, local_series_name in book_series_rows:
             best_match_name = None
@@ -417,10 +439,7 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
                     best_s_score = score
             if best_match_name and featured_series_id and featured_series_name:
                 if fuzz.token_sort_ratio(best_match_name.lower(), featured_series_name.lower()) >= 80:
-                    await db.execute(
-                        "UPDATE series_links SET hardcover_series_id = ? WHERE series_id = ? AND (hardcover_series_id IS NULL OR hardcover_series_id = '')",
-                        (featured_series_id, local_series_id),
-                    )
+                    await _set_hc_series_id(db, local_series_id, featured_series_id)
         for local_author in author_rows:
             local_id = local_author["id"]
             local_name = local_author["name"]
@@ -688,14 +707,66 @@ async def _hc_catchup_series(settings: dict, deadline: float, on_progress=None) 
             return False
 
         async with get_db() as db:
-            await db.execute(
-                "UPDATE series_links SET hardcover_series_id = ?, hardcover_series_slug = ? WHERE series_id = ? AND (hardcover_series_id IS NULL OR hardcover_series_id = '')",
-                (hc_series_id, hc_series_slug or None, series_id),
-            )
+            set_ok = await _set_hc_series_id(db, series_id, hc_series_id, hc_series_slug)
             await db.commit()
-        return True
+        return set_ok
 
     return await _hc_rate_limited_loop(list(rows), link_series, deadline, on_progress=on_progress)
+
+
+async def _hc_refresh_meta(api_key: str) -> int:
+    """Fetch and store slug + release_date for HC-linked books missing either, or with a future date. Returns count updated."""
+    if not api_key:
+        return 0
+    today = datetime.now(timezone.utc).date().isoformat()
+    async with get_db() as db:
+        stale_rows = await (
+            await db.execute(
+                """SELECT b.id, bl.hardcover_id FROM books b
+                   JOIN book_links bl ON bl.book_id = b.id
+                   WHERE bl.hardcover_id IS NOT NULL AND bl.hardcover_id != ''
+                     AND (
+                       (b.release_date_fetched = 0 AND (b.release_date IS NULL OR b.release_date = ''))
+                       OR b.release_date >= ?
+                       OR bl.hardcover_slug IS NULL OR bl.hardcover_slug = ''
+                     )""",
+                (today,),
+            )
+        ).fetchall()
+    if not stale_rows:
+        return 0
+    sem = asyncio.Semaphore(2)
+    updated = 0
+
+    async def _refresh_one(book_id: str, hc_id: str) -> None:
+        nonlocal updated
+        async with sem:
+            await asyncio.sleep(0.3)
+            meta = await _fetch_hc_book_meta(int(hc_id), api_key)
+            if not meta:
+                return
+            async with get_db() as db:
+                if meta.get("release_date"):
+                    await db.execute(
+                        "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ?",
+                        (meta["release_date"], book_id),
+                    )
+                else:
+                    # HC confirmed no date — mark as fetched so auto-search knows to skip
+                    await db.execute(
+                        "UPDATE books SET release_date_fetched = 1 WHERE id = ?",
+                        (book_id,),
+                    )
+                if meta.get("slug"):
+                    await db.execute(
+                        "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
+                        (meta["slug"], book_id),
+                    )
+                await db.commit()
+            updated += 1
+
+    await asyncio.gather(*[_refresh_one(r[0], r[1]) for r in stale_rows])
+    return updated
 
 
 async def cache_refresh() -> dict:
@@ -726,15 +797,18 @@ async def cache_refresh() -> dict:
         a = await _hc_catchup_authors(settings, deadline, on_progress=await make_progress("authors"))
         done["authors"] = a
         s = await _hc_catchup_series(settings, deadline, on_progress=await make_progress("series"))
+        api_key = settings.get("hardcover", {}).get("api_key", "")
+        meta_updated = await _hc_refresh_meta(api_key)
         result = (
             f"books {b['linked']}/{b['linked']+b['failed']} linked"
             + (f" ({b['skipped']} skipped)" if b['skipped'] else "")
             + f" | authors {a['linked']}/{a['linked']+a['failed']}"
             + f" | series {s['linked']}/{s['linked']+s['failed']}"
+            + f" | meta {meta_updated} refreshed"
         )
         logger.info(f"cache_refresh complete: {result}")
         await _upsert_task_state("cache_refresh", running=False, last_result=result)
-        return {"books": b, "authors": a, "series": s}
+        return {"books": b, "authors": a, "series": s, "meta_updated": meta_updated}
     except Exception as e:
         logger.error(f"cache_refresh failed: {e}", exc_info=True)
         await _upsert_task_state("cache_refresh", running=False, last_result=f"error: {e}")
@@ -1182,43 +1256,8 @@ async def sync_library() -> dict:
 
     # Refresh slug/release_date for HC-linked books that are missing either,
     # or where release_date is still in the future (it may have changed).
-    today = datetime.now(timezone.utc).date().isoformat()
     api_key = settings.get("hardcover", {}).get("api_key", "")
-    if api_key:
-        async with get_db() as db:
-            stale_rows = await (
-                await db.execute(
-                    """SELECT b.id, bl.hardcover_id FROM books b
-                       JOIN book_links bl ON bl.book_id = b.id
-                       WHERE bl.hardcover_id IS NOT NULL AND bl.hardcover_id != ''
-                         AND (
-                           b.release_date IS NULL OR b.release_date = '' OR b.release_date >= ?
-                           OR bl.hardcover_slug IS NULL OR bl.hardcover_slug = ''
-                         )""",
-                    (today,),
-                )
-            ).fetchall()
-        if stale_rows:
-            sem = asyncio.Semaphore(2)
-            async def _refresh_one(book_id: str, hc_id: str) -> None:
-                async with sem:
-                    await asyncio.sleep(0.3)
-                    meta = await _fetch_hc_book_meta(int(hc_id), api_key)
-                    if not meta:
-                        return
-                    async with get_db() as db:
-                        if meta.get("release_date"):
-                            await db.execute(
-                                "UPDATE books SET release_date = ? WHERE id = ?",
-                                (meta["release_date"], book_id),
-                            )
-                        if meta.get("slug"):
-                            await db.execute(
-                                "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
-                                (meta["slug"], book_id),
-                            )
-                        await db.commit()
-            await asyncio.gather(*[_refresh_one(r[0], r[1]) for r in stale_rows])
+    await _hc_refresh_meta(api_key)
 
     await _upsert_task_state("library_sync", running=False, last_result="ok")
     return counters

@@ -184,7 +184,7 @@ async def list_requests(
         ).fetchone()
         rows = await (
             await db.execute(
-                f"""SELECT r.*, b.title as book_title, b.release_date as release_date, a2.name as author
+                f"""SELECT r.*, b.title as book_title, b.release_date as release_date, b.release_date_fetched as release_date_fetched, a2.name as author
                     {base_sql}
                     ORDER BY {sort_expr} {dir}
                     LIMIT ? OFFSET ?""",
@@ -202,6 +202,7 @@ async def list_requests(
             "status": r["status"],
             "narrator": r["narrator"],
             "release_date": r["release_date"],
+            "release_date_fetched": bool(r["release_date_fetched"]),
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
         }
@@ -396,7 +397,7 @@ async def search_all_requests():
     async with get_db() as db:
         rows = await (
             await db.execute(
-                """SELECT r.id, r.type, r.narrator, b.title, b.release_date,
+                """SELECT r.id, r.type, r.narrator, b.title, b.release_date, b.release_date_fetched,
                           (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
                            WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
                    FROM requests r JOIN books b ON b.id = r.book_id
@@ -409,6 +410,9 @@ async def search_all_requests():
     for row in rows:
         rd = row["release_date"] or ""
         if rd and rd >= today:
+            skipped_unreleased += 1
+            continue
+        if not rd and row["release_date_fetched"]:
             skipped_unreleased += 1
             continue
         to_search.append(row)
