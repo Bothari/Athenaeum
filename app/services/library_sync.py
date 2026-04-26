@@ -122,6 +122,7 @@ async def _set_hc_series_id(db, series_id: str, hc_series_id: str, hc_series_slu
 
 async def _get_or_create_author(db, name: str, abs_author_id: str = "") -> str:
     """Return author_id, creating author and author_links rows if needed."""
+    name = " ".join(name.split())  # collapse internal whitespace
     row = await (
         await db.execute("SELECT id FROM authors WHERE lower(name) = lower(?)", (name,))
     ).fetchone()
@@ -148,6 +149,7 @@ async def _get_or_create_author(db, name: str, abs_author_id: str = "") -> str:
 
 async def _get_or_create_series(db, name: str, abs_series_id: str = "") -> str:
     """Return series_id, creating series and series_links rows if needed."""
+    name = " ".join(name.split())  # collapse internal whitespace
     row = await (
         await db.execute("SELECT id FROM series WHERE lower(name) = lower(?)", (name,))
     ).fetchone()

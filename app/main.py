@@ -310,6 +310,13 @@ async def api_status():
             "SELECT COUNT(*) FROM series_links WHERE hardcover_series_id IS NULL OR hardcover_series_id = ''"
         )).fetchone()
 
+        audiobooks_row = await (await db.execute(
+            "SELECT COUNT(DISTINCT book_id) FROM book_formats WHERE type = 'audiobook'"
+        )).fetchone()
+        ebooks_row = await (await db.execute(
+            "SELECT COUNT(DISTINCT book_id) FROM book_formats WHERE type = 'ebook'"
+        )).fetchone()
+
         statuses = [
             "requested", "snatched", "downloading",
             "downloaded", "merging", "organizing", "completed", "failed",
@@ -327,6 +334,8 @@ async def api_status():
         "books": books_row[0],
         "authors": authors_row[0],
         "series": series_row[0],
+        "audiobooks": audiobooks_row[0],
+        "ebooks": ebooks_row[0],
         "unlinked_books": unlinked_books_row[0],
         "unlinked_authors": unlinked_authors_row[0],
         "unlinked_series": unlinked_series_row[0],
