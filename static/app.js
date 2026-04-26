@@ -197,7 +197,7 @@ function renderTable(config) {
   let sort = params[`${stateKey}_sort`] || (headers.find(h => h.sortable) || headers[0]).key;
   let dir = params[`${stateKey}_dir`] || 'asc';
   let q = params[`${stateKey}_q`] || '';
-  let offset = parseInt(params[`${stateKey}_offset`] || '0', 10);
+  let offset = 0;
   let total = 0;
   let loading = false;
   let allLoaded = false;
@@ -209,8 +209,7 @@ function renderTable(config) {
     allParams[`${stateKey}_dir`] = dir;
     if (q) allParams[`${stateKey}_q`] = q;
     else delete allParams[`${stateKey}_q`];
-    if (offset) allParams[`${stateKey}_offset`] = String(offset);
-    else delete allParams[`${stateKey}_offset`];
+    delete allParams[`${stateKey}_offset`];
     const path = getHashPath();
     history.replaceState(null, '', buildHash(path, allParams));
   }

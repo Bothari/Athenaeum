@@ -872,18 +872,19 @@ body.home-page .home-title { display: block; }
   bottom: 0;
   left: 0;
   right: 0;
-  height: 56px;
+  height: calc(56px + env(safe-area-inset-bottom));
   background: var(--surface);
   border-top: 1px solid var(--border);
   z-index: 100;
   justify-content: space-around;
-  align-items: stretch;
-  /* iPhone home indicator safe area */
+  align-items: flex-start;
+  padding-top: 0;
   padding-bottom: env(safe-area-inset-bottom);
 }
 .nav-bottom-btn {
   display: flex;
   flex: 1;
+  height: 56px;
   align-items: center;
   justify-content: center;
   color: var(--text-dim);
