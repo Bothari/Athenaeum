@@ -1925,8 +1925,10 @@ route('/requests', async (params, qp) => {
     requestedRows.forEach(tr => {
       const expDiv = makeExpansion(tr);
       const rd = tr.dataset.releaseDate;
-      if (rd && rd > today) {
-        expDiv.innerHTML = `<span class="text-dim">Skipped — unreleased${rd ? ` (releases ${rd})` : ''}</span>`;
+      if (!rd) {
+        expDiv.innerHTML = `<span class="text-dim">Skipped — no release date</span>`;
+      } else if (rd > today) {
+        expDiv.innerHTML = `<span class="text-dim">Skipped — unreleased (releases ${rd})</span>`;
       } else {
         expDiv.innerHTML = `<span class="text-dim">${ICON_SPINNER} Searching…</span>`;
         toSearch.push({ tr, expDiv, reqId: tr.dataset.requestId });
