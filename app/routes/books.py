@@ -191,6 +191,76 @@ async def list_authors(
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
 
 
+@router.get("/authors/{author_id}/also-by")
+async def get_author_also_by(author_id: str):
+    """Return books by this author on Hardcover that aren't in the local library."""
+    async with get_db() as db:
+        author_row = await (
+            await db.execute("SELECT id FROM authors WHERE id = ?", (author_id,))
+        ).fetchone()
+        if not author_row:
+            raise HTTPException(status_code=404, detail="Author not found")
+
+        link_row = await (
+            await db.execute(
+                "SELECT hardcover_author_id FROM author_links WHERE author_id = ?",
+                (author_id,),
+            )
+        ).fetchone()
+        hc_author_id = (link_row["hardcover_author_id"] if link_row else None) or ""
+        if not hc_author_id:
+            return {"items": [], "error": "Author not linked to Hardcover"}
+
+        settings = await get_settings()
+        api_key = settings.get("hardcover", {}).get("api_key", "")
+        if not api_key:
+            return {"items": [], "error": "Hardcover API key not configured"}
+
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+
+        cache_row = await (
+            await db.execute(
+                "SELECT results_json FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
+                (hc_author_id, "author_books_rich", now_iso),
+            )
+        ).fetchone()
+
+        if cache_row:
+            all_books = json.loads(cache_row["results_json"])
+        else:
+            all_books = await _book_search.get_hc_author_books(hc_author_id, api_key)
+            expires_iso = (now_dt + timedelta(days=14)).isoformat()
+            await db.execute(
+                """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(query, source) DO UPDATE SET
+                     results_json = excluded.results_json,
+                     created_at = excluded.created_at,
+                     expires_at = excluded.expires_at""",
+                (str(uuid.uuid4()), hc_author_id, "author_books_rich",
+                 json.dumps(all_books), now_iso, expires_iso),
+            )
+            await db.commit()
+
+        # Owned HC book IDs — any book in the library with a book_formats entry
+        owned_rows = await (
+            await db.execute(
+                """SELECT bl.hardcover_id FROM book_authors ba
+                   JOIN book_links bl ON bl.book_id = ba.book_id
+                   WHERE ba.author_id = ?
+                   AND EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = ba.book_id)""",
+                (author_id,),
+            )
+        ).fetchall()
+        owned_hc_ids = {r["hardcover_id"] for r in owned_rows if r["hardcover_id"]}
+
+        candidates = [b for b in all_books if b.get("metadata_id") not in owned_hc_ids]
+        candidates = await _annotate_results(candidates, db)
+
+    return {"items": candidates}
+
+
 @router.get("/authors/{author_id}/books")
 async def get_author_books(author_id: str):
     async with get_db() as db:

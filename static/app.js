@@ -1162,11 +1162,12 @@ route('/library/authors/:id', async ({ id }) => {
           </div>
         </div>
         <div id="author-books"></div>
+        <div id="author-also-by-section"></div>
         <div id="author-hc-section" class="mt-2"></div>
         <div id="author-debug-section"></div>
       </div>`;
-      document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderAuthorBooksView(); };
-      document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderAuthorBooksView(); };
+      document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderAuthorBooksView(); loadAlsoBy(); };
+      document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderAuthorBooksView(); loadAlsoBy(); };
 
       // HC match section
       const authorEntry = books.flatMap(b => b.authors || []).find(a => a.id === id) || {};
@@ -1250,7 +1251,30 @@ route('/library/authors/:id', async ({ id }) => {
         container.appendChild(grid);
       }
     }
+    async function loadAlsoBy() {
+      const sec = document.getElementById('author-also-by-section');
+      if (!sec) return;
+      sec.innerHTML = `<div class="section-heading mt-2">Also by this Author</div><div class="state-loading">Checking Hardcover…</div>`;
+      try {
+        const data = await api(`/authors/${id}/also-by`);
+        if (data.error || !data.items || !data.items.length) {
+          sec.innerHTML = '';
+          return;
+        }
+        sec.innerHTML = `<div class="section-heading mt-2">Also by this Author (${data.items.length})</div>`;
+        data.items.forEach(result => {
+          const card = document.createElement('div');
+          card.className = 'search-card';
+          populateBookCard(card, result, null);
+          sec.appendChild(card);
+        });
+      } catch {
+        sec.innerHTML = '';
+      }
+    }
+
     renderAuthorBooksView();
+    loadAlsoBy();
   } catch (err) {
     renderError(app, render);
   }
