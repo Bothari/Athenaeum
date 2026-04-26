@@ -6,7 +6,9 @@ from rapidfuzz import fuzz
 
 class AudiobookshelfService:
     def __init__(self, settings: dict):
-        self.base_url = settings.get("url", "").rstrip("/")
+        self.public_url = settings.get("url", "").rstrip("/")
+        internal = settings.get("internal_url", "").rstrip("/")
+        self.base_url = internal or self.public_url
         self.api_key = settings.get("api_key", "")
         library_ids = settings.get("library_id", [])
         if isinstance(library_ids, str):
@@ -18,10 +20,10 @@ class AudiobookshelfService:
         return {"Authorization": f"Bearer {self.api_key}"}
 
     def _item_url(self, item_id: str) -> str:
-        return f"{self.base_url}/item/{item_id}"
+        return f"{self.public_url}/item/{item_id}"
 
     def _cover_url(self, item_id: str) -> str:
-        return f"{self.base_url}/api/items/{item_id}/cover"
+        return f"{self.public_url}/api/items/{item_id}/cover"
 
     def _normalize_item(self, item: dict) -> dict:
         item_id = item.get("id", "")

@@ -2345,7 +2345,8 @@ route('/settings', async () => {
       const a = s.audiobookshelf || {};
       const savedIds = Array.isArray(a.library_id) ? a.library_id : [];
       return `
-        ${field('URL', 'url', a.url, 'text', 'e.g. http://192.168.1.10:13378')}
+        ${field('ABS URL', 'url', a.url, 'text', 'e.g. http://192.168.1.10:13378 — used for browser links')}
+        ${field('Internal ABS URL', 'internal_url', a.internal_url || '', 'text', 'Optional — Docker internal URL e.g. http://abs:13378')}
         ${field('API Key', 'api_key', a.api_key, 'password')}
         <div class="form-group">
           <label class="form-label">Libraries</label>
