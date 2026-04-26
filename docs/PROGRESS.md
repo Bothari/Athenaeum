@@ -202,25 +202,43 @@ _Completed 2026-04-25_
 
 ---
 
+## Post-Phase-6 polish (v0.7.x)
+_Completed 2026-04-26_
+
+- [x] `book_formats` UNIQUE(book_id, type) — migration 8 deduplicates rows (prefer non-empty narrator), recreates table with constraint; upsert in library_sync and organizer
+- [x] ABS PATCH metadata push after organize — `update_item_metadata()` sends authoritative title/author/narrator/series from DB+HC directly to ABS item, overwriting raw audio tag data
+- [x] Whitespace normalization in `_get_or_create_author` and `_get_or_create_series` — collapses internal double-spaces to prevent duplicate records
+- [x] Async file copy — `shutil.copy2`/`shutil.move` wrapped in `asyncio.to_thread`; fixes app freeze during large audiobook copies
+- [x] Dashboard stats: audiobooks/ebooks counts row, queue stats row (Requested/Downloading/Completed/Failed), live active downloads section with 5s poll
+- [x] Download cards improved — book title linked to request, author + type icon, release title subtitle, formatted ETA (Xh Ym / Xm Ys; hides unknown/infinite), size
+- [x] Unlinked dashboard cards link to list pages with unlinked filter pre-checked
+- [x] iOS bottom nav height fix — `safe-area-inset-bottom` padding, buttons fixed at 56px so they don't squash
+- [x] Series list back-navigation fix — scroll offset never persisted to URL; `renderTable` always starts from offset=0
+- [x] "Also by this Author" section on author detail page — searches HC, filters owned, displays as search cards
+- [x] Search all skips no-date requests (in addition to unreleased future dates)
+- [x] Spinner cleared before first download card renders on mobile downloads tab
+
+---
+
 ## Future Work / Backlog
+
+- **Docker URL fix**: `abs_url` in `book_formats` stores Docker-internal URL (`http://abs:13378/item/...`) — unreachable from browser. Needs rewrite at read time using the public ABS URL from settings.
 
 - **Author deduplication on HC conflict**: when two local authors match the same HC author ID, merge the duplicate — re-point all `book_authors` rows, delete the duplicate author and `author_links` row.
 
 - **Multiple narrators per audiobook**: deferred — not needed for typical single-narrator libraries.
-
-- **Phase 7: Polish** — dashboard stats, active download progress polling, library sync progress display.
 
 - **Phase 8: Authentication** — login page, JWT sessions, `require_auth` on all routes, optional OIDC.
 
 ---
 
 ## Phase 7: Polish
-_Not started_
+_Completed 2026-04-26_
 
-- [ ] Dashboard stats page
-- [ ] Active download polling (5s)
-- [ ] Library sync progress display
-- [ ] Mobile/responsive CSS fixes
+- [x] Dashboard stats page
+- [x] Active download polling (5s)
+- [x] Library sync progress display (live progress in task card via `last_result`)
+- [x] Mobile/responsive CSS fixes
 
 ---
 
