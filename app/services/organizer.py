@@ -201,6 +201,55 @@ async def _get_hc_metadata(db, book_id: str, api_key: str) -> dict:
     return meta
 
 
+async def _build_abs_metadata(db, book_id: str, narrator: str, api_key: str) -> dict:
+    """Build the metadata dict for PATCH /api/items/{id}/media from DB + HC."""
+    book_row = await (await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))).fetchone()
+    if not book_row:
+        return {}
+
+    author_rows = await (await db.execute(
+        "SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id WHERE ba.book_id = ? ORDER BY ba.author_position",
+        (book_id,),
+    )).fetchall()
+    series_rows = await (await db.execute(
+        "SELECT s.name, bs.position FROM series s JOIN book_series bs ON bs.series_id = s.id WHERE bs.book_id = ?",
+        (book_id,),
+    )).fetchall()
+
+    hc_meta = await _get_hc_metadata(db, book_id, api_key)
+
+    meta: dict = {"title": book_row["title"]}
+    if author_rows:
+        meta["authorName"] = ", ".join(r["name"] for r in author_rows)
+    if narrator:
+        narrators = [n.strip() for n in narrator.split(",") if n.strip()]
+        if narrators:
+            meta["narratorName"] = ", ".join(narrators)
+    if series_rows:
+        parts = []
+        for r in series_rows:
+            pos = (r["position"] or "").strip()
+            parts.append(f"{r['name']} #{pos}" if pos else r["name"])
+        meta["seriesName"] = ", ".join(parts)
+    if hc_meta.get("subtitle"):
+        meta["subtitle"] = hc_meta["subtitle"]
+    if hc_meta.get("description"):
+        meta["description"] = hc_meta["description"]
+    if hc_meta.get("genres"):
+        meta["genres"] = hc_meta["genres"]
+    if hc_meta.get("published_year"):
+        meta["publishedYear"] = str(hc_meta["published_year"])
+    if hc_meta.get("publisher"):
+        meta["publisher"] = hc_meta["publisher"]
+    if hc_meta.get("isbn"):
+        meta["isbn"] = hc_meta["isbn"]
+    if hc_meta.get("asin"):
+        meta["asin"] = hc_meta["asin"]
+    if hc_meta.get("language"):
+        meta["language"] = hc_meta["language"]
+    return meta
+
+
 # ── metadata.json ──────────────────────────────────────────────────────────────
 
 async def write_metadata_json(target_dir: Path, db, book_id: str, narrator: str, api_key: str):
@@ -477,18 +526,18 @@ async def auto_organize(request_id: str):
                     continue  # already there
                 if item.is_file():
                     if download_client == "qbittorrent":
-                        shutil.copy2(str(item), str(dst))
+                        await asyncio.to_thread(shutil.copy2, str(item), str(dst))
                     else:
-                        shutil.move(str(item), str(dst))
+                        await asyncio.to_thread(shutil.move, str(item), str(dst))
         elif src.is_file():
             ext = src.suffix
             dest_file = _dedup_dest(dest_dir / f"{_sanitise_path_component(title)} - {_sanitise_path_component(author)}{ext}")
             if dest_file == src:
                 pass  # already in place
             elif download_client == "qbittorrent":
-                shutil.copy2(str(src), str(dest_file))
+                await asyncio.to_thread(shutil.copy2, str(src), str(dest_file))
             else:
-                shutil.move(str(src), str(dest_file))
+                await asyncio.to_thread(shutil.move, str(src), str(dest_file))
         else:
             logger.error("auto_organize: source path does not exist: %s", src)
             async with get_db() as db:
@@ -558,6 +607,18 @@ async def auto_organize(request_id: str):
             if attempt < 9:
                 await asyncio.sleep(5)
 
+        # Push authoritative metadata to ABS now that we have the item ID.
+        # This overwrites whatever ABS parsed from audio tags with our HC/DB data.
+        if matched_abs_id:
+            try:
+                async with get_db() as db:
+                    meta_payload = await _build_abs_metadata(db, book_id, narrator, api_key)
+                ok = await abs_svc.update_item_metadata(matched_abs_id, meta_payload)
+                if not ok:
+                    logger.warning("ABS metadata update failed for item %s", matched_abs_id)
+            except Exception as e:
+                logger.warning("ABS metadata update error for %s: %s", matched_abs_id, e)
+
         now = _now()
         async with get_db() as db:
             if matched_abs_id:
@@ -571,6 +632,19 @@ async def auto_organize(request_id: str):
                        VALUES (?, ?, ?, ?)
                        ON CONFLICT(book_id) DO UPDATE SET abs_id=excluded.abs_id, linked_at=excluded.linked_at""",
                     (str(uuid.uuid4()), book_id, matched_abs_id, now),
+                )
+                # Upsert book_formats with abs_id/abs_url so the detail page can link to ABS
+                abs_url = f"{abs_svc.base_url}/item/{matched_abs_id}"
+                await db.execute(
+                    """INSERT INTO book_formats
+                           (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(book_id, type) DO UPDATE SET
+                           abs_id   = excluded.abs_id,
+                           abs_url  = excluded.abs_url,
+                           updated_at = excluded.updated_at""",
+                    (str(uuid.uuid4()), book_id, book_type, narrator,
+                     matched_abs_id, abs_url, request_id, now, now),
                 )
                 # Delete merge_jobs row once in library
                 await db.execute("DELETE FROM merge_jobs WHERE request_id=?", (request_id,))

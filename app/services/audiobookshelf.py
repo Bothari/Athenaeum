@@ -198,6 +198,19 @@ class AudiobookshelfService:
 
         return all_items
 
+    async def update_item_metadata(self, item_id: str, metadata: dict) -> bool:
+        """Push metadata fields to an existing ABS item via PATCH /api/items/{id}/media."""
+        try:
+            async with httpx.AsyncClient(headers=self._headers(), timeout=15.0) as client:
+                resp = await client.patch(
+                    f"{self.base_url}/api/items/{item_id}/media",
+                    json={"metadata": metadata},
+                )
+                resp.raise_for_status()
+                return True
+        except Exception:
+            return False
+
     async def scan_library(self, library_id: str = None):
         lib_ids = [library_id] if library_id else self.library_ids
         async with httpx.AsyncClient(headers=self._headers(), timeout=15.0) as client:

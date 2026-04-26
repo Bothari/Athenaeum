@@ -91,6 +91,29 @@ function formatBytes(bytes) {
   return (bytes / 1e6).toFixed(0) + ' MB';
 }
 
+function formatEta(eta) {
+  let secs;
+  if (typeof eta === 'string') {
+    // SABnzbd returns "H:MM:SS"
+    const parts = eta.split(':').map(Number);
+    if (parts.length === 3 && !parts.some(isNaN)) {
+      secs = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else {
+      return null;
+    }
+  } else {
+    secs = eta;
+  }
+  // qBittorrent uses -1 (unavailable) and 8640000 (infinite); treat anything over 24h as unknown
+  if (secs == null || secs < 0 || secs > 86400) return null;
+  if (secs < 60) return `${secs}s`;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${s > 0 ? ' ' + s + 's' : ''}`.trim();
+}
+
 // Parse hash params from location.hash  e.g. #/path?foo=bar
 function getHashParams() {
   const hash = location.hash.slice(1); // remove leading #
@@ -1069,7 +1092,7 @@ route('/library/books', async (params, qp) => {
 
     const content = document.getElementById('books-content');
 
-    let booksUnlinked = false;
+    let booksUnlinked = qp.unlinked === '1';
     const booksTable = renderTable({
       container: content,
       stateKey: 'books',
@@ -1080,7 +1103,7 @@ route('/library/books', async (params, qp) => {
       ],
       fetchFn: (p) => api('/books?' + new URLSearchParams(p).toString()),
       extraFetchParams: () => booksUnlinked ? { unlinked: '1' } : {},
-      extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="books-unlinked-cb"> Unlinked only</label>`,
+      extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="books-unlinked-cb"${booksUnlinked ? ' checked' : ''}> Unlinked only</label>`,
       renderRow: (b) => {
         const author = Array.isArray(b.authors) ? b.authors.map(a => a.name).join(', ') : '—';
         const formats = b.formats || [];
@@ -1115,7 +1138,7 @@ route('/library/authors', async (params, qp) => {
     <div id="authors-content"></div>
   </div>`;
   const content = document.getElementById('authors-content');
-  let authorsUnlinked = false;
+  let authorsUnlinked = qp.unlinked === '1';
   const authorsTable = renderTable({
     container: content,
     stateKey: 'authors',
@@ -1125,7 +1148,7 @@ route('/library/authors', async (params, qp) => {
     ],
     fetchFn: (p) => api('/authors?' + new URLSearchParams(p).toString()),
     extraFetchParams: () => authorsUnlinked ? { unlinked: '1' } : {},
-    extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="authors-unlinked-cb"> Unlinked only</label>`,
+    extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="authors-unlinked-cb"${authorsUnlinked ? ' checked' : ''}> Unlinked only</label>`,
     renderRow: (a) => `
       <td><a href="#/library/authors/${a.id}">${escapeHtml(a.name)}</a></td>
       <td class="td-dim">${a.book_count || 0}</td>
@@ -1281,13 +1304,13 @@ route('/library/authors/:id', async ({ id }) => {
 });
 
 // Library: Series list
-route('/library/series', async () => {
+route('/library/series', async (params, qp) => {
   app.innerHTML = `<div class="narrow-page">
     <div class="page-header"><span class="page-title">${ICON_SERIES} Series</span></div>
     <div id="series-content"></div>
   </div>`;
   const content = document.getElementById('series-content');
-  let seriesUnlinked = false;
+  let seriesUnlinked = qp.unlinked === '1';
   const seriesTable = renderTable({
     container: content,
     stateKey: 'series',
@@ -1297,7 +1320,7 @@ route('/library/series', async () => {
     ],
     fetchFn: (p) => api('/series?' + new URLSearchParams(p).toString()),
     extraFetchParams: () => seriesUnlinked ? { unlinked: '1' } : {},
-    extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="series-unlinked-cb"> Unlinked only</label>`,
+    extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="series-unlinked-cb"${seriesUnlinked ? ' checked' : ''}> Unlinked only</label>`,
     renderRow: (s) => `
       <td><a href="#/library/series/${s.id}">${escapeHtml(s.name)}</a></td>
       <td class="td-dim">${s.library_count || 0}${s.requested_count > 0 ? ` <span style="opacity:0.6">(+${s.requested_count})</span>` : ''}</td>
@@ -1978,6 +2001,7 @@ function renderDownloadsTab(container) {
       }
 
       const listEl = container.querySelector('#dl-list') || (() => {
+        container.innerHTML = '';
         const el = document.createElement('div');
         el.id = 'dl-list';
         container.appendChild(el);
@@ -1986,21 +2010,20 @@ function renderDownloadsTab(container) {
 
       listEl.innerHTML = items.map(dl => `
         <div class="card mb-1">
-          <div style="display:flex;justify-content:space-between;gap:0.5rem">
+          <div style="display:flex;justify-content:space-between;gap:0.5rem;align-items:flex-start">
             <div>
-              <div>${escapeHtml(dl.title || dl.book_title || '—')}</div>
-              <div class="text-dim" style="font-size:0.8rem">${dl.download_client || '—'}</div>
+              <div style="font-weight:500"><a href="#/requests/${dl.request_id}">${escapeHtml(dl.book_title || '—')}</a></div>
+              <div class="text-dim" style="font-size:0.8rem">${escapeHtml(dl.author || '')}${dl.author && dl.type ? ' · ' : ''}${dl.type ? typeIcon(dl.type) : ''}</div>
+              <div class="text-dim" style="font-size:0.75rem;margin-top:0.2rem">${escapeHtml(dl.release_title || dl.indexer || '')}</div>
             </div>
-            <span class="badge badge-${dl.status || 'downloading'}">${dl.status || 'downloading'}</span>
+            <span class="badge badge-${dl.status || 'downloading'}" style="flex-shrink:0">${dl.status || 'downloading'}</span>
           </div>
           ${dl.progress != null ? `
             <div class="progress-bar-track mt-1">
               <div class="progress-bar-fill" style="width:${Math.round(dl.progress)}%"></div>
             </div>
             <div class="text-dim mt-1" style="font-size:0.78rem">
-              ${Math.round(dl.progress)}%
-              ${dl.eta ? ' · ETA ' + dl.eta : ''}
-              ${dl.speed ? ' · ' + formatBytes(dl.speed) + '/s' : ''}
+              ${Math.round(dl.progress)}%${formatEta(dl.eta) != null ? ' · ETA ' + formatEta(dl.eta) : ''}${dl.speed ? ' · ' + formatBytes(dl.speed) + '/s' : ''}${dl.size ? ' · ' + formatBytes(dl.size) : ''}
             </div>
           ` : ''}
         </div>
@@ -2030,6 +2053,9 @@ route('/dashboard', async () => {
       api('/sync/status'),
     ]);
 
+    const req = status.requests || {};
+    const activeCount = (req.snatched || 0) + (req.downloading || 0) + (req.downloaded || 0) + (req.merging || 0) + (req.organizing || 0);
+
     app.innerHTML = `<div class="narrow-page">
       <div class="page-header"><span class="page-title">Dashboard</span></div>
 
@@ -2048,18 +2074,50 @@ route('/dashboard', async () => {
           <div class="stat-label">Series</div>
         </div>
       </div>
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-value">${status.audiobooks || 0}</div>
+          <div class="stat-label">Audiobooks</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${status.ebooks || 0}</div>
+          <div class="stat-label">Ebooks</div>
+        </div>
+      </div>
+
+      <div class="section-heading">Queue</div>
+      <div class="stats-row">
+        <div class="stat-card clickable" onclick="navigate('/requests')">
+          <div class="stat-value">${req.requested || 0}</div>
+          <div class="stat-label">Requested</div>
+        </div>
+        <div class="stat-card clickable" onclick="navigate('/requests?tab=downloads')">
+          <div class="stat-value${activeCount ? ' text-accent' : ''}">${activeCount}</div>
+          <div class="stat-label">Downloading</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${req.completed || 0}</div>
+          <div class="stat-label">Completed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value${req.failed ? ' text-red' : ''}">${req.failed || 0}</div>
+          <div class="stat-label">Failed</div>
+        </div>
+      </div>
+
+      <div id="dash-active-downloads"></div>
 
       <div class="section-heading">Hardcover Links</div>
       <div class="stats-row">
-        <div class="stat-card">
+        <div class="stat-card${status.unlinked_books ? ' clickable' : ''}" ${status.unlinked_books ? `onclick="navigate('/library/books', {unlinked:'1'})"` : ''}>
           <div class="stat-value${status.unlinked_books ? '' : ' text-green'}">${status.unlinked_books || 0}</div>
           <div class="stat-label">Books unlinked</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card${status.unlinked_authors ? ' clickable' : ''}" ${status.unlinked_authors ? `onclick="navigate('/library/authors', {unlinked:'1'})"` : ''}>
           <div class="stat-value${status.unlinked_authors ? '' : ' text-green'}">${status.unlinked_authors || 0}</div>
           <div class="stat-label">Authors unlinked</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card${status.unlinked_series ? ' clickable' : ''}" ${status.unlinked_series ? `onclick="navigate('/library/series', {unlinked:'1'})"` : ''}>
           <div class="stat-value${status.unlinked_series ? '' : ' text-green'}">${status.unlinked_series || 0}</div>
           <div class="stat-label">Series unlinked</div>
         </div>
@@ -2138,6 +2196,39 @@ route('/dashboard', async () => {
         });
       });
     }
+    // Active downloads section — polls every 5s while on page
+    const dlSection = document.getElementById('dash-active-downloads');
+    let dlPollTimer;
+    async function loadDashDownloads() {
+      if (!document.getElementById('dash-active-downloads')) { clearInterval(dlPollTimer); return; }
+      try {
+        const data = await api('/downloads');
+        const items = (data.items || []).filter(d => d.progress != null || d.status === 'snatched' || d.status === 'downloading');
+        if (!items.length) { dlSection.innerHTML = ''; return; }
+        dlSection.innerHTML = `<div class="section-heading">Active Downloads</div>` +
+          items.map(dl => `
+            <div class="card mb-1">
+              <div style="display:flex;justify-content:space-between;gap:0.5rem;align-items:flex-start">
+                <div>
+                  <div style="font-weight:500">${escapeHtml(dl.book_title || '—')}</div>
+                  <div class="text-dim" style="font-size:0.8rem">${escapeHtml(dl.author || '')}${dl.author && dl.type ? ' · ' : ''}${dl.type ? typeIcon(dl.type) : ''}</div>
+                </div>
+                <span class="badge badge-${dl.status || 'downloading'}" style="flex-shrink:0">${dl.status || 'downloading'}</span>
+              </div>
+              ${dl.progress != null ? `
+                <div class="progress-bar-track mt-1">
+                  <div class="progress-bar-fill" style="width:${Math.round(dl.progress)}%"></div>
+                </div>
+                <div class="text-dim mt-1" style="font-size:0.78rem">
+                  ${Math.round(dl.progress)}%${formatEta(dl.eta) != null ? ' · ETA ' + formatEta(dl.eta) : ''}${dl.speed ? ' · ' + formatBytes(dl.speed) + '/s' : ''}${dl.size ? ' · ' + formatBytes(dl.size) : ''}
+                </div>` : ''}
+            </div>`).join('');
+      } catch { dlSection.innerHTML = ''; }
+    }
+    loadDashDownloads();
+    dlPollTimer = setInterval(loadDashDownloads, 5000);
+    window.addEventListener('hashchange', () => clearInterval(dlPollTimer), { once: true });
+
   } catch (err) {
     renderError(app, render);
   }
