@@ -1353,9 +1353,14 @@ async def _sync_item(item: dict) -> str:
                 seen_types.add(fmt_type)
                 narrator = fmt.get("narrator") or ''
                 await db.execute(
-                    """INSERT OR IGNORE INTO book_formats
+                    """INSERT INTO book_formats
                            (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                       ON CONFLICT(book_id, type) DO UPDATE SET
+                           narrator = excluded.narrator,
+                           abs_id   = excluded.abs_id,
+                           abs_url  = excluded.abs_url,
+                           updated_at = excluded.updated_at""",
                     (str(uuid.uuid4()), book_id, fmt_type, narrator,
                      abs_id, item.get("abs_url"), now, now),
                 )
@@ -1429,9 +1434,14 @@ async def _sync_item(item: dict) -> str:
                 seen_types.add(fmt_type)
                 narrator = fmt.get("narrator") or ''
                 r = await db.execute(
-                    """INSERT OR IGNORE INTO book_formats
+                    """INSERT INTO book_formats
                            (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                       ON CONFLICT(book_id, type) DO UPDATE SET
+                           narrator = excluded.narrator,
+                           abs_id   = excluded.abs_id,
+                           abs_url  = excluded.abs_url,
+                           updated_at = excluded.updated_at""",
                     (str(uuid.uuid4()), book_id, fmt_type, narrator,
                      abs_id, item.get("abs_url"), now, now),
                 )
