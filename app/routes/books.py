@@ -641,9 +641,18 @@ async def _get_book_formats(db, book_id: str) -> list:
             (book_id,),
         )
     ).fetchall()
-    return [{"id": r["id"], "type": r["type"], "narrator": r["narrator"],
-             "abs_id": r["abs_id"], "abs_url": r["abs_url"],
-             "fulfilled_by_request_id": r["fulfilled_by_request_id"]} for r in rows]
+    settings = await get_settings()
+    abs_cfg = settings.get("audiobookshelf", {})
+    public_url = abs_cfg.get("url", "").rstrip("/")
+    result = []
+    for r in rows:
+        abs_url = r["abs_url"]
+        if r["abs_id"] and public_url:
+            abs_url = f"{public_url}/item/{r['abs_id']}"
+        result.append({"id": r["id"], "type": r["type"], "narrator": r["narrator"],
+                       "abs_id": r["abs_id"], "abs_url": abs_url,
+                       "fulfilled_by_request_id": r["fulfilled_by_request_id"]})
+    return result
 
 
 # ── Search annotation helper ───────────────────────────────────────────────────

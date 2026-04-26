@@ -634,7 +634,7 @@ async def auto_organize(request_id: str):
                     (str(uuid.uuid4()), book_id, matched_abs_id, now),
                 )
                 # Upsert book_formats with abs_id/abs_url so the detail page can link to ABS
-                abs_url = f"{abs_svc.base_url}/item/{matched_abs_id}"
+                abs_url = f"{abs_svc.public_url}/item/{matched_abs_id}"
                 await db.execute(
                     """INSERT INTO book_formats
                            (id, book_id, type, narrator, abs_id, abs_url, fulfilled_by_request_id, created_at, updated_at)
