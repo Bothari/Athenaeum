@@ -3,9 +3,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..auth import require_admin, require_auth
 from ..database import get_db
 from ..settings import get_settings
 
@@ -20,17 +21,22 @@ def _now() -> str:
 
 # ── Shared helper ──────────────────────────────────────────────────────────────
 
-async def _create_request(db, book_id: str, req_type: str, narrator: str = None) -> dict | None:
+async def _create_request(
+    db, book_id: str, req_type: str, narrator: str = None,
+    user_id: str = None, role: str = "admin",
+) -> dict | None:
     """Create a request row, returning None (skipped) if a dedup rule blocks it.
 
     Dedup rules:
-    - An active (non-failed, non-completed) request for same book + type already exists.
+    - An active (non-failed, non-completed, non-rejected) request for same book + type already exists.
     - A book_formats row for same book + type + same narrator (case-insensitive) exists.
+
+    Requests from users with role='user' land as 'pending'; admins go straight to 'requested'.
     """
     active = await (
         await db.execute(
             """SELECT id FROM requests
-               WHERE book_id = ? AND type = ? AND status NOT IN ('failed', 'completed')""",
+               WHERE book_id = ? AND type = ? AND status NOT IN ('failed', 'completed', 'rejected')""",
             (book_id, req_type),
         )
     ).fetchone()
@@ -50,16 +56,17 @@ async def _create_request(db, book_id: str, req_type: str, narrator: str = None)
 
     req_id = str(uuid.uuid4())
     now = _now()
+    status = "requested" if role == "admin" else "pending"
     await db.execute(
-        """INSERT INTO requests (id, book_id, type, status, narrator, created_at, updated_at)
-           VALUES (?, ?, ?, 'requested', ?, ?, ?)""",
-        (req_id, book_id, req_type, narrator, now, now),
+        """INSERT INTO requests (id, book_id, type, status, narrator, requested_by_user_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (req_id, book_id, req_type, status, narrator, user_id, now, now),
     )
     return {
         "id": req_id,
         "book_id": book_id,
         "type": req_type,
-        "status": "requested",
+        "status": status,
         "narrator": narrator,
         "created_at": now,
         "updated_at": now,
@@ -95,6 +102,7 @@ async def _request_detail(db, req_id: str) -> dict:
         "updated_at": row["updated_at"],
         "last_searched_at": row["last_searched_at"],
         "search_count": row["search_count"],
+        "requested_by_user_id": row["requested_by_user_id"],
     }
 
 
@@ -107,7 +115,7 @@ class CreateRequestBody(BaseModel):
 
 
 @router.post("/requests")
-async def create_request(body: CreateRequestBody):
+async def create_request(body: CreateRequestBody, auth: dict = Depends(require_auth)):
     if body.type not in ("audiobook", "ebook"):
         raise HTTPException(status_code=400, detail="type must be audiobook or ebook")
     async with get_db() as db:
@@ -116,7 +124,10 @@ async def create_request(body: CreateRequestBody):
         ).fetchone()
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
-        req = await _create_request(db, body.book_id, body.type, body.narrator or '')
+        req = await _create_request(
+            db, body.book_id, body.type, body.narrator or '',
+            user_id=auth["user_id"], role=auth["role"],
+        )
         if req is None:
             return {"skipped": True}
         await db.commit()
@@ -134,6 +145,7 @@ async def list_requests(
     dir: str = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    auth: dict = Depends(require_auth),
 ):
     valid_sorts = {"created_at", "status", "book_title", "type"}
     if sort not in valid_sorts:
@@ -150,6 +162,11 @@ async def list_requests(
 
     conditions = ["r.status != 'in_library'"]
     bind: list = []
+
+    # Non-admins only see their own requests
+    if auth["role"] != "admin" and auth["user_id"] != "anonymous":
+        conditions.append("r.requested_by_user_id = ?")
+        bind.append(auth["user_id"])
 
     if status:
         conditions = ["r.status = ?"]
@@ -205,10 +222,31 @@ async def list_requests(
             "release_date_fetched": bool(r["release_date_fetched"]),
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
+            "requested_by_user_id": r["requested_by_user_id"],
         }
         for r in rows
     ]
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
+
+
+@router.get("/requests/pending")
+async def list_pending(auth: dict = Depends(require_admin)):
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                """SELECT r.id, r.type, r.narrator, r.created_at,
+                          b.title as book_title, b.id as book_id,
+                          u.username as requested_by,
+                          (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
+                           WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
+                   FROM requests r
+                   JOIN books b ON b.id = r.book_id
+                   LEFT JOIN users u ON u.id = r.requested_by_user_id
+                   WHERE r.status = 'pending'
+                   ORDER BY r.created_at ASC"""
+            )
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
 
 
 @router.get("/requests/{request_id}")
@@ -221,13 +259,16 @@ async def get_request(request_id: str):
 
 
 @router.delete("/requests/{request_id}")
-async def delete_request(request_id: str):
+async def delete_request(request_id: str, auth: dict = Depends(require_auth)):
     async with get_db() as db:
         row = await (
-            await db.execute("SELECT id, book_id FROM requests WHERE id = ?", (request_id,))
+            await db.execute("SELECT id, book_id, requested_by_user_id FROM requests WHERE id = ?", (request_id,))
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Request not found")
+        if auth["role"] != "admin" and auth["user_id"] != "anonymous":
+            if row["requested_by_user_id"] != auth["user_id"]:
+                raise HTTPException(status_code=403, detail="Cannot cancel another user's request")
         book_id = row["book_id"]
         await db.execute("DELETE FROM requests WHERE id = ?", (request_id,))
         # If the book has no formats and no remaining requests it only exists due to this
@@ -554,3 +595,39 @@ async def organize_request(request_id: str, body: OrganizeBody = OrganizeBody())
     from ..services.organizer import auto_organize
     _asyncio.create_task(auto_organize(request_id))
     return {"ok": True}
+
+
+@router.post("/requests/{request_id}/approve")
+async def approve_request(request_id: str, auth: dict = Depends(require_admin)):
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id, status FROM requests WHERE id = ?", (request_id,))
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Request not found")
+        if row["status"] != "pending":
+            raise HTTPException(400, "Request is not pending")
+        await db.execute(
+            "UPDATE requests SET status='requested', updated_at=? WHERE id=?",
+            (_now(), request_id),
+        )
+        await db.commit()
+    return {"ok": True, "status": "requested"}
+
+
+@router.post("/requests/{request_id}/reject")
+async def reject_request(request_id: str, auth: dict = Depends(require_admin)):
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id, status FROM requests WHERE id = ?", (request_id,))
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Request not found")
+        if row["status"] != "pending":
+            raise HTTPException(400, "Request is not pending")
+        await db.execute(
+            "UPDATE requests SET status='rejected', updated_at=? WHERE id=?",
+            (_now(), request_id),
+        )
+        await db.commit()
+    return {"ok": True, "status": "rejected"}

@@ -144,6 +144,13 @@ function navigate(path, params = {}) {
   location.hash = buildHash(path, params).slice(1); // hash includes #
 }
 
+// ── Auth state ─────────────────────────────────────────────────────────────────
+
+let _authUser = null; // { user_id, username, role, force_password_change } or null when unchecked
+
+function authUser() { return _authUser; }
+function isAdmin() { return !_authUser || _authUser.role === 'admin'; }
+
 // ── API helper ─────────────────────────────────────────────────────────────────
 
 async function api(path, opts = {}) {
@@ -152,6 +159,12 @@ async function api(path, opts = {}) {
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
+  if (res.status === 401) {
+    // Session expired mid-use — redirect to login preserving current route
+    const dest = location.hash.slice(1) || '/';
+    location.hash = buildHash('/login', dest !== '/login' ? { next: dest } : {}).slice(1);
+    throw new Error('401: Not authenticated');
+  }
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`${res.status}: ${err}`);
@@ -617,6 +630,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
       mode: lib ? 'in-library' : req ? 'requested' : 'unmonitored',
       narrator: req ? (req.narrator || '') : '',
       reqId: req ? (req.id || null) : null,
+      reqOwnerId: req ? (req.requested_by_user_id || null) : null,
       libNarrator: lib ? (lib.narrator || '') : '',
     };
   }
@@ -628,9 +642,11 @@ function buildFormatRows(card, result, onRequestSuccess) {
     function pill(type) {
       const s = state[type];
       const typeName = type === 'audiobook' ? 'Audiobook' : 'Ebook';
-      const tips = { 'in-library': `${typeName} — in library`, 'requested': `${typeName} — click to cancel`, 'unmonitored': `${typeName} — click to request` };
+      const canCancel = s.mode !== 'requested' || isAdmin() || !_authUser || !s.reqOwnerId || s.reqOwnerId === _authUser.user_id;
+      const tips = { 'in-library': `${typeName} — in library`, 'requested': canCancel ? `${typeName} — click to cancel` : `${typeName} — requested by another user`, 'unmonitored': `${typeName} — click to request` };
       const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? 'badge-requested' : 'badge-unmonitored';
-      return `<button class="badge ${badgeClass} fmt-pill" data-type="${type}" title="${tips[s.mode]}"${s.mode === 'in-library' ? ' disabled' : ''}>${typeIcon(type)}</button>`;
+      const isDisabled = s.mode === 'in-library' || (s.mode === 'requested' && !canCancel);
+      return `<button class="badge ${badgeClass} fmt-pill" data-type="${type}" title="${tips[s.mode]}"${isDisabled ? ' disabled' : ''}>${typeIcon(type)}</button>`;
     }
 
     // Narrator: show input if audiobook is unmonitored, text if requested/in-library
@@ -701,6 +717,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
 
     } else if (s.mode === 'requested') {
       if (!s.reqId) { toast('Cannot cancel — unknown request ID', 'warning'); dot.disabled = false; return; }
+      if (!isAdmin() && _authUser && s.reqOwnerId && s.reqOwnerId !== _authUser.user_id) { toast('Cannot cancel another user\'s request', 'warning'); dot.disabled = false; return; }
       try {
         await api(`/requests/${s.reqId}`, { method: 'DELETE' });
         s.mode = 'unmonitored';
@@ -890,6 +907,22 @@ async function render() {
 }
 
 // Highlight active nav link (top + bottom)
+function updateNavForRole() {
+  const admin = isAdmin();
+  // Top nav
+  document.querySelectorAll('a.nav-btn[href="#/dashboard"], a.nav-btn[href="#/settings"]').forEach(el => {
+    el.style.display = admin ? '' : 'none';
+  });
+  // Rename Queue -> Requests for non-admins
+  const queueLink = document.querySelector('a.nav-btn[href="#/requests"]');
+  if (queueLink) queueLink.textContent = admin ? 'Queue' : 'Requests';
+  // Bottom nav
+  ['nb-dashboard', 'nb-settings'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = admin ? '' : 'none';
+  });
+}
+
 function updateActiveNav() {
   const path = getHashPath() || '/';
 
@@ -920,6 +953,124 @@ function updateActiveNav() {
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
+
+// Login
+route('/login', async (params, qp) => {
+  const forceLocal = 'force_local' in qp;
+  const next = qp.next || '/';
+
+  // Check if OIDC is active and we should redirect
+  if (!forceLocal) {
+    try {
+      const meData = await fetch('/api/auth/me');
+      if (meData.status === 401) {
+        const body = await meData.json().catch(() => ({}));
+        const modes = (body.detail || {}).modes || [];
+        if (modes.includes('oidc') && !modes.includes('form')) {
+          // OIDC only — redirect immediately
+          window.location.href = '/api/auth/oidc/start';
+          return;
+        }
+        if (modes.includes('oidc') && !forceLocal) {
+          // OIDC + form available — redirect to OIDC by default
+          window.location.href = '/api/auth/oidc/start';
+          return;
+        }
+      } else if (meData.ok) {
+        // Already logged in
+        navigate(next);
+        return;
+      }
+    } catch {}
+  }
+
+  app.innerHTML = `<div class="narrow-page" style="max-width:400px;margin-top:4rem">
+    <div class="page-header"><span class="page-title">Sign in</span></div>
+    <div class="card">
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input class="form-input" id="login-username" type="text" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" id="login-password" type="password" autocomplete="current-password">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="login-btn">Sign in</button>
+        <span class="form-feedback" id="login-feedback"></span>
+      </div>
+    </div>
+    ${!forceLocal ? `<div style="margin-top:1rem;text-align:center"><a href="/api/auth/oidc/start" style="font-size:0.85rem">Sign in with SSO</a></div>` : ''}
+  </div>`;
+
+  const doLogin = async () => {
+    const username = document.getElementById('login-username').value.trim();
+    const password = document.getElementById('login-password').value;
+    const fb = document.getElementById('login-feedback');
+    const btn = document.getElementById('login-btn');
+    if (!username || !password) { fb.textContent = 'Enter username and password.'; return; }
+    btn.disabled = true;
+    try {
+      const data = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!data.ok) { fb.textContent = 'Invalid credentials.'; btn.disabled = false; return; }
+      const result = await data.json();
+      _authUser = result;
+      if (result.force_password_change) { navigate('/change-password'); return; }
+      navigate(next);
+    } catch { fb.textContent = 'Login failed.'; btn.disabled = false; }
+  };
+
+  document.getElementById('login-btn').addEventListener('click', doLogin);
+  document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('login-username').focus();
+});
+
+// Change password (forced after admin reset)
+route('/change-password', async () => {
+  app.innerHTML = `<div class="narrow-page" style="max-width:400px;margin-top:4rem">
+    <div class="page-header"><span class="page-title">Set new password</span></div>
+    <div class="card">
+      <p class="text-dim" style="margin-bottom:1rem">Your password must be changed before continuing.</p>
+      <div class="form-group">
+        <label class="form-label">Current password</label>
+        <input class="form-input" id="cp-current" type="password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">New password</label>
+        <input class="form-input" id="cp-new" type="password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confirm new password</label>
+        <input class="form-input" id="cp-confirm" type="password">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="cp-btn">Save password</button>
+        <span class="form-feedback" id="cp-feedback"></span>
+      </div>
+    </div>
+  </div>`;
+
+  document.getElementById('cp-btn').addEventListener('click', async () => {
+    const current = document.getElementById('cp-current').value;
+    const nw = document.getElementById('cp-new').value;
+    const confirm = document.getElementById('cp-confirm').value;
+    const fb = document.getElementById('cp-feedback');
+    const btn = document.getElementById('cp-btn');
+    if (!current || !nw) { fb.textContent = 'All fields required.'; return; }
+    if (nw !== confirm) { fb.textContent = 'Passwords do not match.'; return; }
+    btn.disabled = true;
+    try {
+      await api('/auth/change-password', { method: 'POST', body: { current_password: current, new_password: nw } });
+      if (_authUser) _authUser.force_password_change = false;
+      toast('Password updated.');
+      navigate('/');
+    } catch { fb.textContent = 'Failed to change password.'; btn.disabled = false; }
+  });
+});
 
 // Home / Search
 route('/', async (params, qp) => {
@@ -1606,7 +1757,7 @@ function renderProwlarrResults(container, results, reqId, onSuccess) {
           ${res.seeders != null ? `<span>${res.seeders}S</span>` : ''}
           <span>${escapeHtml(res.indexer || '—')}</span>
         </div>
-        <button class="btn btn-primary btn-sm prowlarr-dl-btn" style="flex-shrink:0">${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span></button>
+        ${isAdmin() ? `<button class="btn btn-primary btn-sm prowlarr-dl-btn" style="flex-shrink:0">${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span></button>` : ''}
       </div>
     `;
     row.querySelector('.prowlarr-dl-btn').onclick = async (e) => {
@@ -1646,18 +1797,19 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
     `;
   } else if (row.status !== 'missing') {
     const req = row.request;
-    const canSearch = ['requested', 'failed', 'completed'].includes(req.status);
+    const canSearch = isAdmin() && ['requested', 'failed', 'completed'].includes(req.status);
+    const canCancel = isAdmin() || !_authUser || !req.requested_by_user_id || req.requested_by_user_id === _authUser?.user_id;
     container.innerHTML = `
       <div class="detail-fmt-detail">
         <div class="detail-fmt-kv"><span class="td-dim">Status</span> <span class="badge badge-${req.status}">${escapeHtml(req.status)}</span></div>
         <div class="detail-fmt-actions">
           ${canSearch ? `<button class="btn btn-primary btn-sm detail-fmt-search">${ICON_SEARCH} Search Prowlarr</button>` : ''}
-          <button class="btn btn-secondary btn-sm detail-fmt-cancel">Cancel</button>
+          ${canCancel ? `<button class="btn btn-secondary btn-sm detail-fmt-cancel">Cancel</button>` : ''}
         </div>
         <div class="detail-fmt-search-results mt-1"></div>
       </div>
     `;
-    container.querySelector('.detail-fmt-cancel').onclick = async () => {
+    if (canCancel) container.querySelector('.detail-fmt-cancel').onclick = async () => {
       try {
         await api(`/requests/${req.id}`, { method: 'DELETE' });
         toast('Request cancelled');
@@ -1799,9 +1951,22 @@ route('/library/book', async (params, qp) => {
   }
 });
 
-// Queue (Requests + Downloads tabs)
+// Queue (Requests + Downloads tabs) — admins; plain Requests list — users
 route('/requests', async (params, qp) => {
-  const tab = qp.tab === 'downloads' ? 'downloads' : 'requests';
+  if (!isAdmin()) {
+    app.innerHTML = `<div class="narrow-page">
+      <div class="page-header">
+        <span class="page-title">${ICON_REQUESTS} Requests</span>
+      </div>
+      <div id="queue-content"></div>
+    </div>`;
+    const content = document.getElementById('queue-content');
+    renderRequestsTab(content, qp);
+    return;
+  }
+
+  const validTabs = ['requests', 'downloads', 'pending'];
+  const tab = validTabs.includes(qp.tab) ? qp.tab : 'requests';
 
   app.innerHTML = `<div class="narrow-page">
     <div class="page-header">
@@ -1811,6 +1976,7 @@ route('/requests', async (params, qp) => {
     <div class="tabs">
       <button class="tab-btn${tab === 'requests' ? ' active' : ''}" data-tab="requests">Requests</button>
       <button class="tab-btn${tab === 'downloads' ? ' active' : ''}" data-tab="downloads">Downloads</button>
+      <button class="tab-btn${tab === 'pending' ? ' active' : ''}" data-tab="pending">Pending</button>
     </div>
     <div id="queue-content"></div>
   </div>`;
@@ -1818,7 +1984,7 @@ route('/requests', async (params, qp) => {
   app.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
     btn.onclick = () => {
       const hp = getHashParams();
-      if (btn.dataset.tab === 'downloads') hp.tab = 'downloads';
+      if (btn.dataset.tab !== 'requests') hp.tab = btn.dataset.tab;
       else delete hp.tab;
       history.replaceState(null, '', buildHash('/requests', hp));
       render();
@@ -1828,6 +1994,15 @@ route('/requests', async (params, qp) => {
   const content = document.getElementById('queue-content');
   if (tab === 'downloads') { renderDownloadsTab(content); return; }
 
+  if (tab === 'pending') {
+    renderPendingTab(content);
+    return;
+  }
+
+  renderRequestsTab(content, qp);
+});
+
+function renderRequestsTab(content, qp) {
   const statusFilter = qp.requests_status || '';
   const typeFilter = qp.requests_type || '';
 
@@ -1894,7 +2069,7 @@ route('/requests', async (params, qp) => {
   // Allow expansion rows to overflow the scroll container on mobile
   content.querySelector('.table-wrap')?.style.setProperty('overflow-x', 'visible');
 
-  // Search all — fires individual searches per row, results expand inline
+  // Search all — fires individual searches per row, results expand inline (admin only)
   document.getElementById('search-all-btn')?.addEventListener('click', async () => {
     const btn = document.getElementById('search-all-btn');
     document.querySelectorAll('.search-expansion-row').forEach(r => r.remove());
@@ -1973,7 +2148,7 @@ route('/requests', async (params, qp) => {
       location.hash = buildHash('/requests', hp).slice(1);
     });
   }, 0);
-});
+}
 
 
 // Shared: render the downloads tab content into a container element
@@ -2040,6 +2215,64 @@ function renderDownloadsTab(container) {
   window.addEventListener('hashchange', () => clearInterval(pollTimer), { once: true });
 }
 
+function renderPendingTab(container) {
+  container.innerHTML = `<div class="state-loading">${ICON_SPINNER}</div>`;
+  api('/requests/pending').then(data => {
+    const items = data.items || [];
+    if (!items.length) {
+      container.innerHTML = `<div class="state-empty">No pending requests.</div>`;
+      return;
+    }
+    container.innerHTML = `<table class="data-table">
+      <thead><tr>
+        <th>Book</th>
+        <th class="col-hide-mobile">Author</th>
+        <th>Format</th>
+        <th class="col-hide-mobile">Requested by</th>
+        <th class="col-hide-mobile">Date</th>
+        <th style="width:140px"></th>
+      </tr></thead>
+      <tbody>
+        ${items.map(r => `
+          <tr>
+            <td><a href="#/requests/${r.id}">${escapeHtml(r.book_title)}</a></td>
+            <td class="col-hide-mobile td-dim">${escapeHtml(r.author || '—')}</td>
+            <td><span class="badge badge-pending" title="${r.type}">${typeIcon(r.type)}</span></td>
+            <td class="col-hide-mobile td-dim">${escapeHtml(r.requested_by || '—')}</td>
+            <td class="col-hide-mobile td-dim">${formatDate(r.created_at)}</td>
+            <td>
+              <button class="btn-icon btn-icon-approve" data-approve="${r.id}" title="Approve">${ICON_CHECK}</button>
+              <button class="btn-icon btn-icon-reject" data-reject="${r.id}" title="Reject">${ICON_CROSS}</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+
+    container.querySelectorAll('[data-approve]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          await api(`/requests/${btn.dataset.approve}/approve`, { method: 'POST' });
+          toast('Request approved.');
+          renderPendingTab(container);
+        } catch { toast('Failed to approve.', 'error'); btn.disabled = false; }
+      });
+    });
+    container.querySelectorAll('[data-reject]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          await api(`/requests/${btn.dataset.reject}/reject`, { method: 'POST' });
+          toast('Request rejected.');
+          renderPendingTab(container);
+        } catch { toast('Failed to reject.', 'error'); btn.disabled = false; }
+      });
+    });
+  }).catch(() => {
+    container.innerHTML = `<div class="state-empty">Failed to load pending requests.</div>`;
+  });
+}
+
 // /#/downloads redirects to Queue > Downloads tab
 route('/downloads', () => {
   history.replaceState(null, '', '#/requests?tab=downloads');
@@ -2048,6 +2281,7 @@ route('/downloads', () => {
 
 // Dashboard
 route('/dashboard', async () => {
+  if (!isAdmin()) { navigate('/'); return; }
   renderLoading(app);
   try {
     const [status, syncStatus] = await Promise.all([
@@ -2238,11 +2472,12 @@ route('/dashboard', async () => {
 
 // Settings
 route('/settings', async () => {
+  if (!isAdmin()) { navigate('/'); return; }
   renderLoading(app);
   try {
     const settings = await api('/settings');
 
-    const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Pushover', 'Tasks'];
+    const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Pushover', 'Tasks', 'Auth'];
 
     app.innerHTML = `<div class="narrow-page">
       <div class="page-header"><span class="page-title">${ICON_SETTINGS} Settings</span></div>
@@ -2272,6 +2507,7 @@ route('/settings', async () => {
         case 'Hardcover': return buildHardcoverTab(settings);
         case 'Pushover': return buildPushoverTab(settings);
         case 'Tasks': return buildTasksTab(settings);
+        case 'Auth': return buildAuthTab(settings);
         default: return '<div class="text-dim">Coming soon.</div>';
       }
     }
@@ -2334,6 +2570,7 @@ route('/settings', async () => {
           ${field('Audiobook directory prefix', 'audiobook_prefix', g.audiobook_prefix)}
           ${field('Ebook directory prefix', 'ebook_prefix', g.ebook_prefix)}
         </div>
+        ${field('Public URL', 'public_url', g.public_url || '', 'text', 'Externally reachable URL for this app, e.g. https://your-domain.example.com — required for OIDC')}
         ${checkbox('Group series in search results', 'group_series_in_search', g.group_series_in_search)}
         ${checkbox('Merge multi-file audiobooks into single M4B', 'merge_multifile_audiobooks', g.merge_multifile_audiobooks)}
         ${checkbox('Debug view', 'debug_view', g.debug_view)}
@@ -2479,6 +2716,63 @@ route('/settings', async () => {
       `;
     }
 
+    function buildAuthTab(s) {
+      const a = s.auth || {};
+      const publicUrl = (s.general || {}).public_url || '';
+      const redirectUri = publicUrl ? `${publicUrl}/api/auth/oidc/callback` : '(set General → Public URL first)';
+      return `
+        <div class="section-heading">Login methods</div>
+        ${checkbox('Enable form login (username + password)', 'form_enabled', a.form_enabled)}
+        ${checkbox('Enable OIDC / SSO login', 'oidc_enabled', a.oidc_enabled, 'When enabled, the login page redirects to your OIDC provider. Add ?force_local to the login URL to bypass and use form login.')}
+        ${saveButton('auth')}
+
+        <div class="section-heading" style="margin-top:1.5rem">OIDC settings</div>
+        ${field('Provider URL', 'oidc_provider_url', a.oidc_provider_url || '', 'text', 'e.g. https://auth.example.com/application/o/athenaeum')}
+        ${field('Client ID', 'oidc_client_id', a.oidc_client_id || '')}
+        ${field('Client Secret', 'oidc_client_secret', a.oidc_client_secret || '', 'password')}
+        ${field('Scopes', 'oidc_scopes', a.oidc_scopes || 'openid email profile')}
+        ${field('Session duration (days)', 'session_days', String(a.session_days || 30))}
+        <div class="form-group">
+          <label class="form-label">Redirect URI <span class="text-dim">(register this with your provider)</span></label>
+          <input class="form-input" type="text" value="${escapeHtml(redirectUri)}" readonly onclick="this.select()" style="font-family:var(--font-mono,monospace);font-size:0.85rem;cursor:pointer">
+        </div>
+        ${saveButton('auth')}
+
+        <div class="section-heading" style="margin-top:1.5rem">Users</div>
+        <div id="auth-users-list"><span class="text-dim">${ICON_SPINNER} Loading…</span></div>
+        <div style="margin-top:1rem">
+          <div class="section-heading">Add user</div>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end">
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:140px">
+              <label class="form-label">Username</label>
+              <input class="form-input" id="new-user-username" type="text">
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:140px">
+              <label class="form-label">Temp password</label>
+              <input class="form-input" id="new-user-password" type="password">
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label class="form-label">Role</label>
+              <select class="form-input" id="new-user-role">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" id="add-user-btn">Add user</button>
+          </div>
+          <span class="form-feedback" id="add-user-feedback"></span>
+        </div>
+
+        ${_authUser && _authUser.role === 'admin' ? `
+        <div class="section-heading" style="margin-top:1.5rem">Account</div>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+          <span class="text-dim">Signed in as <strong>${escapeHtml(_authUser.username)}</strong></span>
+          <button class="btn btn-secondary btn-sm" id="logout-btn">Sign out</button>
+        </div>
+        ` : ''}
+      `;
+    }
+
     async function loadSyncStatus() {
       let s;
       try {
@@ -2593,6 +2887,113 @@ route('/settings', async () => {
         };
       });
 
+      // Auth tab
+      if (tabName === 'Auth') {
+        // Load users list
+        const loadUsers = async () => {
+          const listEl = document.getElementById('auth-users-list');
+          if (!listEl) return;
+          try {
+            const data = await api('/users');
+            const users = data.users || [];
+            if (!users.length) { listEl.innerHTML = '<div class="text-dim">No users yet.</div>'; return; }
+            listEl.innerHTML = `<table class="data-table">
+              <thead><tr><th>Username</th><th>Role</th><th>Force PW change</th><th></th></tr></thead>
+              <tbody>${users.map(u => `
+                <tr>
+                  <td>${escapeHtml(u.username)}</td>
+                  <td>
+                    <select class="form-input" style="padding:0.2rem 0.4rem;font-size:0.85rem" data-user-role="${u.id}">
+                      <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+                      <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+                    </select>
+                  </td>
+                  <td class="td-dim">${u.force_password_change ? 'Yes' : '—'}</td>
+                  <td style="white-space:nowrap">
+                    <button class="btn btn-sm btn-secondary" data-reset-pw="${u.id}" style="margin-right:0.25rem">Reset PW</button>
+                    <button class="btn btn-sm btn-danger" data-delete-user="${u.id}">Delete</button>
+                  </td>
+                </tr>`).join('')}
+              </tbody>
+            </table>`;
+
+            listEl.querySelectorAll('[data-user-role]').forEach(sel => {
+              sel.addEventListener('change', async () => {
+                try {
+                  await api(`/users/${sel.dataset.userRole}`, { method: 'PATCH', body: { role: sel.value } });
+                  toast('Role updated.');
+                } catch { toast('Failed to update role.', 'error'); }
+              });
+            });
+            listEl.querySelectorAll('[data-reset-pw]').forEach(btn => {
+              btn.addEventListener('click', async () => {
+                const pw = prompt('New temporary password:');
+                if (!pw) return;
+                try {
+                  await api(`/users/${btn.dataset.resetPw}/reset-password`, { method: 'POST', body: { new_password: pw } });
+                  toast('Password reset.');
+                  loadUsers();
+                } catch { toast('Failed.', 'error'); }
+              });
+            });
+            listEl.querySelectorAll('[data-delete-user]').forEach(btn => {
+              btn.addEventListener('click', async () => {
+                if (!confirm('Delete this user?')) return;
+                try {
+                  await api(`/users/${btn.dataset.deleteUser}`, { method: 'DELETE' });
+                  toast('User deleted.');
+                  loadUsers();
+                } catch { toast('Failed.', 'error'); }
+              });
+            });
+          } catch { listEl.innerHTML = '<div class="text-dim">Failed to load users.</div>'; }
+        };
+        loadUsers();
+
+        document.getElementById('add-user-btn')?.addEventListener('click', async () => {
+          const username = document.getElementById('new-user-username').value.trim();
+          const password = document.getElementById('new-user-password').value;
+          const role = document.getElementById('new-user-role').value;
+          const fb = document.getElementById('add-user-feedback');
+          if (!username || !password) { fb.textContent = 'Username and password required.'; return; }
+          try {
+            await api('/users', { method: 'POST', body: { username, password, role } });
+            toast('User created.');
+            document.getElementById('new-user-username').value = '';
+            document.getElementById('new-user-password').value = '';
+            fb.textContent = '';
+            loadUsers();
+          } catch (err) { fb.textContent = err.message; }
+        });
+
+        document.getElementById('logout-btn')?.addEventListener('click', async () => {
+          await fetch('/api/auth/logout', { method: 'POST' });
+          _authUser = null;
+          navigate('/login');
+        });
+
+        // Validate: form_enabled requires at least one admin user before saving
+        const authSaveBtn = content.querySelector('[data-save="auth"]');
+        if (authSaveBtn) {
+          const origClick = authSaveBtn.onclick;
+          authSaveBtn.onclick = async (e) => {
+            const formEnabled = content.querySelector('[data-key="form_enabled"]')?.checked;
+            if (formEnabled) {
+              try {
+                const data = await api('/users');
+                const admins = (data.users || []).filter(u => u.role === 'admin');
+                if (!admins.length) {
+                  toast('Create an admin user before enabling form login.', 'error');
+                  return;
+                }
+              } catch {}
+            }
+            if (origClick) origClick.call(authSaveBtn, e);
+            else authSaveBtn.dispatchEvent(new MouseEvent('click', { bubbles: false }));
+          };
+        }
+      }
+
       // General tab: toggle prefix fields based on separate_type_dirs checkbox
       if (tabName === 'General') {
         const sepCheck = content.querySelector('[data-key="separate_type_dirs"]');
@@ -2685,7 +3086,7 @@ function toggleTheme() {
   applyTheme(next);
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   // Apply saved theme before first render to avoid flash
   applyTheme(localStorage.getItem('theme') || 'light');
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
@@ -2713,6 +3114,25 @@ window.addEventListener('DOMContentLoaded', () => {
     nbLibPopup.style.display = 'none';
   });
 
+  // Auth check before first render
+  try {
+    const meRes = await fetch('/api/auth/me');
+    if (meRes.ok) {
+      _authUser = await meRes.json();
+      if (_authUser.force_password_change && getHashPath() !== '/change-password') {
+        location.hash = '#/change-password';
+      }
+    } else if (meRes.status === 401) {
+      const body = await meRes.json().catch(() => ({}));
+      const modes = (body.detail || {}).modes || [];
+      if (modes.length > 0 && getHashPath() !== '/login' && getHashPath() !== '/change-password') {
+        const dest = location.hash.slice(1) || '/';
+        location.hash = buildHash('/login', dest !== '/login' ? { next: dest } : {}).slice(1);
+      }
+    }
+  } catch {}
+
+  updateNavForRole();
   updateActiveNav();
   render();
   checkAbsBanner();

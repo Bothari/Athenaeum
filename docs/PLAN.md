@@ -370,6 +370,8 @@ general:
   audiobook_prefix: ""
   ebook_prefix: ""
   merge_multifile_audiobooks: false
+  public_url: ""              # externally reachable URL for this app, e.g. https://your-domain.example.com
+                              # required for OIDC redirect URI; optional otherwise
 
 schedule:
   library_sync:    "0 2 * * *"   # ABS → DB upsert + inline HC linking

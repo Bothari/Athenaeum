@@ -3,12 +3,14 @@ import logging
 from datetime import datetime
 
 from croniter import croniter
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .auth import ensure_session_secret, require_admin, require_auth
 from .database import get_db, init_db
 from .routes.abs_proxy import router as abs_proxy_router
+from .routes.auth import router as auth_router
 from .routes.books import router as books_router
 from .routes.downloads import router as downloads_router
 from .routes.requests import router as requests_router
@@ -21,12 +23,18 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Athenaeum")
 
-app.include_router(settings_router)
-app.include_router(books_router)
-app.include_router(requests_router)
-app.include_router(downloads_router)
-app.include_router(sync_router)
-app.include_router(abs_proxy_router)
+# Auth router is exempt — no require_auth dependency
+app.include_router(auth_router)
+
+# Admin-only routers
+app.include_router(settings_router, dependencies=[Depends(require_admin)])
+app.include_router(sync_router, dependencies=[Depends(require_admin)])
+
+# User-accessible routers (require auth, role checked per-endpoint where needed)
+app.include_router(books_router, dependencies=[Depends(require_auth)])
+app.include_router(requests_router, dependencies=[Depends(require_auth)])
+app.include_router(downloads_router, dependencies=[Depends(require_auth)])
+app.include_router(abs_proxy_router, dependencies=[Depends(require_auth)])
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
@@ -277,6 +285,7 @@ async def startup():
         logger.info("Re-queuing stale organize for request %s", row["id"])
         asyncio.create_task(auto_organize(row["id"]))
 
+    await ensure_session_secret()
     asyncio.create_task(_download_monitor())
     asyncio.create_task(_task_loop("library_sync_task", "library_sync", _library_sync_task))
     asyncio.create_task(_task_loop("cache_refresh_task", "cache_refresh", _cache_refresh_task))
