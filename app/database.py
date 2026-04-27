@@ -281,6 +281,25 @@ async def _run_migrations(db):
         await db.execute("CREATE INDEX IF NOT EXISTS idx_book_formats_book ON book_formats(book_id)")
         await db.execute("PRAGMA user_version = 8")
 
+    if current < 9:
+        await db.execute("""
+            CREATE TABLE users (
+                id                    TEXT PRIMARY KEY,
+                username              TEXT NOT NULL UNIQUE,
+                email                 TEXT,
+                password_hash         TEXT,
+                role                  TEXT NOT NULL DEFAULT 'user',
+                oidc_sub              TEXT UNIQUE,
+                force_password_change INTEGER NOT NULL DEFAULT 0,
+                created_at            TEXT NOT NULL,
+                updated_at            TEXT NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX idx_users_username ON users(username)")
+        await db.execute("CREATE INDEX idx_users_oidc_sub ON users(oidc_sub)")
+        await db.execute("ALTER TABLE requests ADD COLUMN requested_by_user_id TEXT REFERENCES users(id)")
+        await db.execute("PRAGMA user_version = 9")
+
     await db.commit()
 
 

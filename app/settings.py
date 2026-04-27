@@ -42,11 +42,22 @@ DEFAULT_SETTINGS = {
         "audiobook_prefix": "",
         "ebook_prefix": "",
         "merge_multifile_audiobooks": False,
+        "public_url": "",
     },
     "schedule": {
         "library_sync": "0 2 * * *",
         "cache_refresh": "0 3 * * *",
         "auto_search": "0 */6 * * *",
+    },
+    "auth": {
+        "form_enabled": False,
+        "oidc_enabled": False,
+        "session_secret": "",
+        "session_days": 30,
+        "oidc_provider_url": "",
+        "oidc_client_id": "",
+        "oidc_client_secret": "",
+        "oidc_scopes": "openid email profile",
     },
 }
 

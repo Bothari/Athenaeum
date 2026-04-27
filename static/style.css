@@ -336,6 +336,12 @@ html.light .badge-unmonitored { background: var(--surface2); color: var(--text-d
 .btn-sm { padding: 0.25rem 0.6rem; font-size: 0.8rem; }
 .btn-warning { background: var(--orange); color: #fff; border: none; }
 .btn-warning:hover:not(:disabled) { opacity: 0.85; }
+.btn-icon { display:inline-flex; align-items:center; justify-content:center; width:2rem; height:2rem; border-radius:6px; border:1.5px solid; background:transparent; cursor:pointer; padding:0; transition:background 0.15s, color 0.15s; }
+.btn-icon:disabled { opacity:0.4; cursor:default; }
+.btn-icon-approve { color:var(--green); border-color:var(--green); }
+.btn-icon-approve:hover:not(:disabled) { background:var(--green); color:#fff; }
+.btn-icon-reject  { color:var(--red);   border-color:var(--red); margin-left:0.35rem; }
+.btn-icon-reject:hover:not(:disabled)  { background:var(--red);   color:#fff; }
 
 /* ── Badges ── */
 .badge {
@@ -349,6 +355,7 @@ html.light .badge-unmonitored { background: var(--surface2); color: var(--text-d
   white-space: nowrap;
 }
 /* Dark mode badges */
+.badge-pending      { background: #2a2200; color: #e0b820; }
 .badge-requested    { background: #2a3a4a; color: #8ab8e8; }
 .badge-monitored    { background: #2a3a4a; color: #a8ccf0; }
 .badge-snatched     { background: #3a2a10; color: #d4882a; }
@@ -363,6 +370,7 @@ html.light .badge-unmonitored { background: var(--surface2); color: var(--text-d
 .badge-ebook        { background: #1e3428; color: #68a868; }
 
 /* Light mode badges */
+html.light .badge-pending      { background: #fffbe0; color: #7a5e00; }
 html.light .badge-requested    { background: #d8eaf8; color: #1a5080; }
 html.light .badge-monitored    { background: #d8eaf8; color: #205898; }
 html.light .badge-snatched     { background: #fdefd8; color: #7a4400; }

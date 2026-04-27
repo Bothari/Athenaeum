@@ -4,9 +4,10 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..auth import require_auth
 from ..database import get_db
 from ..services import book_search as _book_search
 from ..settings import get_settings
@@ -626,11 +627,11 @@ async def _get_book_link(db, book_id: str) -> dict:
 async def _get_book_requests(db, book_id: str) -> list:
     rows = await (
         await db.execute(
-            "SELECT id, type, status, narrator FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
+            "SELECT id, type, status, narrator, requested_by_user_id FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
             (book_id,),
         )
     ).fetchall()
-    return [{"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"]} for r in rows]
+    return [{"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"], "requested_by_user_id": r["requested_by_user_id"]} for r in rows]
 
 
 async def _get_book_formats(db, book_id: str) -> list:
@@ -697,12 +698,12 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
 
         req_rows = await (
             await db.execute(
-                "SELECT id, type, status, narrator FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
+                "SELECT id, type, status, narrator, requested_by_user_id FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
                 (book_id,),
             )
         ).fetchall()
         result["existing_requests"] = [
-            {"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"]}
+            {"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"], "requested_by_user_id": r["requested_by_user_id"]}
             for r in req_rows
         ]
 
@@ -835,7 +836,7 @@ class CreateBookBody(BaseModel):
 
 
 @router.post("/books")
-async def create_book(body: CreateBookBody):
+async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
     """Create a book (if it doesn't already exist) and attach requests."""
     from ..routes.requests import _create_request
     from ..services.library_sync import _get_or_create_author, _get_or_create_series, _split_authors
@@ -918,7 +919,7 @@ async def create_book(body: CreateBookBody):
         for req in body.requests:
             if req.type not in ("audiobook", "ebook"):
                 continue
-            result = await _create_request(db, book_id, req.type, req.narrator or None)
+            result = await _create_request(db, book_id, req.type, req.narrator or None, user_id=auth["user_id"], role=auth["role"])
             if result:
                 created += 1
             else:
