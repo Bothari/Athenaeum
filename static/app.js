@@ -628,6 +628,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
     const req = (result.existing_requests || []).find(r => r.type === type && r.status !== 'failed');
     state[type] = {
       mode: lib ? 'in-library' : req ? 'requested' : 'unmonitored',
+      reqStatus: req ? (req.status || 'requested') : null,
       narrator: req ? (req.narrator || '') : '',
       reqId: req ? (req.id || null) : null,
       reqOwnerId: req ? (req.requested_by_user_id || null) : null,
@@ -644,7 +645,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
       const typeName = type === 'audiobook' ? 'Audiobook' : 'Ebook';
       const canCancel = s.mode !== 'requested' || isAdmin() || !_authUser || !s.reqOwnerId || s.reqOwnerId === _authUser.user_id;
       const tips = { 'in-library': `${typeName} — in library`, 'requested': canCancel ? `${typeName} — click to cancel` : `${typeName} — requested by another user`, 'unmonitored': `${typeName} — click to request` };
-      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? 'badge-requested' : 'badge-unmonitored';
+      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? (s.reqStatus === 'pending' ? 'badge-pending' : 'badge-requested') : 'badge-unmonitored';
       const isDisabled = s.mode === 'in-library' || (s.mode === 'requested' && !canCancel);
       return `<button class="badge ${badgeClass} fmt-pill" data-type="${type}" title="${tips[s.mode]}"${isDisabled ? ' disabled' : ''}>${typeIcon(type)}</button>`;
     }
@@ -692,8 +693,11 @@ function buildFormatRows(card, result, onRequestSuccess) {
         const book = await api('/books', { method: 'POST', body: {
           title: result.title, author: result.author,
           cover_url: result.cover_url || null,
-          series: result.series?.[0]?.name || null,
-          series_position: result.series?.[0]?.position || null,
+          series_list: (result.series || []).map(s => ({
+            name: s.name,
+            position: s.position || null,
+            hardcover_id: s.hardcover_series_id || null,
+          })),
           metadata_source: result.metadata_source || null,
           metadata_id: result.metadata_id || null,
           metadata_url: result.metadata_url || null,
@@ -707,6 +711,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
         const req = await api('/requests', { method: 'POST', body: { book_id: bookId, type, narrator: narratorVal } });
         if (req.skipped) toast('Already requested', 'info');
         s.reqId = req.id || null;
+        s.reqStatus = req.status || 'requested';
         s.mode = 'requested';
         render();
         if (onRequestSuccess) onRequestSuccess({ id: bookId }, result, [type]);
@@ -1524,6 +1529,10 @@ route('/library/series/:id', async ({ id }) => {
       document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); };
 
       const booksContainer = document.getElementById('series-books');
+      if (!booksData.length) {
+        booksContainer.innerHTML = `<p class="td-dim" style="padding:0.5rem 0">The shelves are bare.</p>`;
+        return;
+      }
       if (view === 'list') {
         const table = document.createElement('table');
         table.className = 'data-table';
@@ -1802,6 +1811,7 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
     container.innerHTML = `
       <div class="detail-fmt-detail">
         <div class="detail-fmt-kv"><span class="td-dim">Status</span> <span class="badge badge-${req.status}">${escapeHtml(req.status)}</span></div>
+        ${isAdmin() && req.requested_by_username ? `<div class="detail-fmt-kv"><span class="td-dim">Requested by</span> <span>${escapeHtml(req.requested_by_username)}</span></div>` : ''}
         <div class="detail-fmt-actions">
           ${canSearch ? `<button class="btn btn-primary btn-sm detail-fmt-search">${ICON_SEARCH} Search Prowlarr</button>` : ''}
           ${canCancel ? `<button class="btn btn-secondary btn-sm detail-fmt-cancel">Cancel</button>` : ''}
@@ -2235,7 +2245,7 @@ function renderPendingTab(container) {
       <tbody>
         ${items.map(r => `
           <tr>
-            <td><a href="#/requests/${r.id}">${escapeHtml(r.book_title)}</a></td>
+            <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title)}</a></td>
             <td class="col-hide-mobile td-dim">${escapeHtml(r.author || '—')}</td>
             <td><span class="badge badge-pending" title="${r.type}">${typeIcon(r.type)}</span></td>
             <td class="col-hide-mobile td-dim">${escapeHtml(r.requested_by || '—')}</td>

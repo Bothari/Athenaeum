@@ -80,8 +80,10 @@ async def _request_detail(db, req_id: str) -> dict:
         await db.execute(
             """SELECT r.*, b.title as book_title,
                       (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
-                       WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
+                       WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author,
+                      u.username as requested_by_username
                FROM requests r JOIN books b ON b.id = r.book_id
+               LEFT JOIN users u ON u.id = r.requested_by_user_id
                WHERE r.id = ?""",
             (req_id,),
         )
@@ -103,6 +105,7 @@ async def _request_detail(db, req_id: str) -> dict:
         "last_searched_at": row["last_searched_at"],
         "search_count": row["search_count"],
         "requested_by_user_id": row["requested_by_user_id"],
+        "requested_by_username": row["requested_by_username"],
     }
 
 

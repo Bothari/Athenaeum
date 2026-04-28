@@ -627,11 +627,14 @@ async def _get_book_link(db, book_id: str) -> dict:
 async def _get_book_requests(db, book_id: str) -> list:
     rows = await (
         await db.execute(
-            "SELECT id, type, status, narrator, requested_by_user_id FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
+            """SELECT r.id, r.type, r.status, r.narrator, r.requested_by_user_id, u.username as requested_by_username
+               FROM requests r LEFT JOIN users u ON u.id = r.requested_by_user_id
+               WHERE r.book_id = ? AND r.status NOT IN ('completed', 'failed') ORDER BY r.created_at""",
             (book_id,),
         )
     ).fetchall()
-    return [{"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"], "requested_by_user_id": r["requested_by_user_id"]} for r in rows]
+    return [{"id": r["id"], "type": r["type"], "status": r["status"], "narrator": r["narrator"],
+             "requested_by_user_id": r["requested_by_user_id"], "requested_by_username": r["requested_by_username"]} for r in rows]
 
 
 async def _get_book_formats(db, book_id: str) -> list:
@@ -822,12 +825,17 @@ class BookRequestItem(BaseModel):
     narrator: Optional[str] = None
 
 
+class SeriesItem(BaseModel):
+    name: str
+    position: Optional[str] = None
+    hardcover_id: Optional[str] = None
+
+
 class CreateBookBody(BaseModel):
     title: str
     author: str = ""
     cover_url: Optional[str] = None
-    series: Optional[str] = None
-    series_position: Optional[str] = None
+    series_list: list[SeriesItem] = []
     metadata_source: Optional[str] = None
     metadata_id: Optional[str] = None
     metadata_url: Optional[str] = None
@@ -905,13 +913,19 @@ async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
                 (str(uuid.uuid4()), book_id, author_id, pos, now),
             )
 
-        # Series — always upsert
-        if body.series:
-            series_id = await _get_or_create_series(db, body.series.strip())
-            await db.execute(
-                "INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at) VALUES (?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), book_id, series_id, body.series_position or None, now),
-            )
+        # Series — upsert all entries
+        if body.series_list:
+            from ..services.library_sync import _set_hc_series_id
+            for s in body.series_list:
+                if not s.name:
+                    continue
+                series_id = await _get_or_create_series(db, s.name.strip())
+                await db.execute(
+                    "INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), book_id, series_id, s.position or None, now),
+                )
+                if s.hardcover_id:
+                    await _set_hc_series_id(db, series_id, str(s.hardcover_id))
 
         # 4. Create requests
         created = 0
