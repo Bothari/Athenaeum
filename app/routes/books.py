@@ -67,11 +67,13 @@ async def list_books(
         conditions.append("(bl.hardcover_id IS NULL OR bl.hardcover_id = '')")
 
     if q:
-        like = f"%{q}%"
+        import unicodedata
+        qf = unicodedata.normalize("NFD", q.lower()).encode("ascii", "ignore").decode("ascii")
+        like = f"%{qf}%"
         conditions.append(
-            "(b.title LIKE ? OR EXISTS ("
+            "(fold(b.title) LIKE ? OR EXISTS ("
             "SELECT 1 FROM authors a JOIN book_authors ba ON ba.author_id = a.id "
-            "WHERE ba.book_id = b.id AND a.name LIKE ?))"
+            "WHERE ba.book_id = b.id AND fold(a.name) LIKE ?))"
         )
         bind.extend([like, like])
 
@@ -148,8 +150,10 @@ async def list_authors(
         conditions.append("(al.hardcover_author_id IS NULL OR al.hardcover_author_id = '')")
 
     if q:
-        like = f"%{q}%"
-        conditions.append("a.name LIKE ?")
+        import unicodedata
+        qf = unicodedata.normalize("NFD", q.lower()).encode("ascii", "ignore").decode("ascii")
+        like = f"%{qf}%"
+        conditions.append("fold(a.name) LIKE ?")
         bind.append(like)
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
@@ -322,8 +326,10 @@ async def list_series(
         conditions.append("(sl.hardcover_series_id IS NULL OR sl.hardcover_series_id = '')")
 
     if q:
-        like = f"%{q}%"
-        conditions.append("s.name LIKE ?")
+        import unicodedata
+        qf = unicodedata.normalize("NFD", q.lower()).encode("ascii", "ignore").decode("ascii")
+        like = f"%{qf}%"
+        conditions.append("fold(s.name) LIKE ?")
         bind.append(like)
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""

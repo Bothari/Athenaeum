@@ -181,11 +181,13 @@ async def list_requests(
         conditions.append("r.book_id = ?")
         bind.append(book_id)
     if q:
-        like = f"%{q}%"
+        import unicodedata
+        qf = unicodedata.normalize("NFD", q.lower()).encode("ascii", "ignore").decode("ascii")
+        like = f"%{qf}%"
         conditions.append(
-            "(b.title LIKE ? OR EXISTS ("
+            "(fold(b.title) LIKE ? OR EXISTS ("
             "SELECT 1 FROM authors a JOIN book_authors ba ON ba.author_id = a.id "
-            "WHERE ba.book_id = r.book_id AND a.name LIKE ?))"
+            "WHERE ba.book_id = r.book_id AND fold(a.name) LIKE ?))"
         )
         bind.extend([like, like])
 
