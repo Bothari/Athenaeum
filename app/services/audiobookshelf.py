@@ -218,3 +218,11 @@ class AudiobookshelfService:
         async with httpx.AsyncClient(headers=self._headers(), timeout=15.0) as client:
             for lib_id in lib_ids:
                 await client.post(f"{self.base_url}/api/libraries/{lib_id}/scan")
+
+    async def scan_folder(self, library_id: str, folder_path: str):
+        """Scan a specific folder path within a library instead of the whole library."""
+        async with httpx.AsyncClient(headers=self._headers(), timeout=15.0) as client:
+            await client.post(
+                f"{self.base_url}/api/libraries/{library_id}/scan",
+                params={"folder": folder_path},
+            )

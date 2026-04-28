@@ -45,16 +45,23 @@ async def _wait_until_next(cron_expr: str):
     await asyncio.sleep((next_run - now).total_seconds())
 
 
-async def _task_loop(task_name: str, cron_key: str, task_fn):
-    """Supervised loop for a scheduled task."""
+async def _task_loop(task_name: str, cron_key: str, task_fn, fallback_interval: int = 0):
+    """Supervised loop for a scheduled task.
+
+    fallback_interval: seconds between runs when no cron expression is configured.
+    If 0, the loop idles (60s sleep) when unconfigured.
+    """
     while True:
         try:
             settings = await get_settings()
             expr = settings.get("schedule", {}).get(cron_key, "")
-            if not expr:
+            if expr:
+                await _wait_until_next(expr)
+            elif fallback_interval:
+                await asyncio.sleep(fallback_interval)
+            else:
                 await asyncio.sleep(60)
                 continue
-            await _wait_until_next(expr)
             await task_fn()
         except asyncio.CancelledError:
             raise
@@ -287,7 +294,7 @@ async def startup():
 
     await ensure_session_secret()
     asyncio.create_task(_download_monitor())
-    asyncio.create_task(_task_loop("library_sync_task", "library_sync", _library_sync_task))
+    asyncio.create_task(_task_loop("library_sync_task", "library_sync", _library_sync_task, fallback_interval=1800))
     asyncio.create_task(_task_loop("cache_refresh_task", "cache_refresh", _cache_refresh_task))
     asyncio.create_task(_task_loop("auto_search_task", "auto_search", _auto_search_task))
 

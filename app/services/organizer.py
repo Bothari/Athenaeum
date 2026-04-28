@@ -250,11 +250,10 @@ async def _build_abs_metadata(db, book_id: str, narrator: str, api_key: str) -> 
     return meta
 
 
-# ── metadata.json ──────────────────────────────────────────────────────────────
+# ── metadata.opf ──────────────────────────────────────────────────────────────
 
-async def write_metadata_json(target_dir: Path, db, book_id: str, narrator: str, api_key: str):
-    """Write ABS-compatible metadata.json to target_dir."""
-    # Core DB fields
+async def write_metadata_opf(target_dir: Path, db, book_id: str, narrator: str, api_key: str):
+    """Write a metadata.opf file to target_dir. ABS reads this on library scan."""
     book_row = await (
         await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
     ).fetchone()
@@ -281,45 +280,51 @@ async def write_metadata_json(target_dir: Path, db, book_id: str, narrator: str,
             (book_id,),
         )
     ).fetchall()
-    series_strs = []
-    for r in series_rows:
-        pos = (r["position"] or "").strip()
-        series_strs.append(f"{r['name']} #{pos}" if pos else r["name"])
 
     narrators = [n.strip() for n in (narrator or "").split(",") if n.strip()]
 
-    # HC enrichment (lazy cache)
     hc_meta = await _get_hc_metadata(db, book_id, api_key)
 
-    meta: dict = {}
-    if title:
-        meta["title"] = title
-    if hc_meta.get("subtitle"):
-        meta["subtitle"] = hc_meta["subtitle"]
-    if authors:
-        meta["authors"] = authors
-    if narrators:
-        meta["narrators"] = narrators
-    if series_strs:
-        meta["series"] = series_strs
-    if hc_meta.get("genres"):
-        meta["genres"] = hc_meta["genres"]
-    if hc_meta.get("published_year"):
-        meta["publishedYear"] = str(hc_meta["published_year"])
-    if hc_meta.get("publisher"):
-        meta["publisher"] = hc_meta["publisher"]
-    if hc_meta.get("description"):
-        meta["description"] = hc_meta["description"]
-    if hc_meta.get("isbn"):
-        meta["isbn"] = hc_meta["isbn"]
-    if hc_meta.get("asin"):
-        meta["asin"] = hc_meta["asin"]
-    if hc_meta.get("language"):
-        meta["language"] = hc_meta["language"]
+    def esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;").replace('"', "&quot;"))
 
-    dest = target_dir / "metadata.json"
-    dest.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
-    logger.info("Wrote metadata.json to %s", dest)
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">',
+        '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">',
+        f'    <dc:title>{esc(title)}</dc:title>',
+    ]
+    for author in authors:
+        lines.append(f'    <dc:creator opf:role="aut">{esc(author)}</dc:creator>')
+    for n in narrators:
+        lines.append(f'    <dc:creator opf:role="nrt">{esc(n)}</dc:creator>')
+    if hc_meta.get("description"):
+        lines.append(f'    <dc:description>{esc(hc_meta["description"])}</dc:description>')
+    if hc_meta.get("publisher"):
+        lines.append(f'    <dc:publisher>{esc(hc_meta["publisher"])}</dc:publisher>')
+    if hc_meta.get("published_year"):
+        lines.append(f'    <dc:date>{esc(str(hc_meta["published_year"]))}</dc:date>')
+    if hc_meta.get("language"):
+        lines.append(f'    <dc:language>{esc(hc_meta["language"])}</dc:language>')
+    if hc_meta.get("isbn"):
+        lines.append(f'    <dc:identifier opf:scheme="ISBN">{esc(hc_meta["isbn"])}</dc:identifier>')
+    if hc_meta.get("asin"):
+        lines.append(f'    <dc:identifier opf:scheme="ASIN">{esc(hc_meta["asin"])}</dc:identifier>')
+    if series_rows:
+        first = series_rows[0]
+        pos = (first["position"] or "").strip()
+        lines.append(f'    <meta name="calibre:series" content="{esc(first["name"])}"/>')
+        if pos:
+            lines.append(f'    <meta name="calibre:series_index" content="{esc(pos)}"/>')
+    lines += [
+        '  </metadata>',
+        '</package>',
+    ]
+
+    dest = target_dir / "metadata.opf"
+    dest.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Wrote metadata.opf to %s", dest)
 
 
 # ── M4B merge ──────────────────────────────────────────────────────────────────
@@ -519,16 +524,45 @@ async def auto_organize(request_id: str):
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         if src.is_dir():
-            # Move whole directory contents
-            for item in src.iterdir():
-                dst = dest_dir / item.name
+            COVER_NAMES = {"cover.jpg", "cover.jpeg", "cover.png"}
+            type_exts = AUDIO_EXTENSIONS if book_type == "audiobook" else EBOOK_EXTENSIONS
+            media_files = sorted(
+                [f for f in src.iterdir() if f.is_file() and f.suffix.lower() in type_exts],
+                key=_natural_sort_key,
+            )
+            # For ebooks, keep only the best format when multiple are present
+            if book_type == "ebook" and len(media_files) > 1:
+                EBOOK_PREF = [".epub", ".mobi", ".azw3", ".azw", ".pdf"]
+                for preferred_ext in EBOOK_PREF:
+                    preferred = [f for f in media_files if f.suffix.lower() == preferred_ext]
+                    if preferred:
+                        media_files = preferred[:1]
+                        break
+            cover_file = next(
+                (f for f in src.iterdir() if f.is_file() and f.name.lower() in COVER_NAMES),
+                None,
+            )
+            safe_title = _sanitise_path_component(title)
+            safe_author = _sanitise_path_component(author)
+            for i, item in enumerate(media_files):
+                if len(media_files) == 1:
+                    stem = f"{safe_title} - {safe_author}"
+                else:
+                    stem = f"{safe_title} - {safe_author} - {i + 1:02d}"
+                dst = _dedup_dest(dest_dir / f"{stem}{item.suffix.lower()}")
                 if dst == item:
-                    continue  # already there
-                if item.is_file():
+                    continue
+                if download_client == "qbittorrent":
+                    await asyncio.to_thread(shutil.copy2, str(item), str(dst))
+                else:
+                    await asyncio.to_thread(shutil.move, str(item), str(dst))
+            if cover_file:
+                dst = dest_dir / cover_file.name.lower()
+                if dst != cover_file:
                     if download_client == "qbittorrent":
-                        await asyncio.to_thread(shutil.copy2, str(item), str(dst))
+                        await asyncio.to_thread(shutil.copy2, str(cover_file), str(dst))
                     else:
-                        await asyncio.to_thread(shutil.move, str(item), str(dst))
+                        await asyncio.to_thread(shutil.move, str(cover_file), str(dst))
         elif src.is_file():
             ext = src.suffix
             dest_file = _dedup_dest(dest_dir / f"{_sanitise_path_component(title)} - {_sanitise_path_component(author)}{ext}")
@@ -559,7 +593,7 @@ async def auto_organize(request_id: str):
         # ── Write metadata.json ─────────────────────────────────────────────────
         try:
             async with get_db() as db:
-                await write_metadata_json(dest_dir, db, book_id, narrator, api_key)
+                await write_metadata_opf(dest_dir, db, book_id, narrator, api_key)
         except Exception as e:
             logger.warning("metadata.json write failed for request %s: %s", request_id, e)
 
@@ -587,9 +621,9 @@ async def auto_organize(request_id: str):
 
         await asyncio.sleep(5)
 
-        # Poll for match
+        # Poll for match — 60 attempts × 5s = 5 minutes
         matched_abs_id = None
-        for attempt in range(10):
+        for attempt in range(60):
             try:
                 matches = await abs_svc.check_library(title, author)
                 for item in matches:
