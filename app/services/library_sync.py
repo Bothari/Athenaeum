@@ -1367,9 +1367,9 @@ async def _sync_item(item: dict) -> str:
                      abs_id, item.get("abs_url"), now, now),
                 )
 
-            # Clean up in_library requests now that formats exist in DB
+            # Clean up terminal requests now that formats exist in DB
             await db.execute(
-                "DELETE FROM requests WHERE book_id = ? AND status = 'in_library'", (book_id,)
+                "DELETE FROM requests WHERE book_id = ? AND status IN ('in_library', 'completed')", (book_id,)
             )
             await db.commit()
 
@@ -1451,9 +1451,9 @@ async def _sync_item(item: dict) -> str:
                     changed = True
 
             await db.execute("UPDATE books SET abs_checked_at = ? WHERE id = ?", (now, book_id))
-            # Clean up in_library requests now that formats exist in DB
+            # Clean up terminal requests now that formats exist in DB
             await db.execute(
-                "DELETE FROM requests WHERE book_id = ? AND status = 'in_library'", (book_id,)
+                "DELETE FROM requests WHERE book_id = ? AND status IN ('in_library', 'completed')", (book_id,)
             )
             await db.commit()
 

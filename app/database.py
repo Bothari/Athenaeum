@@ -157,6 +157,14 @@ CREATE TABLE task_state (
 """
 
 
+def _fold(s):
+    """Lowercase + strip diacritics for accent-insensitive search."""
+    import unicodedata
+    if s is None:
+        return None
+    return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode("ascii")
+
+
 @asynccontextmanager
 async def get_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -164,6 +172,7 @@ async def get_db():
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=5000")
         await db.execute("PRAGMA foreign_keys=ON")
+        await db.create_function("fold", 1, _fold)
         yield db
 
 
