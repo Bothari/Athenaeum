@@ -638,8 +638,7 @@ async def auto_organize(request_id: str):
 
             if matched_abs_id:
                 break
-            if attempt < 9:
-                await asyncio.sleep(5)
+            await asyncio.sleep(5)
 
         # Push authoritative metadata to ABS now that we have the item ID.
         # This overwrites whatever ABS parsed from audio tags with our HC/DB data.
