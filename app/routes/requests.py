@@ -57,10 +57,11 @@ async def _create_request(
     req_id = str(uuid.uuid4())
     now = _now()
     status = "requested" if role == "admin" else "pending"
+    stored_user_id = None if user_id == "anonymous" else user_id
     await db.execute(
         """INSERT INTO requests (id, book_id, type, status, narrator, requested_by_user_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (req_id, book_id, req_type, status, narrator, user_id, now, now),
+        (req_id, book_id, req_type, status, narrator, stored_user_id, now, now),
     )
     return {
         "id": req_id,
