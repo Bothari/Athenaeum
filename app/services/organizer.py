@@ -549,8 +549,8 @@ async def auto_organize(request_id: str):
                     stem = f"{safe_title} - {safe_author}"
                 else:
                     stem = f"{safe_title} - {safe_author} - {i + 1:02d}"
-                dst = _dedup_dest(dest_dir / f"{stem}{item.suffix.lower()}")
-                if dst == item:
+                dst = dest_dir / f"{stem}{item.suffix.lower()}"
+                if dst.exists() or dst == item:
                     continue
                 if download_client == "qbittorrent":
                     await asyncio.to_thread(shutil.copy2, str(item), str(dst))
@@ -565,8 +565,8 @@ async def auto_organize(request_id: str):
                         await asyncio.to_thread(shutil.move, str(cover_file), str(dst))
         elif src.is_file():
             ext = src.suffix
-            dest_file = _dedup_dest(dest_dir / f"{_sanitise_path_component(title)} - {_sanitise_path_component(author)}{ext}")
-            if dest_file == src:
+            dest_file = dest_dir / f"{_sanitise_path_component(title)} - {_sanitise_path_component(author)}{ext}"
+            if dest_file.exists() or dest_file == src:
                 pass  # already in place
             elif download_client == "qbittorrent":
                 await asyncio.to_thread(shutil.copy2, str(src), str(dest_file))
