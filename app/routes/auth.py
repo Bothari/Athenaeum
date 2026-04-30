@@ -74,6 +74,26 @@ async def _get_jwks(jwks_uri: str) -> dict:
 
 # ── Auth routes ────────────────────────────────────────────────────────────────
 
+class VerifyOidcBody(BaseModel):
+    provider_url: str
+
+
+@router.post("/auth/oidc/verify")
+async def verify_oidc_provider(body: VerifyOidcBody, auth: dict = Depends(require_admin)):
+    """Fetch OIDC discovery document and return key endpoints for UI confirmation."""
+    try:
+        config = await _get_oidc_config(body.provider_url)
+    except Exception as e:
+        raise HTTPException(400, f"Could not reach provider: {e}")
+    return {
+        "ok": True,
+        "issuer": config.get("issuer", ""),
+        "authorization_endpoint": config.get("authorization_endpoint", ""),
+        "token_endpoint": config.get("token_endpoint", ""),
+        "userinfo_endpoint": config.get("userinfo_endpoint", ""),
+    }
+
+
 class LoginBody(BaseModel):
     username: str
     password: str

@@ -370,7 +370,7 @@ general:
   audiobook_prefix: ""
   ebook_prefix: ""
   merge_multifile_audiobooks: false
-  public_url: ""              # externally reachable URL for this app, e.g. https://your-domain.example.com
+  public_url: ""              # externally reachable URL for this app, e.g. https://athenaeum.example.com
                               # required for OIDC redirect URI; optional otherwise
 
 schedule:
