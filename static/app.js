@@ -2580,7 +2580,7 @@ route('/settings', async () => {
           ${field('Audiobook directory prefix', 'audiobook_prefix', g.audiobook_prefix)}
           ${field('Ebook directory prefix', 'ebook_prefix', g.ebook_prefix)}
         </div>
-        ${field('Public URL', 'public_url', g.public_url || '', 'text', 'Externally reachable URL for this app, e.g. https://athenaeum.bothari.com — required for OIDC')}
+        ${field('Public URL', 'public_url', g.public_url || '', 'text', 'Externally reachable URL for this app, e.g. https://athenaeum.example.com — required for OIDC')}
         ${checkbox('Group series in search results', 'group_series_in_search', g.group_series_in_search)}
         ${checkbox('Merge multi-file audiobooks into single M4B', 'merge_multifile_audiobooks', g.merge_multifile_audiobooks)}
         ${checkbox('Debug view', 'debug_view', g.debug_view)}
@@ -2734,17 +2734,26 @@ route('/settings', async () => {
         <div class="section-heading">Login methods</div>
         ${checkbox('Enable form login (username + password)', 'form_enabled', a.form_enabled)}
         ${checkbox('Enable OIDC / SSO login', 'oidc_enabled', a.oidc_enabled, 'When enabled, the login page redirects to your OIDC provider. Add ?force_local to the login URL to bypass and use form login.')}
-        ${saveButton('auth')}
 
-        <div class="section-heading" style="margin-top:1.5rem">OIDC settings</div>
-        ${field('Provider URL', 'oidc_provider_url', a.oidc_provider_url || '', 'text', 'e.g. https://auth.example.com/application/o/athenaeum')}
-        ${field('Client ID', 'oidc_client_id', a.oidc_client_id || '')}
-        ${field('Client Secret', 'oidc_client_secret', a.oidc_client_secret || '', 'password')}
-        ${field('Scopes', 'oidc_scopes', a.oidc_scopes || 'openid email profile')}
-        ${field('Session duration (days)', 'session_days', String(a.session_days || 30))}
-        <div class="form-group">
-          <label class="form-label">Redirect URI <span class="text-dim">(register this with your provider)</span></label>
-          <input class="form-input" type="text" value="${escapeHtml(redirectUri)}" readonly onclick="this.select()" style="font-family:var(--font-mono,monospace);font-size:0.85rem;cursor:pointer">
+        <div id="oidc-settings-block" style="${a.oidc_enabled ? '' : 'display:none'}">
+          <div class="section-heading" style="margin-top:1.5rem">OIDC settings</div>
+          <div class="form-group">
+            <label class="form-label">Provider URL</label>
+            <div style="display:flex;gap:0.5rem;align-items:center">
+              <input type="text" class="form-input" data-key="oidc_provider_url" value="${escapeHtml(a.oidc_provider_url || '')}" style="flex:1" placeholder="e.g. https://sso.example.com/application/o/athenaeum">
+              <button class="btn btn-secondary" id="oidc-verify-btn" type="button">Verify</button>
+            </div>
+            <div class="form-hint">Issuer URL — Athenaeum auto-discovers all endpoints from here</div>
+            <div id="oidc-verify-result" style="margin-top:0.4rem;font-size:0.85rem"></div>
+          </div>
+          ${field('Client ID', 'oidc_client_id', a.oidc_client_id || '')}
+          ${field('Client Secret', 'oidc_client_secret', a.oidc_client_secret || '', 'password')}
+          ${field('Scopes', 'oidc_scopes', a.oidc_scopes || 'openid email profile')}
+          ${field('Session duration (days)', 'session_days', String(a.session_days || 30))}
+          <div class="form-group">
+            <label class="form-label">Redirect URI <span class="text-dim">(register this with your provider)</span></label>
+            <input class="form-input" type="text" value="${escapeHtml(redirectUri)}" readonly onclick="this.select()" style="font-family:var(--font-mono,monospace);font-size:0.85rem;cursor:pointer">
+          </div>
         </div>
         ${saveButton('auth')}
 
@@ -2980,6 +2989,32 @@ route('/settings', async () => {
           await fetch('/api/auth/logout', { method: 'POST' });
           _authUser = null;
           navigate('/login');
+        });
+
+        content.querySelector('[data-key="oidc_enabled"]')?.addEventListener('change', function() {
+          const block = document.getElementById('oidc-settings-block');
+          if (block) block.style.display = this.checked ? '' : 'none';
+        });
+
+        document.getElementById('oidc-verify-btn')?.addEventListener('click', async () => {
+          const btn = document.getElementById('oidc-verify-btn');
+          const resultEl = document.getElementById('oidc-verify-result');
+          const url = content.querySelector('[data-key="oidc_provider_url"]')?.value?.trim();
+          if (!url) { resultEl.style.color = 'var(--color-error)'; resultEl.textContent = 'Enter a Provider URL first.'; return; }
+          btn.disabled = true;
+          btn.textContent = 'Verifying…';
+          resultEl.textContent = '';
+          try {
+            const data = await api('/auth/oidc/verify', { method: 'POST', body: { provider_url: url } });
+            resultEl.style.color = 'var(--color-success, green)';
+            resultEl.textContent = `Provider reachable — issuer: ${data.issuer}`;
+          } catch (err) {
+            resultEl.style.color = 'var(--color-error)';
+            resultEl.textContent = err.message || 'Could not reach provider.';
+          } finally {
+            btn.disabled = false;
+            btn.textContent = 'Verify';
+          }
         });
 
         // Validate: form_enabled requires at least one admin user before saving
