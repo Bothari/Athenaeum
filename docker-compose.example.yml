@@ -1,8 +1,7 @@
 services:
   athenaeum:
     container_name: athenaeum
-    build: .
-    # image: ghcr.io/your-username/athenaeum:latest
+    image: ghcr.io/bothari/athenaeum:latest
     ports:
       - "8741:8741"
     volumes:
@@ -11,9 +10,3 @@ services:
       - /path/to/downloads:/downloads
     environment:
       - DATA_DIR=/data
-    networks:
-      - your_network
-
-networks:
-  your_network:
-    external: true
