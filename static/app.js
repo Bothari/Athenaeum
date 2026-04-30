@@ -914,10 +914,13 @@ async function render() {
 // Highlight active nav link (top + bottom)
 function updateNavForRole() {
   const admin = isAdmin();
+  const authed = !!_authUser;
   // Top nav
   document.querySelectorAll('a.nav-btn[href="#/dashboard"], a.nav-btn[href="#/settings"]').forEach(el => {
     el.style.display = admin ? '' : 'none';
   });
+  const profileLink = document.getElementById('nav-profile');
+  if (profileLink) profileLink.style.display = (!admin && authed) ? '' : 'none';
   // Rename Queue -> Requests for non-admins
   const queueLink = document.querySelector('a.nav-btn[href="#/requests"]');
   if (queueLink) queueLink.textContent = admin ? 'Queue' : 'Requests';
@@ -926,6 +929,8 @@ function updateNavForRole() {
     const el = document.getElementById(id);
     if (el) el.style.display = admin ? '' : 'none';
   });
+  const nbProfile = document.getElementById('nb-profile');
+  if (nbProfile) nbProfile.style.display = (!admin && authed) ? '' : 'none';
 }
 
 function updateActiveNav() {
@@ -951,6 +956,7 @@ function updateActiveNav() {
     'nb-queue':    () => path.startsWith('/requests') || path.startsWith('/downloads'),
     'nb-dashboard':() => path === '/dashboard',
     'nb-settings': () => path === '/settings',
+    'nb-profile':  () => path === '/profile',
   };
   for (const [id, test] of Object.entries(nbMap)) {
     if (test()) document.getElementById(id)?.classList.add('active');
@@ -1024,6 +1030,7 @@ route('/login', async (params, qp) => {
       if (!data.ok) { fb.textContent = 'Invalid credentials.'; btn.disabled = false; return; }
       const result = await data.json();
       _authUser = result;
+      updateNavForRole();
       if (result.force_password_change) { navigate('/change-password'); return; }
       navigate(next);
     } catch { fb.textContent = 'Login failed.'; btn.disabled = false; }
@@ -2480,20 +2487,45 @@ route('/dashboard', async () => {
   }
 });
 
+// Profile
+route('/profile', async () => {
+  if (!_authUser) { navigate('/'); return; }
+  app.innerHTML = `<div class="narrow-page" style="max-width:400px">
+    <div class="page-header"><span class="page-title">${ICON_AUTHOR} Profile</span></div>
+    <div class="card">
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        <div class="detail-fmt-kv"><span class="td-dim">Username</span><span>${escapeHtml(_authUser.username)}</span></div>
+        ${_authUser.email ? `<div class="detail-fmt-kv"><span class="td-dim">Email</span><span>${escapeHtml(_authUser.email)}</span></div>` : ''}
+        <div class="detail-fmt-kv"><span class="td-dim">Role</span><span>${escapeHtml(_authUser.role)}</span></div>
+      </div>
+    </div>
+    <div style="margin-top:1rem">
+      <button class="btn btn-secondary" id="profile-logout-btn">Sign out</button>
+    </div>
+  </div>`;
+  document.getElementById('profile-logout-btn').addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    _authUser = null;
+    updateNavForRole();
+    navigate('/login');
+  });
+});
+
 // Settings
-route('/settings', async () => {
+route('/settings', async (params, qp) => {
   if (!isAdmin()) { navigate('/'); return; }
   renderLoading(app);
   try {
     const settings = await api('/settings');
 
     const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Pushover', 'Tasks', 'Auth'];
+    const initialTab = tabs.includes(qp.tab) ? qp.tab : tabs[0];
 
     app.innerHTML = `<div class="narrow-page">
       <div class="page-header"><span class="page-title">${ICON_SETTINGS} Settings</span></div>
       <div class="tabs-wrap">
         <div class="tabs">
-          ${tabs.map((t, i) => `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t}">${t}</button>`).join('')}
+          ${tabs.map(t => `<button class="tab-btn${t === initialTab ? ' active' : ''}" data-tab="${t}">${t}</button>`).join('')}
         </div>
       </div>
       <div id="settings-content"></div>
@@ -2522,17 +2554,21 @@ route('/settings', async () => {
       }
     }
 
-    function showTab(name) {
+    function showTab(name, updateHash = true) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
       content.innerHTML = buildTabContent(name);
       wireTabEvents(name);
+      if (updateHash) {
+        const hp = name !== tabs[0] ? { tab: name } : {};
+        history.replaceState(null, '', buildHash('/settings', hp));
+      }
     }
 
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.onclick = () => showTab(btn.dataset.tab);
     });
 
-    showTab('General');
+    showTab(initialTab, false);
 
     function field(label, key, value, type = 'text', hint = '') {
       const masked = type === 'password' ? 'password' : 'text';
@@ -2731,33 +2767,7 @@ route('/settings', async () => {
       const publicUrl = (s.general || {}).public_url || '';
       const redirectUri = publicUrl ? `${publicUrl}/api/auth/oidc/callback` : '(set General → Public URL first)';
       return `
-        <div class="section-heading">Login methods</div>
-        ${checkbox('Enable form login (username + password)', 'form_enabled', a.form_enabled)}
-        ${checkbox('Enable OIDC / SSO login', 'oidc_enabled', a.oidc_enabled, 'When enabled, the login page redirects to your OIDC provider. Add ?force_local to the login URL to bypass and use form login.')}
-
-        <div id="oidc-settings-block" style="${a.oidc_enabled ? '' : 'display:none'}">
-          <div class="section-heading" style="margin-top:1.5rem">OIDC settings</div>
-          <div class="form-group">
-            <label class="form-label">Provider URL</label>
-            <div style="display:flex;gap:0.5rem;align-items:center">
-              <input type="text" class="form-input" data-key="oidc_provider_url" value="${escapeHtml(a.oidc_provider_url || '')}" style="flex:1" placeholder="e.g. https://sso.example.com/application/o/athenaeum">
-              <button class="btn btn-secondary" id="oidc-verify-btn" type="button">Verify</button>
-            </div>
-            <div class="form-hint">Issuer URL — Athenaeum auto-discovers all endpoints from here</div>
-            <div id="oidc-verify-result" style="margin-top:0.4rem;font-size:0.85rem"></div>
-          </div>
-          ${field('Client ID', 'oidc_client_id', a.oidc_client_id || '')}
-          ${field('Client Secret', 'oidc_client_secret', a.oidc_client_secret || '', 'password')}
-          ${field('Scopes', 'oidc_scopes', a.oidc_scopes || 'openid email profile')}
-          ${field('Session duration (days)', 'session_days', String(a.session_days || 30))}
-          <div class="form-group">
-            <label class="form-label">Redirect URI <span class="text-dim">(register this with your provider)</span></label>
-            <input class="form-input" type="text" value="${escapeHtml(redirectUri)}" readonly onclick="this.select()" style="font-family:var(--font-mono,monospace);font-size:0.85rem;cursor:pointer">
-          </div>
-        </div>
-        ${saveButton('auth')}
-
-        <div class="section-heading" style="margin-top:1.5rem">Users</div>
+        <div class="section-heading">Users</div>
         <div id="auth-users-list"><span class="text-dim">${ICON_SPINNER} Loading…</span></div>
         <div style="margin-top:1rem">
           <div class="section-heading">Add user</div>
@@ -2765,6 +2775,10 @@ route('/settings', async () => {
             <div class="form-group" style="margin-bottom:0;flex:1;min-width:140px">
               <label class="form-label">Username</label>
               <input class="form-input" id="new-user-username" type="text">
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:160px">
+              <label class="form-label">Email <span class="text-dim">(optional)</span></label>
+              <input class="form-input" id="new-user-email" type="email">
             </div>
             <div class="form-group" style="margin-bottom:0;flex:1;min-width:140px">
               <label class="form-label">Temp password</label>
@@ -2789,6 +2803,32 @@ route('/settings', async () => {
           <button class="btn btn-secondary btn-sm" id="logout-btn">Sign out</button>
         </div>
         ` : ''}
+
+        <div class="section-heading" style="margin-top:1.5rem">Login methods</div>
+        ${checkbox('Enable form login (username + password)', 'form_enabled', a.form_enabled)}
+        ${checkbox('Enable OIDC / SSO login', 'oidc_enabled', a.oidc_enabled, 'When enabled, the login page redirects to your OIDC provider. Add ?force_local to the login URL to bypass and use form login.')}
+
+        <div id="oidc-settings-block" style="${a.oidc_enabled ? '' : 'display:none'}">
+          <div class="section-heading" style="margin-top:1.5rem">OIDC settings</div>
+          <div class="form-group">
+            <label class="form-label">Provider URL</label>
+            <div style="display:flex;gap:0.5rem;align-items:center">
+              <input type="text" class="form-input" data-key="oidc_provider_url" value="${escapeHtml(a.oidc_provider_url || '')}" style="flex:1" placeholder="e.g. https://sso.example.com/application/o/athenaeum">
+              <button class="btn btn-secondary" id="oidc-verify-btn" type="button">Verify</button>
+            </div>
+            <div class="form-hint">Issuer URL — Athenaeum auto-discovers all endpoints from here</div>
+            <div id="oidc-verify-result" style="margin-top:0.4rem;font-size:0.85rem"></div>
+          </div>
+          ${field('Client ID', 'oidc_client_id', a.oidc_client_id || '')}
+          ${field('Client Secret', 'oidc_client_secret', a.oidc_client_secret || '', 'password')}
+          ${field('Scopes', 'oidc_scopes', a.oidc_scopes || 'openid email profile')}
+          ${field('Session duration (days)', 'session_days', String(a.session_days || 30))}
+          <div class="form-group">
+            <label class="form-label">Redirect URI <span class="text-dim">(register this with your provider)</span></label>
+            <input class="form-input" type="text" value="${escapeHtml(redirectUri)}" readonly onclick="this.select()" style="font-family:var(--font-mono,monospace);font-size:0.85rem;cursor:pointer">
+          </div>
+        </div>
+        ${saveButton('auth')}
       `;
     }
 
@@ -2916,26 +2956,37 @@ route('/settings', async () => {
             const data = await api('/users');
             const users = data.users || [];
             if (!users.length) { listEl.innerHTML = '<div class="text-dim">No users yet.</div>'; return; }
-            listEl.innerHTML = `<table class="data-table">
-              <thead><tr><th>Username</th><th>Role</th><th>Force PW change</th><th></th></tr></thead>
-              <tbody>${users.map(u => `
-                <tr>
-                  <td>${escapeHtml(u.username)}</td>
-                  <td>
-                    <select class="form-input" style="padding:0.2rem 0.4rem;font-size:0.85rem" data-user-role="${u.id}">
-                      <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
-                      <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
-                    </select>
-                  </td>
-                  <td class="td-dim">${u.force_password_change ? 'Yes' : '—'}</td>
-                  <td style="white-space:nowrap">
-                    <button class="btn btn-sm btn-secondary" data-reset-pw="${u.id}" style="margin-right:0.25rem">Reset PW</button>
-                    <button class="btn btn-sm btn-danger" data-delete-user="${u.id}">Delete</button>
-                  </td>
-                </tr>`).join('')}
-              </tbody>
-            </table>`;
+            listEl.innerHTML = `<div class="user-cards">${users.map(u => `
+              <div class="card user-card">
+                <div class="user-card-name">${escapeHtml(u.username)}${u.force_password_change ? ' <span class="badge badge-warn">PW change</span>' : ''}${u.oidc_linked ? ' <span class="badge badge-monitored">SSO</span>' : ''}</div>
+                <div class="form-group" style="margin-bottom:0.5rem">
+                  <label class="form-label">Email</label>
+                  <input type="email" class="form-input" data-user-email="${u.id}" value="${escapeHtml(u.email || '')}" placeholder="—">
+                </div>
+                <div class="form-group" style="margin-bottom:0.75rem">
+                  <label class="form-label">Role</label>
+                  <select class="form-input" data-user-role="${u.id}">
+                    <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+                    <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+                  </select>
+                </div>
+                <div style="display:flex;gap:0.5rem">
+                  <button class="btn btn-sm btn-secondary" data-reset-pw="${u.id}">Reset PW</button>
+                  <button class="btn btn-sm btn-danger" data-delete-user="${u.id}">Delete</button>
+                </div>
+              </div>`).join('')}
+            </div>`;
 
+            listEl.querySelectorAll('[data-user-email]').forEach(input => {
+              const save = async () => {
+                try {
+                  await api(`/users/${input.dataset.userEmail}`, { method: 'PATCH', body: { email: input.value.trim() } });
+                  toast('Email updated.');
+                } catch { toast('Failed to update email.', 'error'); }
+              };
+              input.addEventListener('blur', save);
+              input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+            });
             listEl.querySelectorAll('[data-user-role]').forEach(sel => {
               sel.addEventListener('change', async () => {
                 try {
@@ -2971,14 +3022,16 @@ route('/settings', async () => {
 
         document.getElementById('add-user-btn')?.addEventListener('click', async () => {
           const username = document.getElementById('new-user-username').value.trim();
+          const email = document.getElementById('new-user-email').value.trim();
           const password = document.getElementById('new-user-password').value;
           const role = document.getElementById('new-user-role').value;
           const fb = document.getElementById('add-user-feedback');
           if (!username || !password) { fb.textContent = 'Username and password required.'; return; }
           try {
-            await api('/users', { method: 'POST', body: { username, password, role } });
+            await api('/users', { method: 'POST', body: { username, email: email || undefined, password, role } });
             toast('User created.');
             document.getElementById('new-user-username').value = '';
+            document.getElementById('new-user-email').value = '';
             document.getElementById('new-user-password').value = '';
             fb.textContent = '';
             loadUsers();
@@ -3142,6 +3195,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('nb-queue').innerHTML     = ICON_REQUESTS;
   document.getElementById('nb-dashboard').innerHTML = ICON_DASHBOARD;
   document.getElementById('nb-settings').innerHTML  = ICON_SETTINGS;
+  document.getElementById('nb-profile').innerHTML   = ICON_AUTHOR;
 
   // Library popup toggle
   const nbLibBtn = document.getElementById('nb-library');

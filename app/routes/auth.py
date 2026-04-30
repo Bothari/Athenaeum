@@ -6,11 +6,12 @@ import logging
 import secrets
 import time
 import uuid
+from urllib.parse import urlencode
 from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
@@ -117,7 +118,7 @@ async def login(body: LoginBody, request: Request, response: Response):
         raise HTTPException(401, "Invalid credentials")
 
     secret = settings["auth"]["session_secret"]
-    days = settings["auth"].get("session_days", 30)
+    days = int(settings["auth"].get("session_days", 30))
     token = _make_session_token(row["id"], row["role"], secret, days)
     set_session_cookie(response, token, request, days)
     return {
@@ -155,7 +156,7 @@ async def me(request: Request):
     async with get_db() as db:
         row = await (
             await db.execute(
-                "SELECT username, role, force_password_change FROM users WHERE id = ?",
+                "SELECT username, email, role, force_password_change FROM users WHERE id = ?",
                 (user_id,),
             )
         ).fetchone()
@@ -166,6 +167,7 @@ async def me(request: Request):
     return {
         "user_id": user_id,
         "username": row["username"],
+        "email": row["email"] or "",
         "role": row["role"],
         "force_password_change": bool(row["force_password_change"]),
     }
@@ -222,11 +224,6 @@ async def oidc_start(request: Request, response: Response):
     oidc_state_payload = json.dumps({"state": state, "nonce": nonce, "cv": code_verifier})
 
     secure = request.headers.get("x-forwarded-proto", "http") == "https"
-    response.set_cookie(
-        "oidc_state", oidc_state_payload,
-        httponly=True, samesite="lax", secure=secure,
-        max_age=600, path="/",
-    )
 
     public_url = settings.get("general", {}).get("public_url", "").rstrip("/")
     redirect_uri = f"{public_url}/api/auth/oidc/callback"
@@ -241,8 +238,13 @@ async def oidc_start(request: Request, response: Response):
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return RedirectResponse(f"{auth_endpoint}?{query}", status_code=302)
+    redirect = RedirectResponse(f"{auth_endpoint}?{urlencode(params)}", status_code=302)
+    redirect.set_cookie(
+        "oidc_state", oidc_state_payload,
+        httponly=True, samesite="lax", secure=secure,
+        max_age=600, path="/",
+    )
+    return redirect
 
 
 @router.get("/auth/oidc/callback")
@@ -260,8 +262,6 @@ async def oidc_callback(request: Request, response: Response, code: str = "", st
 
     if oidc_state.get("state") != state:
         raise HTTPException(400, "State mismatch")
-
-    response.delete_cookie("oidc_state", path="/")
 
     provider_url = auth_cfg.get("oidc_provider_url", "")
     client_id = auth_cfg.get("oidc_client_id", "")
@@ -282,7 +282,9 @@ async def oidc_callback(request: Request, response: Response, code: str = "", st
             "client_secret": client_secret,
             "code_verifier": oidc_state["cv"],
         })
-        token_resp.raise_for_status()
+        if not token_resp.is_success:
+            logger.error("OIDC token exchange failed %s: %s", token_resp.status_code, token_resp.text)
+            raise HTTPException(400, f"OIDC token exchange failed: {token_resp.text}")
         token_data = token_resp.json()
 
     id_token = token_data.get("id_token")
@@ -313,7 +315,6 @@ async def oidc_callback(request: Request, response: Response, code: str = "", st
         ).fetchone()
 
         if not row and email:
-            # Link to existing user with same email
             row = await (
                 await db.execute("SELECT id, role FROM users WHERE email = ?", (email,))
             ).fetchone()
@@ -323,6 +324,19 @@ async def oidc_callback(request: Request, response: Response, code: str = "", st
                     (oidc_sub, _now(), row["id"]),
                 )
                 await db.commit()
+
+        if not row:
+            oidc_username = claims.get("preferred_username", "")
+            if oidc_username:
+                row = await (
+                    await db.execute("SELECT id, role FROM users WHERE username = ?", (oidc_username,))
+                ).fetchone()
+                if row:
+                    await db.execute(
+                        "UPDATE users SET oidc_sub=?, updated_at=? WHERE id=?",
+                        (oidc_sub, _now(), row["id"]),
+                    )
+                    await db.commit()
 
         if not row:
             # Auto-provision new user
@@ -342,10 +356,16 @@ async def oidc_callback(request: Request, response: Response, code: str = "", st
             role = row["role"]
 
     secret = settings["auth"]["session_secret"]
-    days = auth_cfg.get("session_days", 30)
+    days = int(auth_cfg.get("session_days", 30))
     token = _make_session_token(user_id, role, secret, days)
-    set_session_cookie(response, token, request, days)
-    return RedirectResponse("/", status_code=302)
+    # Return a 200 HTML page that redirects client-side. Cookies set on a 200
+    # response are reliably persisted by browsers; cookies on a 302 in a
+    # cross-site redirect chain (Authentik → Athenaeum → /) can be dropped.
+    html = "<!DOCTYPE html><html><head><meta http-equiv='refresh' content='0;url=/'></head><body></body></html>"
+    resp = HTMLResponse(html)
+    resp.delete_cookie("oidc_state", path="/")
+    set_session_cookie(resp, token, request, days)
+    return resp
 
 
 # ── User management (admin only) ───────────────────────────────────────────────
@@ -354,10 +374,12 @@ class CreateUserBody(BaseModel):
     username: str
     password: str
     role: str = "user"
+    email: str | None = None
 
 
 class PatchUserBody(BaseModel):
-    role: str
+    role: str | None = None
+    email: str | None = None
 
 
 class ResetPasswordBody(BaseModel):
@@ -369,7 +391,7 @@ async def list_users(auth: dict = Depends(require_admin)):
     async with get_db() as db:
         rows = await (
             await db.execute(
-                "SELECT id, username, email, role, force_password_change, created_at FROM users ORDER BY created_at"
+                "SELECT id, username, email, role, force_password_change, created_at, (oidc_sub IS NOT NULL AND oidc_sub != '') AS oidc_linked FROM users ORDER BY created_at"
             )
         ).fetchall()
     return {"users": [dict(r) for r in rows]}
@@ -384,9 +406,9 @@ async def create_user(body: CreateUserBody, auth: dict = Depends(require_admin))
     async with get_db() as db:
         try:
             await db.execute(
-                """INSERT INTO users (id, username, role, password_hash, force_password_change, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 1, ?, ?)""",
-                (new_id, body.username, body.role, hash_password(body.password), now, now),
+                """INSERT INTO users (id, username, email, role, password_hash, force_password_change, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                (new_id, body.username, body.email or "", body.role, hash_password(body.password), now, now),
             )
             await db.commit()
         except Exception:
@@ -396,16 +418,22 @@ async def create_user(body: CreateUserBody, auth: dict = Depends(require_admin))
 
 @router.patch("/users/{user_id}")
 async def patch_user(user_id: str, body: PatchUserBody, auth: dict = Depends(require_admin)):
-    if body.role not in ("admin", "user"):
+    if body.role is not None and body.role not in ("admin", "user"):
         raise HTTPException(400, "role must be admin or user")
     async with get_db() as db:
         row = await (await db.execute("SELECT id FROM users WHERE id = ?", (user_id,))).fetchone()
         if not row:
             raise HTTPException(404, "User not found")
-        await db.execute(
-            "UPDATE users SET role=?, updated_at=? WHERE id=?",
-            (body.role, _now(), user_id),
-        )
+        if body.role is not None:
+            await db.execute(
+                "UPDATE users SET role=?, updated_at=? WHERE id=?",
+                (body.role, _now(), user_id),
+            )
+        if body.email is not None:
+            await db.execute(
+                "UPDATE users SET email=?, updated_at=? WHERE id=?",
+                (body.email, _now(), user_id),
+            )
         await db.commit()
     return {"ok": True}
 
