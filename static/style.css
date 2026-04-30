@@ -175,6 +175,19 @@ input::placeholder { color: var(--text-dim); }
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 1rem;
 }
+.user-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+.user-card-name {
+  font-weight: 600;
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+.badge-warn { background: #2a2200; color: #e0b820; }
+html.light .badge-warn { background: #fffbe0; color: #7a5e00; }
 .book-card {
   background: var(--surface);
   border: 1px solid var(--border);
