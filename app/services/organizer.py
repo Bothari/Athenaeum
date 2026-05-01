@@ -694,6 +694,15 @@ async def auto_organize(request_id: str):
                 )
             await db.commit()
 
+        if matched_abs_id:
+            import asyncio as _asyncio
+            from .notifications import notify as _notify
+            _asyncio.create_task(_notify("in_library", {
+                "title": title,
+                "author": author,
+                "type": book_type,
+            }))
+
     except Exception as e:
         logger.error("auto_organize crashed for request %s: %s", request_id, e, exc_info=True)
         try:

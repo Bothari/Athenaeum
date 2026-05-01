@@ -31,9 +31,9 @@ DEFAULT_SETTINGS = {
         "api_key": "",
         "preferred_language": "English",
     },
-    "pushover": {
-        "app_token": "",
-        "user_key": "",
+    "notifications": {
+        "urls": "",
+        "batch_window": 60,
     },
     "general": {
         "group_series_in_search": True,

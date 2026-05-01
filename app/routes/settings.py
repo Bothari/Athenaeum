@@ -13,12 +13,11 @@ router = APIRouter(prefix="/api")
 
 KNOWN_SECTIONS = frozenset([
     "prowlarr", "qbittorrent", "sabnzbd", "audiobookshelf",
-    "hardcover", "pushover", "general", "schedule", "auth",
+    "hardcover", "notifications", "general", "schedule", "auth",
 ])
 
 SENSITIVE_KEYS = frozenset([
-    "api_key", "password", "app_token", "user_key",
-    "oidc_client_secret", "password_hash", "session_secret",
+    "api_key", "password", "oidc_client_secret", "password_hash", "session_secret",
 ])
 
 PATH_KEYS = frozenset(["output_dir", "download_dir"])
@@ -188,6 +187,22 @@ async def test_sabnzbd(body: dict = None):
             resp.raise_for_status()
             data = resp.json()
             return {"version": data.get("version", ""), "status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/settings/test/notifications")
+async def test_notifications(body: dict = None):
+    from ..services.notifications import send_test
+    urls = (body or {}).get("urls", "")
+    if not urls:
+        settings = await get_settings()
+        urls = settings.get("notifications", {}).get("urls", "")
+    if not urls:
+        raise HTTPException(status_code=400, detail="No notification URLs configured")
+    try:
+        await send_test(urls)
+        return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 
 from ..auth import require_admin, require_auth
 from ..database import get_db
+from ..services.notifications import notify
 from ..settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -136,6 +138,12 @@ async def create_request(body: CreateRequestBody, auth: dict = Depends(require_a
             return {"skipped": True}
         await db.commit()
         detail = await _request_detail(db, req["id"])
+    if detail and detail.get("status") == "pending":
+        asyncio.create_task(notify("pending", {
+            "title": detail["book_title"],
+            "author": detail["author"] or "",
+            "type": detail["type"],
+        }))
     return detail
 
 
