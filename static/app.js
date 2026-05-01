@@ -2518,7 +2518,7 @@ route('/settings', async (params, qp) => {
   try {
     const settings = await api('/settings');
 
-    const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Pushover', 'Tasks', 'Auth'];
+    const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Notifications', 'Tasks', 'Auth'];
     const initialTab = tabs.includes(qp.tab) ? qp.tab : tabs[0];
 
     app.innerHTML = `<div class="narrow-page">
@@ -2547,7 +2547,7 @@ route('/settings', async (params, qp) => {
         case 'qBittorrent': return buildQbtTab(settings);
         case 'SABnzbd': return buildSabnzbdTab(settings);
         case 'Hardcover': return buildHardcoverTab(settings);
-        case 'Pushover': return buildPushoverTab(settings);
+        case 'Notifications': return buildNotificationsTab(settings);
         case 'Tasks': return buildTasksTab(settings);
         case 'Auth': return buildAuthTab(settings);
         default: return '<div class="text-dim">Coming soon.</div>';
@@ -2708,12 +2708,31 @@ route('/settings', async (params, qp) => {
       `;
     }
 
-    function buildPushoverTab(s) {
-      const p = s.pushover || {};
+    function buildNotificationsTab(s) {
+      const n = s.notifications || {};
       return `
-        ${field('App Token', 'app_token', p.app_token, 'password')}
-        ${field('User Key', 'user_key', p.user_key, 'password')}
-        ${saveButton('pushover')}
+        <div class="form-group">
+          <label class="form-label">Notification URLs</label>
+          <textarea class="form-input" data-key="urls" rows="5"
+            placeholder="One Apprise URL per line&#10;e.g. pover://token/userkey&#10;e.g. mailto://user:pass@smtp.example.com"
+            style="font-family:var(--font-mono,monospace);font-size:0.82rem;resize:vertical"
+          >${escapeHtml(n.urls || '')}</textarea>
+          <div class="text-dim" style="font-size:0.78rem;margin-top:0.3rem">
+            Supports 60+ services via <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener" style="color:var(--accent)">Apprise URL syntax</a>.
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Batch window (seconds)</label>
+          <input type="number" class="form-input" data-key="batch_window"
+            value="${escapeHtml(String(n.batch_window ?? 60))}"
+            min="10" max="3600" style="width:120px">
+          <div class="text-dim" style="font-size:0.78rem;margin-top:0.3rem">
+            Notifications within this window are grouped into a single message.
+          </div>
+        </div>
+        ${saveButton('notifications')}
+        <button class="btn btn-ghost btn-sm" id="test-notifications-btn" style="margin-top:0.5rem">Send test notification</button>
+        <span id="test-notifications-result" class="text-dim" style="font-size:0.82rem;margin-left:0.5rem"></span>
       `;
     }
 
@@ -2945,6 +2964,27 @@ route('/settings', async (params, qp) => {
           }
         };
       });
+
+      // Notifications test button
+      const testNotifBtn = document.getElementById('test-notifications-btn');
+      if (testNotifBtn) {
+        testNotifBtn.onclick = async () => {
+          const resultEl = document.getElementById('test-notifications-result');
+          testNotifBtn.disabled = true;
+          testNotifBtn.textContent = 'Sending…';
+          const urlsEl = content.querySelector('[data-key="urls"]');
+          const urls = urlsEl ? urlsEl.value : '';
+          try {
+            await api('/settings/test/notifications', { method: 'POST', body: { urls } });
+            if (resultEl) resultEl.textContent = 'Test sent successfully';
+          } catch (err) {
+            if (resultEl) resultEl.textContent = err.message;
+          } finally {
+            testNotifBtn.disabled = false;
+            testNotifBtn.textContent = 'Send test notification';
+          }
+        };
+      }
 
       // Auth tab
       if (tabName === 'Auth') {

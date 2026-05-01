@@ -156,37 +156,8 @@ async def _auto_search_task():
                 )
                 await db.commit()
 
-            # Pushover notification (fire and forget)
-            asyncio.create_task(_notify_snatched(
-                row["title"], row["author"] or "", row["type"],
-                best.get("indexer") or "",
-            ))
-
         except Exception as e:
             logger.warning("auto_search: failed for request %s: %s", row["id"], e)
-
-
-async def _notify_snatched(title: str, author: str, req_type: str, indexer: str):
-    settings = await get_settings()
-    pushover = settings.get("pushover", {})
-    token = pushover.get("app_token") or ""
-    user = pushover.get("user_key") or ""
-    if not token or not user:
-        return
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(
-                "https://api.pushover.net/1/messages.json",
-                data={
-                    "token": token,
-                    "user": user,
-                    "message": f"Snatched {req_type}: {title} by {author} from {indexer}",
-                    "title": "Athenaeum",
-                },
-            )
-    except Exception as e:
-        logger.warning("Pushover notification failed: %s", e)
 
 
 async def _download_monitor_tick():
