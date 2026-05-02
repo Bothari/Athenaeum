@@ -1366,11 +1366,11 @@ async def _sync_item(item: dict) -> str:
                     (str(uuid.uuid4()), book_id, fmt_type, narrator,
                      abs_id, item.get("abs_url"), now, now),
                 )
-
-            # Clean up terminal requests now that formats exist in DB
-            await db.execute(
-                "DELETE FROM requests WHERE book_id = ? AND status IN ('in_library', 'completed')", (book_id,)
-            )
+                # Drop any non-pending requests for this type — format is now in library
+                await db.execute(
+                    "DELETE FROM requests WHERE book_id=? AND type=? AND status NOT IN ('pending','failed','rejected')",
+                    (book_id, fmt_type),
+                )
             await db.commit()
 
         else:
@@ -1449,12 +1449,13 @@ async def _sync_item(item: dict) -> str:
                 )
                 if r.rowcount:
                     changed = True
+                # Drop any non-pending requests for this type — format is now in library
+                await db.execute(
+                    "DELETE FROM requests WHERE book_id=? AND type=? AND status NOT IN ('pending','failed','rejected')",
+                    (book_id, fmt_type),
+                )
 
             await db.execute("UPDATE books SET abs_checked_at = ? WHERE id = ?", (now, book_id))
-            # Clean up terminal requests now that formats exist in DB
-            await db.execute(
-                "DELETE FROM requests WHERE book_id = ? AND status IN ('in_library', 'completed')", (book_id,)
-            )
             await db.commit()
 
     if link_row is None:
