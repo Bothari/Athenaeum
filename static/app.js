@@ -1987,18 +1987,18 @@ route('/requests', async (params, qp) => {
     return;
   }
 
-  const validTabs = ['requests', 'downloads', 'pending'];
+  const validTabs = ['requests', 'downloads', 'pending', 'search'];
   const tab = validTabs.includes(qp.tab) ? qp.tab : 'requests';
 
   app.innerHTML = `<div class="narrow-page">
     <div class="page-header">
       <span class="page-title">${ICON_REQUESTS} Queue</span>
-      <button class="btn btn-primary btn-sm" id="search-all-btn">Search all</button>
     </div>
     <div class="tabs">
       <button class="tab-btn${tab === 'requests' ? ' active' : ''}" data-tab="requests">Requests</button>
       <button class="tab-btn${tab === 'downloads' ? ' active' : ''}" data-tab="downloads">Downloads</button>
       <button class="tab-btn${tab === 'pending' ? ' active' : ''}" data-tab="pending">Pending</button>
+      <button class="tab-btn${tab === 'search' ? ' active' : ''}" data-tab="search">Search</button>
     </div>
     <div id="queue-content"></div>
   </div>`;
@@ -2015,11 +2015,8 @@ route('/requests', async (params, qp) => {
 
   const content = document.getElementById('queue-content');
   if (tab === 'downloads') { renderDownloadsTab(content); return; }
-
-  if (tab === 'pending') {
-    renderPendingTab(content);
-    return;
-  }
+  if (tab === 'pending') { renderPendingTab(content); return; }
+  if (tab === 'search') { renderSearchAllTab(content); return; }
 
   renderRequestsTab(content, qp);
 });
@@ -2079,80 +2076,12 @@ function renderRequestsTab(content, qp) {
       tr.querySelector('[data-delete]').onclick = () => confirmAction(
         tr.querySelector('[data-delete]'), 'Confirm?', async () => {
           await api(`/requests/${r.id}`, { method: 'DELETE' });
-          tr.nextElementSibling?.classList.contains('search-expansion-row') && tr.nextElementSibling.remove();
           tr.remove();
           toast('Request deleted.');
         }
       )();
     },
     emptyMessage: statusFilter ? `No ${statusFilter} requests.` : 'No requests yet.',
-  });
-
-  // Allow expansion rows to overflow the scroll container on mobile
-  content.querySelector('.table-wrap')?.style.setProperty('overflow-x', 'visible');
-
-  // Search all — fires individual searches per row, results expand inline (admin only)
-  document.getElementById('search-all-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('search-all-btn');
-    document.querySelectorAll('.search-expansion-row').forEach(r => r.remove());
-
-    const requestedRows = [...document.querySelectorAll('tr[data-req-status="requested"]')];
-    if (!requestedRows.length) { toast('No requested items.'); return; }
-
-    btn.disabled = true; btn.textContent = 'Searching…';
-
-    const today = new Date().toISOString().slice(0, 10);
-
-    function makeExpansion(tr) {
-      const expRow = document.createElement('tr');
-      expRow.className = 'search-expansion-row';
-      const expCell = document.createElement('td');
-      expCell.colSpan = 999;
-      expCell.className = 'search-expansion-cell';
-      const expDiv = document.createElement('div');
-      expDiv.className = 'search-expansion';
-      expRow.appendChild(expCell);
-      expCell.appendChild(expDiv);
-      tr.after(expRow);
-      return expDiv;
-    }
-
-    // Build expansion rows immediately — unreleased skipped, others show spinner
-    const toSearch = [];
-    requestedRows.forEach(tr => {
-      const expDiv = makeExpansion(tr);
-      const rd = tr.dataset.releaseDate;
-      if (!rd) {
-        expDiv.innerHTML = `<span class="text-dim">Skipped — no release date</span>`;
-      } else if (rd > today) {
-        expDiv.innerHTML = `<span class="text-dim">Skipped — unreleased (releases ${rd})</span>`;
-      } else {
-        expDiv.innerHTML = `<span class="text-dim">${ICON_SPINNER} Searching…</span>`;
-        toSearch.push({ tr, expDiv, reqId: tr.dataset.requestId });
-      }
-    });
-
-    // Search concurrently, max 3 at a time
-    const sem = 3;
-    let idx = 0;
-    async function worker() {
-      while (idx < toSearch.length) {
-        const { expDiv, reqId } = toSearch[idx++];
-        try {
-          const data = await api(`/requests/${reqId}/search-indexers`, { method: 'POST' });
-          if (data.error) {
-            expDiv.innerHTML = `<span class="text-dim">${escapeHtml(data.error)}</span>`;
-          } else {
-            renderProwlarrResults(expDiv, data.results || [], reqId, null);
-          }
-        } catch {
-          expDiv.innerHTML = `<span class="text-dim">Search failed.</span>`;
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(sem, toSearch.length) }, worker));
-
-    btn.disabled = false; btn.textContent = 'Search all';
   });
 
   // Wire up filter selects
@@ -2235,6 +2164,81 @@ function renderDownloadsTab(container) {
   loadDownloads();
   pollTimer = setInterval(loadDownloads, 5000);
   window.addEventListener('hashchange', () => clearInterval(pollTimer), { once: true });
+}
+
+function renderSearchAllTab(container) {
+  const today = new Date().toISOString().slice(0, 10);
+  container.innerHTML = `<div class="state-loading">${ICON_SPINNER}</div>`;
+
+  api('/requests?status=requested&limit=200').then(data => {
+    const eligible = (data.items || []).filter(r => r.release_date && r.release_date <= today);
+
+    if (!eligible.length) {
+      container.innerHTML = `<div class="state-empty">No searchable requests — all items are unreleased or have no release date.</div>`;
+      return;
+    }
+
+    // Group by book so dual-format requests appear as one card
+    const groups = new Map();
+    eligible.forEach(r => {
+      if (!groups.has(r.book_id)) {
+        groups.set(r.book_id, { book_id: r.book_id, title: r.book_title || r.title || '—', author: r.author || '', requests: [] });
+      }
+      groups.get(r.book_id).requests.push(r);
+    });
+
+    container.innerHTML = '';
+    const searchQueue = []; // flat list of {r, resultsEl}
+
+    groups.forEach(group => {
+      const card = document.createElement('div');
+      card.className = 'search-all-card';
+
+      const formatsHtml = group.requests.map(r =>
+        `<div class="search-all-format">
+          <div class="search-all-format-label">
+            <span class="badge badge-${r.status}" title="${r.type}">${typeIcon(r.type)}</span>
+          </div>
+          <div class="search-all-card-results" data-req-id="${r.id}">${ICON_SPINNER}</div>
+        </div>`
+      ).join('');
+
+      card.innerHTML = `
+        <div class="search-all-card-header">
+          <a href="#/library/book?book_id=${escapeHtml(group.book_id)}" class="search-all-card-title">${escapeHtml(group.title)}</a>
+          <span class="text-dim" style="font-size:0.85rem;margin-left:0.4rem">${escapeHtml(group.author)}</span>
+        </div>
+        ${formatsHtml}
+      `;
+      container.appendChild(card);
+
+      group.requests.forEach(r => {
+        searchQueue.push({ r, resultsEl: card.querySelector(`.search-all-card-results[data-req-id="${r.id}"]`) });
+      });
+    });
+
+    // Search concurrently, max 3 at a time
+    let idx = 0;
+    async function worker() {
+      while (idx < searchQueue.length) {
+        const { r, resultsEl } = searchQueue[idx++];
+        if (!resultsEl) continue;
+        try {
+          const data = await api(`/requests/${r.id}/search-indexers`, { method: 'POST' });
+          if (data.error) {
+            resultsEl.innerHTML = `<div class="text-dim" style="padding:0.5rem 0">${escapeHtml(data.error)}</div>`;
+          } else {
+            renderProwlarrResults(resultsEl, data.results || [], r.id, null);
+          }
+        } catch {
+          resultsEl.innerHTML = `<div class="text-dim" style="padding:0.5rem 0">Search failed.</div>`;
+        }
+      }
+    }
+    Promise.all(Array.from({ length: Math.min(3, searchQueue.length) }, worker));
+  }).catch(() => {
+    container.innerHTML = `<div class="state-empty">Failed to load requests.</div>`;
+  });
 }
 
 function renderPendingTab(container) {

@@ -1037,6 +1037,22 @@ body.square-covers .detail-cover-placeholder.abs-cover {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
+.search-all-card {
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 0;
+}
+.search-all-card:first-child { border-top: 1px solid var(--border); }
+.search-all-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.search-all-card-title { font-weight: 500; }
+.search-all-format { display: flex; gap: 0.75rem; margin-top: 0.5rem; }
+.search-all-format-label { padding-top: 0.4rem; flex-shrink: 0; }
+.search-all-card-results { flex: 1; min-width: 0; }
 .prowlarr-result-row {
   padding: 0.5rem 0;
   border-top: 1px solid var(--border);
