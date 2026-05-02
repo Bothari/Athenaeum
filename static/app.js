@@ -648,7 +648,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
       const typeName = type === 'audiobook' ? 'Audiobook' : 'Ebook';
       const canCancel = s.mode !== 'requested' || isAdmin() || !_authUser || !s.reqOwnerId || s.reqOwnerId === _authUser.user_id;
       const tips = { 'in-library': `${typeName} — in library`, 'requested': canCancel ? `${typeName} — click to cancel` : `${typeName} — requested by another user`, 'unmonitored': `${typeName} — click to request` };
-      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? (s.reqStatus === 'pending' ? 'badge-pending' : 'badge-requested') : 'badge-unmonitored';
+      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? (s.reqStatus === 'pending' ? 'badge-pending' : s.reqStatus === 'completed' ? 'badge-completed' : 'badge-requested') : 'badge-unmonitored';
       const isDisabled = s.mode === 'in-library' || (s.mode === 'requested' && !canCancel);
       return `<button class="badge ${badgeClass} fmt-pill" data-type="${type}" title="${tips[s.mode]}"${isDisabled ? ' disabled' : ''}>${typeIcon(type)}</button>`;
     }
