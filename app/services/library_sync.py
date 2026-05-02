@@ -147,9 +147,30 @@ async def _get_or_create_author(db, name: str, abs_author_id: str = "") -> str:
     return author_id
 
 
-async def _get_or_create_series(db, name: str, abs_series_id: str = "") -> str:
-    """Return series_id, creating series and series_links rows if needed."""
+async def _get_or_create_series(db, name: str, abs_series_id: str = "", hc_series_id: str = "") -> str:
+    """Return series_id, creating series and series_links rows if needed.
+
+    Lookup order: HC series ID → exact name → create new.
+    """
     name = " ".join(name.split())  # collapse internal whitespace
+
+    # 1. Match by HC series ID — most authoritative, avoids name-variant duplicates
+    if hc_series_id:
+        row = await (
+            await db.execute(
+                "SELECT series_id FROM series_links WHERE hardcover_series_id = ?", (hc_series_id,)
+            )
+        ).fetchone()
+        if row:
+            series_id = row[0]
+            if abs_series_id:
+                await db.execute(
+                    "UPDATE series_links SET abs_series_id = ? WHERE series_id = ? AND (abs_series_id IS NULL OR abs_series_id = '')",
+                    (abs_series_id, series_id),
+                )
+            return series_id
+
+    # 2. Match by name
     row = await (
         await db.execute("SELECT id FROM series WHERE lower(name) = lower(?)", (name,))
     ).fetchone()
