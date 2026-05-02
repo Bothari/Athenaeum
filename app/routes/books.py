@@ -636,7 +636,7 @@ async def _get_book_requests(db, book_id: str) -> list:
             """SELECT r.id, r.type, r.status, r.narrator, r.requested_by_user_id, u.username as requested_by_username
                FROM requests r LEFT JOIN users u ON u.id = r.requested_by_user_id
                WHERE r.book_id = ?
-                 AND r.status NOT IN ('completed', 'failed', 'rejected')
+                 AND r.status NOT IN ('failed', 'rejected')
                  AND NOT EXISTS (
                      SELECT 1 FROM book_formats bf
                      WHERE bf.book_id = r.book_id AND bf.type = r.type
@@ -713,7 +713,7 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
 
         req_rows = await (
             await db.execute(
-                "SELECT id, type, status, narrator, requested_by_user_id FROM requests WHERE book_id = ? AND status NOT IN ('completed', 'failed') ORDER BY created_at",
+                "SELECT id, type, status, narrator, requested_by_user_id FROM requests WHERE book_id = ? AND status NOT IN ('failed', 'rejected') ORDER BY created_at",
                 (book_id,),
             )
         ).fetchall()

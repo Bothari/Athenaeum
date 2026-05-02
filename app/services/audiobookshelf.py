@@ -116,6 +116,50 @@ class AudiobookshelfService:
                 ],
             }
 
+    async def find_item_by_filename(
+        self, filenames: set, book_type: str, title: str = "", abs_id: str = ""
+    ) -> str | None:
+        """Find an ABS item containing a library file matching any of the given filenames.
+
+        If abs_id is given, checks that specific item directly (fast path).
+        Otherwise searches by title and checks libraryFiles on results.
+        """
+        async with httpx.AsyncClient(headers=self._headers(), timeout=15.0) as client:
+            if abs_id:
+                resp = await client.get(f"{self.base_url}/api/items/{abs_id}")
+                if resp.status_code == 200:
+                    item = resp.json()
+                    for lf in item.get("libraryFiles", []):
+                        if lf.get("metadata", {}).get("filename") in filenames:
+                            normalized = self._normalize_item(item)
+                            if any(f["type"] == book_type for f in normalized["formats"]):
+                                return normalized["abs_id"]
+                return None
+
+            query = title or next(iter(filenames), "").rsplit(".", 1)[0]
+            for lib_id in self.library_ids:
+                resp = await client.get(
+                    f"{self.base_url}/api/libraries/{lib_id}/search",
+                    params={"q": query, "limit": 10},
+                )
+                if resp.status_code != 200:
+                    continue
+                for entry in resp.json().get("book", []):
+                    item = entry.get("libraryItem", entry)
+                    item_id = item.get("id", "")
+                    library_files = item.get("libraryFiles", [])
+                    if not library_files and item_id:
+                        full = await client.get(f"{self.base_url}/api/items/{item_id}")
+                        if full.status_code == 200:
+                            item = full.json()
+                            library_files = item.get("libraryFiles", [])
+                    for lf in library_files:
+                        if lf.get("metadata", {}).get("filename") in filenames:
+                            normalized = self._normalize_item(item)
+                            if any(f["type"] == book_type for f in normalized["formats"]):
+                                return normalized["abs_id"]
+        return None
+
     async def check_library(self, title: str, author: str) -> list[dict]:
         results = []
         async with httpx.AsyncClient(headers=self._headers(), timeout=15.0) as client:

@@ -259,22 +259,8 @@ async def startup():
                 "SELECT id FROM requests WHERE status IN ('downloaded', 'organizing', 'merging')"
             )
         ).fetchall()
-        # Also re-queue completed requests where the ABS poll timed out (no book_formats yet)
-        poll_failed = await (
-            await db.execute(
-                """SELECT id FROM requests
-                   WHERE status = 'completed'
-                   AND NOT EXISTS (
-                       SELECT 1 FROM book_formats bf
-                       WHERE bf.book_id = requests.book_id AND bf.type = requests.type
-                   )"""
-            )
-        ).fetchall()
     for row in stale:
         logger.info("Re-queuing stale organize for request %s", row["id"])
-        asyncio.create_task(auto_organize(row["id"]))
-    for row in poll_failed:
-        logger.info("Re-queuing poll-timed-out organize for request %s", row["id"])
         asyncio.create_task(auto_organize(row["id"]))
 
     await ensure_session_secret()

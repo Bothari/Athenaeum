@@ -52,7 +52,7 @@ def _natural_sort_key(path: Path) -> tuple:
 
 def _collect_audio_files(directory: Path) -> list[Path]:
     files = [
-        f for f in directory.iterdir()
+        f for f in directory.rglob('*')
         if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
     ]
     return sorted(files, key=_natural_sort_key)
@@ -523,11 +523,15 @@ async def auto_organize(request_id: str):
         dest_dir = _build_dest_dir(settings, book_type, author, title)
         dest_dir.mkdir(parents=True, exist_ok=True)
 
+        organized_filenames: set[str] = set()
+        safe_title = _sanitise_path_component(title)
+        safe_author = _sanitise_path_component(author)
+
         if src.is_dir():
             COVER_NAMES = {"cover.jpg", "cover.jpeg", "cover.png"}
             type_exts = AUDIO_EXTENSIONS if book_type == "audiobook" else EBOOK_EXTENSIONS
             media_files = sorted(
-                [f for f in src.iterdir() if f.is_file() and f.suffix.lower() in type_exts],
+                [f for f in src.rglob('*') if f.is_file() and f.suffix.lower() in type_exts],
                 key=_natural_sort_key,
             )
             # For ebooks, keep only the best format when multiple are present
@@ -539,17 +543,17 @@ async def auto_organize(request_id: str):
                         media_files = preferred[:1]
                         break
             cover_file = next(
-                (f for f in src.iterdir() if f.is_file() and f.name.lower() in COVER_NAMES),
+                (f for f in src.rglob('*') if f.is_file() and f.name.lower() in COVER_NAMES),
                 None,
             )
-            safe_title = _sanitise_path_component(title)
-            safe_author = _sanitise_path_component(author)
             for i, item in enumerate(media_files):
                 if len(media_files) == 1:
                     stem = f"{safe_title} - {safe_author}"
                 else:
                     stem = f"{safe_title} - {safe_author} - {i + 1:02d}"
-                dst = dest_dir / f"{stem}{item.suffix.lower()}"
+                fname = f"{stem}{item.suffix.lower()}"
+                organized_filenames.add(fname)
+                dst = dest_dir / fname
                 if dst.exists() or dst == item:
                     continue
                 if download_client == "qbittorrent":
@@ -565,7 +569,9 @@ async def auto_organize(request_id: str):
                         await asyncio.to_thread(shutil.move, str(cover_file), str(dst))
         elif src.is_file():
             ext = src.suffix
-            dest_file = dest_dir / f"{_sanitise_path_component(title)} - {_sanitise_path_component(author)}{ext}"
+            fname = f"{safe_title} - {safe_author}{ext}"
+            organized_filenames.add(fname)
+            dest_file = dest_dir / fname
             if dest_file.exists() or dest_file == src:
                 pass  # already in place
             elif download_client == "qbittorrent":
@@ -621,21 +627,28 @@ async def auto_organize(request_id: str):
 
         await asyncio.sleep(5)
 
-        # Poll for match — 60 attempts × 5s = 5 minutes
+        # Poll for match by filename — 12 attempts × 5s = 60s.
+        # Check the already-linked abs_id first (file may have been added to an existing item),
+        # then fall back to a library search.
         matched_abs_id = None
-        for attempt in range(60):
-            try:
-                matches = await abs_svc.check_library(title, author)
-                for item in matches:
-                    for fmt in item.get("formats", []):
-                        if fmt.get("type") == book_type:
-                            matched_abs_id = item["abs_id"]
-                            break
-                    if matched_abs_id:
-                        break
-            except Exception as e:
-                logger.warning("ABS check_library attempt %d failed: %s", attempt + 1, e)
+        async with get_db() as db:
+            link_row = await (
+                await db.execute("SELECT abs_id FROM book_links WHERE book_id = ?", (book_id,))
+            ).fetchone()
+        existing_abs_id = link_row["abs_id"] if link_row else None
 
+        for attempt in range(12):
+            try:
+                if existing_abs_id:
+                    matched_abs_id = await abs_svc.find_item_by_filename(
+                        organized_filenames, book_type, abs_id=existing_abs_id
+                    )
+                if not matched_abs_id:
+                    matched_abs_id = await abs_svc.find_item_by_filename(
+                        organized_filenames, book_type, title=title
+                    )
+            except Exception as e:
+                logger.warning("ABS find_item_by_filename attempt %d failed: %s", attempt + 1, e)
             if matched_abs_id:
                 break
             await asyncio.sleep(5)
@@ -683,13 +696,12 @@ async def auto_organize(request_id: str):
                 await db.execute("DELETE FROM merge_jobs WHERE request_id=?", (request_id,))
                 logger.info("Request %s organised and in library (abs_id=%s)", request_id, matched_abs_id)
             else:
-                # Soft failure — file is on disk, next library sync will find it
                 await db.execute(
-                    "UPDATE requests SET status='completed', updated_at=? WHERE id=?",
+                    "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
                     (now, request_id),
                 )
                 logger.warning(
-                    "Request %s: ABS poll exhausted, leaving as completed for next sync",
+                    "Request %s: ABS poll exhausted without finding item — marked failed",
                     request_id,
                 )
             await db.commit()
