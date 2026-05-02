@@ -260,7 +260,25 @@ async def list_pending(auth: dict = Depends(require_admin)):
                    ORDER BY r.created_at ASC"""
             )
         ).fetchall()
-    return {"items": [dict(r) for r in rows]}
+
+    groups: dict = {}
+    for row in rows:
+        bid = row["book_id"]
+        if bid not in groups:
+            groups[bid] = {
+                "book_id": bid,
+                "book_title": row["book_title"],
+                "author": row["author"],
+                "requests": [],
+            }
+        groups[bid]["requests"].append({
+            "id": row["id"],
+            "type": row["type"],
+            "narrator": row["narrator"],
+            "requested_by": row["requested_by"],
+            "created_at": row["created_at"],
+        })
+    return {"groups": list(groups.values())}
 
 
 @router.get("/requests/{request_id}")
@@ -608,6 +626,71 @@ async def organize_request(request_id: str, body: OrganizeBody = OrganizeBody())
     import asyncio as _asyncio
     from ..services.organizer import auto_organize
     _asyncio.create_task(auto_organize(request_id))
+    return {"ok": True}
+
+
+class ApproveBookBody(BaseModel):
+    types: list[str]
+
+
+@router.post("/requests/book/{book_id}/approve")
+async def approve_book_requests(book_id: str, body: ApproveBookBody, auth: dict = Depends(require_admin)):
+    if not body.types:
+        raise HTTPException(400, "No types provided")
+    for t in body.types:
+        if t not in ("audiobook", "ebook"):
+            raise HTTPException(400, f"Invalid type: {t}")
+    now = _now()
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                "SELECT id, type FROM requests WHERE book_id = ? AND status = 'pending'",
+                (book_id,),
+            )
+        ).fetchall()
+        pending = {r["type"]: r["id"] for r in rows}
+
+        for t in body.types:
+            if t in pending:
+                await db.execute(
+                    "UPDATE requests SET status='requested', updated_at=? WHERE id=?",
+                    (now, pending[t]),
+                )
+            else:
+                existing = await (
+                    await db.execute(
+                        """SELECT id FROM requests WHERE book_id=? AND type=?
+                           AND status NOT IN ('failed','completed','rejected')""",
+                        (book_id, t),
+                    )
+                ).fetchone()
+                if not existing:
+                    await db.execute(
+                        """INSERT INTO requests
+                               (id, book_id, type, status, narrator, requested_by_user_id, created_at, updated_at)
+                           VALUES (?, ?, ?, 'requested', '', ?, ?, ?)""",
+                        (str(uuid.uuid4()), book_id, t, auth["user_id"], now, now),
+                    )
+
+        for t, req_id in pending.items():
+            if t not in body.types:
+                await db.execute(
+                    "UPDATE requests SET status='rejected', updated_at=? WHERE id=?",
+                    (now, req_id),
+                )
+        await db.commit()
+    return {"ok": True}
+
+
+@router.post("/requests/book/{book_id}/reject")
+async def reject_book_requests(book_id: str, auth: dict = Depends(require_admin)):
+    now = _now()
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE requests SET status='rejected', updated_at=? WHERE book_id=? AND status='pending'",
+            (now, book_id),
+        )
+        await db.commit()
     return {"ok": True}
 
 

@@ -188,6 +188,23 @@ input::placeholder { color: var(--text-dim); }
 }
 .badge-warn { background: #2a2200; color: #e0b820; }
 html.light .badge-warn { background: #fffbe0; color: #7a5e00; }
+
+/* ── Pending approval cards ── */
+.pending-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+.pending-card:first-child { border-top: 1px solid var(--border); }
+.pending-card--done { opacity: 0.55; }
+.pending-card-body { flex: 1; min-width: 0; }
+.pending-card-title { font-size: 0.95rem; margin-bottom: 0.35rem; }
+.pending-card-title a { font-weight: 500; }
+.pending-card-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.pending-card-pills { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+.pending-card-actions { display: flex; align-items: center; flex-shrink: 0; }
 .book-card {
   background: var(--surface);
   border: 1px solid var(--border);
