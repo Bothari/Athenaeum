@@ -162,7 +162,10 @@ async function api(path, opts = {}) {
   if (res.status === 401) {
     // Session expired mid-use — redirect to login preserving current route
     const dest = location.hash.slice(1) || '/';
-    location.hash = buildHash('/login', dest !== '/login' ? { next: dest } : {}).slice(1);
+    const forceLocal = sessionStorage.getItem('force_local') === '1';
+    const loginParams = dest !== '/login' ? { next: dest } : {};
+    if (forceLocal) loginParams.force_local = '1';
+    location.hash = buildHash('/login', loginParams).slice(1);
     throw new Error('401: Not authenticated');
   }
   if (!res.ok) {
@@ -967,7 +970,8 @@ function updateActiveNav() {
 
 // Login
 route('/login', async (params, qp) => {
-  const forceLocal = 'force_local' in qp;
+  const forceLocal = 'force_local' in qp || sessionStorage.getItem('force_local') === '1';
+  if ('force_local' in qp) sessionStorage.setItem('force_local', '1');
   const next = qp.next || '/';
 
   // Check if OIDC is active and we should redirect
@@ -1030,6 +1034,7 @@ route('/login', async (params, qp) => {
       if (!data.ok) { fb.textContent = 'Invalid credentials.'; btn.disabled = false; return; }
       const result = await data.json();
       _authUser = result;
+      sessionStorage.removeItem('force_local');
       updateNavForRole();
       if (result.force_password_change) { navigate('/change-password'); return; }
       navigate(next);
@@ -3267,6 +3272,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (modes.length > 0 && getHashPath() !== '/login' && getHashPath() !== '/change-password') {
         const dest = location.hash.slice(1) || '/';
         location.hash = buildHash('/login', dest !== '/login' ? { next: dest } : {}).slice(1);
+      } else if (modes.length > 0 && getHashPath() === '/login') {
+        // Already on login page — check if force_local is set in URL and persist it
+        const qp = getHashParams();
+        if ('force_local' in qp) sessionStorage.setItem('force_local', '1');
       }
     }
   } catch {}
