@@ -931,13 +931,14 @@ async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
             for s in body.series_list:
                 if not s.name:
                     continue
-                series_id = await _get_or_create_series(db, s.name.strip())
+                hc_sid = str(s.hardcover_id) if s.hardcover_id else ""
+                series_id = await _get_or_create_series(db, s.name.strip(), hc_series_id=hc_sid)
                 await db.execute(
                     "INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at) VALUES (?, ?, ?, ?, ?)",
                     (str(uuid.uuid4()), book_id, series_id, s.position or None, now),
                 )
-                if s.hardcover_id:
-                    await _set_hc_series_id(db, series_id, str(s.hardcover_id))
+                if hc_sid:
+                    await _set_hc_series_id(db, series_id, hc_sid)
 
         # 4. Create requests
         created = 0
