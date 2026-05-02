@@ -2240,55 +2240,90 @@ function renderDownloadsTab(container) {
 function renderPendingTab(container) {
   container.innerHTML = `<div class="state-loading">${ICON_SPINNER}</div>`;
   api('/requests/pending').then(data => {
-    const items = data.items || [];
-    if (!items.length) {
+    const groups = data.groups || [];
+    if (!groups.length) {
       container.innerHTML = `<div class="state-empty">No pending requests.</div>`;
       return;
     }
-    container.innerHTML = `<table class="data-table">
-      <thead><tr>
-        <th>Book</th>
-        <th class="col-hide-mobile">Author</th>
-        <th>Format</th>
-        <th class="col-hide-mobile">Requested by</th>
-        <th class="col-hide-mobile">Date</th>
-        <th style="width:140px"></th>
-      </tr></thead>
-      <tbody>
-        ${items.map(r => `
-          <tr>
-            <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title)}</a></td>
-            <td class="col-hide-mobile td-dim">${escapeHtml(r.author || '—')}</td>
-            <td><span class="badge badge-pending" title="${r.type}">${typeIcon(r.type)}</span></td>
-            <td class="col-hide-mobile td-dim">${escapeHtml(r.requested_by || '—')}</td>
-            <td class="col-hide-mobile td-dim">${formatDate(r.created_at)}</td>
-            <td>
-              <button class="btn-icon btn-icon-approve" data-approve="${r.id}" title="Approve">${ICON_CHECK}</button>
-              <button class="btn-icon btn-icon-reject" data-reject="${r.id}" title="Reject">${ICON_CROSS}</button>
-            </td>
-          </tr>`).join('')}
-      </tbody>
-    </table>`;
+    container.innerHTML = '';
 
-    container.querySelectorAll('[data-approve]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        try {
-          await api(`/requests/${btn.dataset.approve}/approve`, { method: 'POST' });
-          toast('Request approved.');
-          renderPendingTab(container);
-        } catch { toast('Failed to approve.', 'error'); btn.disabled = false; }
-      });
-    });
-    container.querySelectorAll('[data-reject]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        try {
-          await api(`/requests/${btn.dataset.reject}/reject`, { method: 'POST' });
-          toast('Request rejected.');
-          renderPendingTab(container);
-        } catch { toast('Failed to reject.', 'error'); btn.disabled = false; }
-      });
+    groups.forEach(group => {
+      const pendingTypes = new Set(group.requests.map(r => r.type));
+      const extraTypes = new Set();
+
+      const card = document.createElement('div');
+      card.className = 'pending-card';
+
+      function draw() {
+        const requesters = [...new Set(group.requests.map(r => r.requested_by).filter(Boolean))];
+        const earliest = group.requests.reduce((a, b) => a.created_at < b.created_at ? a : b).created_at;
+
+        const pills = ['audiobook', 'ebook'].map(t => {
+          if (pendingTypes.has(t)) {
+            return `<span class="badge badge-pending" title="${t}">${typeIcon(t)}</span>`;
+          } else if (extraTypes.has(t)) {
+            return `<button class="badge badge-requested fmt-pill" data-add="${t}" title="Remove ${t}">${typeIcon(t)}</button>`;
+          } else {
+            return `<button class="badge badge-unmonitored fmt-pill" data-add="${t}" title="Also approve ${t}">${typeIcon(t)}</button>`;
+          }
+        }).join('');
+
+        card.innerHTML = `
+          <div class="pending-card-body">
+            <div class="pending-card-title">
+              <a href="#/library/book?book_id=${escapeHtml(group.book_id)}">${escapeHtml(group.book_title)}</a>
+              <span class="text-dim" style="font-size:0.85rem;margin-left:0.4rem">${escapeHtml(group.author || '')}</span>
+            </div>
+            <div class="pending-card-row">
+              <div class="pending-card-pills">${pills}</div>
+              <div class="text-dim" style="font-size:0.8rem;white-space:nowrap">
+                ${escapeHtml(requesters.join(', ') || '—')} · ${formatDate(earliest)}
+              </div>
+            </div>
+          </div>
+          <div class="pending-card-actions"></div>
+        `;
+
+        const actionsEl = card.querySelector('.pending-card-actions');
+        actionsEl.innerHTML = `
+          <button class="btn-icon btn-icon-approve" title="Approve">${ICON_CHECK}</button>
+          <button class="btn-icon btn-icon-reject" title="Reject">${ICON_CROSS}</button>
+        `;
+
+        card.querySelectorAll('[data-add]').forEach(btn => {
+          btn.onclick = () => {
+            const t = btn.dataset.add;
+            if (extraTypes.has(t)) extraTypes.delete(t); else extraTypes.add(t);
+            draw();
+          };
+        });
+
+        actionsEl.querySelector('.btn-icon-approve').onclick = async (e) => {
+          e.currentTarget.disabled = true;
+          actionsEl.querySelector('.btn-icon-reject').disabled = true;
+          const types = [...pendingTypes, ...extraTypes];
+          try {
+            await api(`/requests/book/${group.book_id}/approve`, { method: 'POST', body: { types } });
+            card.querySelectorAll('[data-add]').forEach(b => b.disabled = true);
+            actionsEl.innerHTML = `<span class="badge badge-requested" style="font-size:0.78rem;padding:0.25rem 0.6rem">Approved</span>`;
+            card.classList.add('pending-card--done');
+          } catch { toast('Failed to approve.', 'error'); draw(); }
+        };
+
+        actionsEl.querySelector('.btn-icon-reject').onclick = async (e) => {
+          e.currentTarget.disabled = true;
+          actionsEl.querySelector('.btn-icon-approve').disabled = true;
+          try {
+            await api(`/requests/book/${group.book_id}/reject`, { method: 'POST' });
+            card.querySelectorAll('[data-add]').forEach(b => b.disabled = true);
+            actionsEl.innerHTML = `<span class="badge badge-failed" style="font-size:0.78rem;padding:0.25rem 0.6rem">Rejected</span>`;
+            card.classList.add('pending-card--done');
+          } catch { toast('Failed to reject.', 'error'); draw(); }
+        };
+      }
+
+      draw();
+      container.appendChild(card);
     });
   }).catch(() => {
     container.innerHTML = `<div class="state-empty">Failed to load pending requests.</div>`;
