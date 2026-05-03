@@ -220,35 +220,50 @@ _Completed 2026-04-26_
 
 ---
 
-## Future Work / Backlog
+## Post-Phase-6 polish (v0.7.x, continued)
+_Completed 2026-04-26_
 
-- **Docker URL fix**: `abs_url` in `book_formats` stores Docker-internal URL (`http://abs:13378/item/...`) — unreachable from browser. Needs rewrite at read time using the public ABS URL from settings.
+- [x] ABS public/internal URL split — `public_url` drives all browser links; `internal_url` used for API calls if set, falling back to `url`; `abs_url` rewritten at read time so Docker-internal values in the DB are fixed without a migration
+
+---
+
+## Phase 8: Authentication [complete]
+_Completed 2026-04-27_
+
+- [x] `python-jose[cryptography]` + `passlib[bcrypt]` in requirements
+- [x] `app/auth.py` — `require_auth` / `require_admin` dependencies, JWT + httpOnly cookie helpers, auto-generated session secret on startup
+- [x] `app/routes/auth.py` — login, logout, me, set-password, OIDC (Authorization Code + PKCE) endpoints
+- [x] Wire `Depends(require_auth)` / `Depends(require_admin)` onto all routers
+- [x] Frontend: boot auth check, login page (form + OIDC button), logout in Settings, profile page
+- [x] Settings → Auth tab with OIDC config + verify button
+- [x] Roles: admin (full access) and user (search + request only); role-based nav
+- [x] User requests land as `pending`; admin approves/rejects from Queue pending tab
+- [x] Pending requests aggregated by book; approve adds missing format, reject cancels
+- [x] Request ownership: users can only cancel their own requests
+- [x] User management UI (admin): list, change role, delete users
+- [x] Auth tests: 20+ tests covering login, sessions, roles, pending flow, user management
+
+---
+
+## Post-Phase-8 polish (v0.8.x)
+_Completed 2026-05-02_
+
+- [x] Apprise notifications — batched/debounced per-request events (requested, approved, snatched, completed, failed); settings tab with URL + test button
+- [x] Search all moved to dedicated Queue tab (replaces inline button); unreleased and no-date items skipped with clear empty state
+- [x] Organizer improvements — recursive file search (`rglob`), OPF sidecar metadata, proper `Author/Title` file naming, ABS confirmation via filename match instead of title poll
+- [x] ABS confirmation uses direct `abs_id` lookup first (fast path), falls back to title search; times out to `failed` (not `completed`) so startup recovery re-queues correctly
+- [x] Accent-insensitive search — `LIKE` queries normalised via SQLite `COLLATE NOCASE`; HC search strips accents before Typesense query
+- [x] Duplicate format badges fixed — stale non-failed/rejected requests no longer shadow `book_formats` in `_annotate_results`
+- [x] Completed requests shown in book detail and search results (not hidden like failed/rejected)
+- [x] Series dedup — `_get_or_create_series` matches by HC series ID before falling back to name; prevents duplicate series on name variants
+- [x] Year-precision release dates — `YYYY-01-01` in current/future year treated as unreleased (HC pads year-only dates to Jan 1); shows "Expected YYYY" tooltip
+- [x] HC URL manual link — Set button resolves `hardcover.app/` URLs synchronously, fixing race condition where clicking Set before async resolve stored the raw URL as HC ID
+- [x] `force_local` mode persisted in `sessionStorage` to survive hash navigation
+
+---
+
+## Future Work / Backlog
 
 - **Author deduplication on HC conflict**: when two local authors match the same HC author ID, merge the duplicate — re-point all `book_authors` rows, delete the duplicate author and `author_links` row.
 
 - **Multiple narrators per audiobook**: deferred — not needed for typical single-narrator libraries.
-
-- **Phase 8: Authentication** — login page, JWT sessions, `require_auth` on all routes, optional OIDC.
-
----
-
-## Phase 7: Polish
-_Completed 2026-04-26_
-
-- [x] Dashboard stats page
-- [x] Active download polling (5s)
-- [x] Library sync progress display (live progress in task card via `last_result`)
-- [x] Mobile/responsive CSS fixes
-
----
-
-## Phase 8: Authentication
-_Not started — **spec needs review before implementation** (see big note in PLAN.md → Authentication)_
-
-- [ ] `python-jose[cryptography]` + `passlib[bcrypt]` in requirements
-- [ ] `auth.session_secret` auto-generated on startup
-- [ ] `app/auth.py` — `require_auth` dependency, JWT + cookie helpers
-- [ ] `app/routes/auth.py` — login, logout, me, set-password, OIDC endpoints
-- [ ] Wire `Depends(require_auth)` onto all routers
-- [ ] Frontend: boot auth check, login page (form + OIDC), logout in Settings
-- [ ] Settings → Auth tab
