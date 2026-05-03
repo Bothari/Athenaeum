@@ -764,8 +764,9 @@ function populateBookCard(el, result, onRequestSuccess, { showFmtRows = true } =
 
   const today = new Date().toISOString().slice(0, 10);
   const rd = result.release_date || '';
-  const releaseBadge = (rd && rd >= today)
-    ? `<span class="badge badge-unmonitored" title="Releases ${rd}">Unreleased</span>`
+  const rdYearOnly = rd && rd.endsWith('-01-01') && rd.substring(0, 4) >= String(new Date().getFullYear());
+  const releaseBadge = (rd && (rd >= today || rdYearOnly))
+    ? `<span class="badge badge-unmonitored" title="${rdYearOnly && rd < today ? 'Expected ' + rd.substring(0, 4) : 'Releases ' + rd}">Unreleased</span>`
     : (!rd && result.release_date_fetched)
       ? `<span class="badge badge-unmonitored" title="No release date known">No date</span>`
       : (!rd && result.published_year && String(result.published_year) > String(new Date().getFullYear()))
@@ -1921,7 +1922,7 @@ route('/library/book', async (params, qp) => {
             ${authorHtml ? `<div class="detail-author">${authorHtml}</div>` : ''}
             ${seriesItems.length ? `<div class="detail-series">${seriesItems.join('<br>')}</div>` : ''}
             ${book.rating ? `<div class="detail-rating">${ICON_STAR} ${book.rating.toFixed(1)} <span style="opacity:0.6">(${book.rating_count || 0})</span></div>` : ''}
-            ${book.release_date ? `<div class="detail-release-date td-dim">${book.release_date >= new Date().toISOString().slice(0,10) ? '<span class="badge badge-unmonitored">Unreleased</span> ' : ''}${book.release_date}</div>` : ''}
+            ${book.release_date ? `<div class="detail-release-date td-dim">${(book.release_date >= new Date().toISOString().slice(0,10) || (book.release_date.endsWith('-01-01') && book.release_date.substring(0,4) >= String(new Date().getFullYear()))) ? '<span class="badge badge-unmonitored">Unreleased</span> ' : ''}${book.release_date.endsWith('-01-01') && book.release_date.substring(0,4) >= String(new Date().getFullYear()) ? book.release_date.substring(0,4) : book.release_date}</div>` : ''}
             ${hcUrl ? `<a href="${escapeHtml(hcUrl)}" target="_blank" class="detail-hc-link">${ICON_HC()} Hardcover</a>` : ''}
           </div>
         </div>
@@ -2064,7 +2065,7 @@ function renderRequestsTab(content, qp) {
       tr.dataset.reqStatus = r.status;
       tr.dataset.releaseDate = r.release_date || '';
       tr.innerHTML = `
-        <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a>${r.release_date && r.release_date >= new Date().toISOString().slice(0,10) ? ` <span class="badge badge-unmonitored" title="Releases ${r.release_date}">Unreleased</span>` : (r.release_date_fetched && !r.release_date ? ` <span class="badge badge-unmonitored" title="No release date known">No date</span>` : '')}</td>
+        <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a>${r.release_date && (r.release_date >= new Date().toISOString().slice(0,10) || (r.release_date.endsWith('-01-01') && r.release_date.substring(0,4) >= String(new Date().getFullYear()))) ? ` <span class="badge badge-unmonitored" title="${r.release_date.endsWith('-01-01') && r.release_date < new Date().toISOString().slice(0,10) ? 'Expected ' + r.release_date.substring(0,4) : 'Releases ' + r.release_date}">Unreleased</span>` : (r.release_date_fetched && !r.release_date ? ` <span class="badge badge-unmonitored" title="No release date known">No date</span>` : '')}</td>
         <td class="td-dim col-hide-mobile">${escapeHtml(r.author || '—')}</td>
         <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}<span class="col-hide-mobile"> ${r.status}</span></span></td>
         <td class="td-dim col-hide-mobile">${escapeHtml(r.narrator || '—')}</td>
@@ -2171,7 +2172,12 @@ function renderSearchAllTab(container) {
   container.innerHTML = `<div class="state-loading">${ICON_SPINNER}</div>`;
 
   api('/requests?status=requested&limit=200').then(data => {
-    const eligible = (data.items || []).filter(r => r.release_date && r.release_date <= today);
+    const eligible = (data.items || []).filter(r => {
+      if (!r.release_date) return false;
+      if (r.release_date > today) return false;
+      if (r.release_date.endsWith('-01-01') && r.release_date.substring(0, 4) >= String(new Date().getFullYear())) return false;
+      return true;
+    });
 
     if (!eligible.length) {
       container.innerHTML = `<div class="state-empty">No searchable requests — all items are unreleased or have no release date.</div>`;
