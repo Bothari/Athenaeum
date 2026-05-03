@@ -511,11 +511,28 @@ function setupHcCard(containerEl, type, entityId, initialHcId, initialSlug) {
     });
 
     setBtn.onclick = async function() {
-      const val = idInput.value.trim();
+      let val = idInput.value.trim();
       if (!val) return;
       this.disabled = true;
+      let resolvedSlug = idInput.dataset.resolvedSlug || '';
+      if (val.includes('hardcover.app/')) {
+        try {
+          const r = await api('/sync/resolve-hc-url', { method: 'POST', body: { url: val, type } });
+          if (r.hardcover_id) {
+            val = r.hardcover_id;
+            resolvedSlug = r.hardcover_slug || '';
+          } else {
+            toast(r.error || 'Could not resolve URL', 'error');
+            this.disabled = false;
+            return;
+          }
+        } catch (e) {
+          toast('Failed to resolve URL: ' + e, 'error');
+          this.disabled = false;
+          return;
+        }
+      }
       try {
-        const resolvedSlug = idInput.dataset.resolvedSlug || '';
         await api(linkEndpoint, { method: 'PUT', body: { hardcover_id: val, hardcover_slug: resolvedSlug } });
         render(val, resolvedSlug);
         toast('Link updated', 'success');
