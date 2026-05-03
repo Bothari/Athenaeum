@@ -453,7 +453,7 @@ class TestPendingRequests:
             "/api/requests/pending", cookies={"session": _token(adm, "admin")}
         )
         assert resp.status_code == 200
-        assert len(resp.json()["items"]) == 1
+        assert len(resp.json()["groups"]) == 1
 
     async def test_admin_requests_not_in_pending_list(self, auth_client):
         adm = await _insert_user("pend_admonly", "admin")
@@ -468,7 +468,7 @@ class TestPendingRequests:
             "/api/requests/pending", cookies={"session": _token(adm, "admin")}
         )
         assert resp.status_code == 200
-        assert len(resp.json()["items"]) == 0
+        assert len(resp.json()["groups"]) == 0
 
     async def test_approve_pending_request(self, auth_client):
         adm = await _insert_user("appr_adm", "admin")
