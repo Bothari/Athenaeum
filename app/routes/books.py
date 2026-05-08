@@ -373,11 +373,31 @@ async def list_series(
                 "name": row["name"],
                 "library_count": row["library_count"],
                 "requested_count": row["requested_count"],
+                "missing_primary": None,
+                "total_primary": None,
                 "link": {
                     "hardcover_series_id": link_row["hardcover_series_id"] if link_row else None,
                     "hardcover_series_slug": link_row["hardcover_series_slug"] if link_row else None,
                 },
             })
+
+        # Batch-fetch missing stats from cache for all HC-linked series
+        hc_ids = [it["link"]["hardcover_series_id"] for it in items if it["link"]["hardcover_series_id"]]
+        if hc_ids:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            placeholders = ",".join("?" * len(hc_ids))
+            stats_rows = await (
+                await db.execute(
+                    f"SELECT query, results_json FROM metadata_cache WHERE query IN ({placeholders}) AND source = 'series_missing_stats' AND expires_at > ?",
+                    hc_ids + [now_iso],
+                )
+            ).fetchall()
+            stats_by_hc_id = {r["query"]: json.loads(r["results_json"]) for r in stats_rows}
+            for it in items:
+                hc_id = it["link"]["hardcover_series_id"]
+                if hc_id and hc_id in stats_by_hc_id:
+                    it["missing_primary"] = stats_by_hc_id[hc_id]["missing_primary"]
+                    it["total_primary"] = stats_by_hc_id[hc_id]["total_primary"]
 
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
 
@@ -560,6 +580,25 @@ async def get_series_missing(series_id: str):
 
         if not show_secondary:
             candidates = [b for b in candidates if _is_primary_position(b.get("series_position") or "")]
+
+        # Write missing stats to cache so the series list can show them without a full fetch
+        primary = [b for b in all_books if not b.get("compilation") and _is_primary_position(b.get("series_position") or "")]
+        stats = {
+            "missing_primary": sum(1 for b in primary if b.get("metadata_id") not in owned_hc_ids),
+            "total_primary": len(primary),
+        }
+        expires_iso = (now_dt + timedelta(days=14)).isoformat()
+        await db.execute(
+            """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(query, source) DO UPDATE SET
+                 results_json = excluded.results_json,
+                 created_at   = excluded.created_at,
+                 expires_at   = excluded.expires_at""",
+            (str(uuid.uuid4()), hc_series_id, "series_missing_stats",
+             json.dumps(stats), now_iso, expires_iso),
+        )
+        await db.commit()
 
         # Annotate with live library/request state
         candidates = await _annotate_results(candidates, db)
