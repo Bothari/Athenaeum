@@ -1561,11 +1561,12 @@ route('/library/series/:id', async ({ id }) => {
         <div class="section-heading">Books in Library</div>
         <div id="series-books"></div>
         <div id="series-missing-section"></div>
+        ${isAdmin() ? `<div id="series-pack-section" class="mt-2"></div>` : ''}
         <div id="series-hc-section" class="mt-2"></div>
         <div id="series-debug-section"></div>
       </div>`;
-      document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); };
-      document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); };
+      document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); stopPackPoll(); renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); if (isAdmin()) loadSeriesPackSection(); };
+      document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   stopPackPoll(); renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); if (isAdmin()) loadSeriesPackSection(); };
 
       const booksContainer = document.getElementById('series-books');
       if (!booksData.length) {
@@ -1699,8 +1700,316 @@ route('/library/series/:id', async ({ id }) => {
       }
     }
 
+    // Series pack section: shows download status, review UI, or search button
+    let packPollTimer = null;
+
+    function stopPackPoll() {
+      if (packPollTimer) { clearTimeout(packPollTimer); packPollTimer = null; }
+    }
+
+    async function loadSeriesPackSection() {
+      const sec = document.getElementById('series-pack-section');
+      if (!sec) return;
+      stopPackPoll();
+
+      let dl = null;
+      try {
+        const downloads = await api(`/series/${id}/series-downloads`);
+        dl = downloads && downloads[0];
+      } catch { /* ignore, treat as no active download */ }
+
+      if (!dl) {
+        renderPackSearchUI(sec);
+        return;
+      }
+
+      const { status } = dl;
+
+      if (status === 'snatched' || status === 'downloading') {
+        sec.innerHTML = `
+          <div class="section-heading-row">
+            <span class="section-heading">Series Pack</span>
+          </div>
+          <div class="card" style="padding:0.75rem 1rem">
+            <div style="display:flex;align-items:center;gap:0.6rem;color:var(--text-dim)">
+              ${ICON_SPINNER} Downloading pack…
+            </div>
+          </div>`;
+        packPollTimer = setTimeout(loadSeriesPackSection, 10000);
+
+      } else if (status === 'rescanning') {
+        sec.innerHTML = `
+          <div class="section-heading-row">
+            <span class="section-heading">Series Pack</span>
+          </div>
+          <div class="card" style="padding:0.75rem 1rem">
+            <div style="display:flex;align-items:center;gap:0.6rem;color:var(--text-dim)">
+              ${ICON_SPINNER} Re-scanning mappings…
+            </div>
+          </div>`;
+        packPollTimer = setTimeout(loadSeriesPackSection, 3000);
+
+      } else if (status === 'awaiting_review') {
+        renderPackReviewUI(sec, dl);
+
+      } else if (status === 'organizing') {
+        sec.innerHTML = `
+          <div class="section-heading-row">
+            <span class="section-heading">Series Pack</span>
+          </div>
+          <div class="card" style="padding:0.75rem 1rem">
+            <div style="display:flex;align-items:center;gap:0.6rem;color:var(--text-dim)">
+              ${ICON_SPINNER} Organising…
+            </div>
+          </div>`;
+        packPollTimer = setTimeout(loadSeriesPackSection, 5000);
+
+      } else {
+        renderPackSearchUI(sec);
+      }
+    }
+
+    function renderPackSearchUI(sec) {
+      sec.innerHTML = `
+        <div class="section-heading-row">
+          <span class="section-heading">Series Pack</span>
+          <button class="btn btn-secondary btn-sm" id="series-pack-search-btn">${ICON_SEARCH} Search Prowlarr</button>
+        </div>
+        <div id="series-pack-results"></div>`;
+
+      document.getElementById('series-pack-search-btn').onclick = async (e) => {
+        const btn = e.currentTarget;
+        const resultsEl = document.getElementById('series-pack-results');
+        btn.disabled = true;
+        btn.innerHTML = ICON_SPINNER + ' Searching…';
+        resultsEl.innerHTML = '';
+        try {
+          const data = await api(`/series/${id}/search-pack`, { method: 'POST' });
+          if (data.error) {
+            resultsEl.innerHTML = `<div class="text-dim">${escapeHtml(data.error)}</div>`;
+          } else {
+            renderSeriesPackResults(resultsEl, data.results || []);
+          }
+        } catch {
+          resultsEl.innerHTML = `<div class="text-dim">Search failed.</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = ICON_SEARCH + ' Search Prowlarr';
+        }
+      };
+    }
+
+    function renderPackReviewUI(sec, dl) {
+      // Handle both old flat-array format and new object format
+      const raw = dl.proposed_mappings || {};
+      const fileMappings = Array.isArray(raw) ? raw : (raw.file_mappings || []);
+      const seriesBooks = Array.isArray(raw) ? [] : (raw.series_books || []);
+
+      // State: per-file selected book_id (null = skip)
+      // Seed from the best-match: place/skip_in_library use book_id, no_match uses null
+      const selections = fileMappings.map(m => m.book_id || null);
+
+      function getConfirmed() {
+        return fileMappings
+          .map((m, i) => selections[i] ? {
+            filepath: m.filepath,
+            filename: m.filename,
+            book_id: selections[i],
+            book_title: (seriesBooks.find(b => b.id === selections[i]) || {}).title || m.book_title || '',
+            score: m.score,
+            action: 'place',
+          } : null)
+          .filter(Boolean);
+      }
+
+      function renderGapsSummary(container) {
+        const usedIds = new Set(selections.filter(Boolean));
+        const gaps = seriesBooks.filter(b => !usedIds.has(b.id) && !b.in_library);
+        container.innerHTML = '';
+        if (!gaps.length) return;
+        const div = document.createElement('div');
+        div.style.cssText = 'padding:0.5rem 1rem;font-size:0.8rem;color:var(--text-dim);border-top:1px solid var(--border)';
+        div.textContent = `${gaps.length} book${gaps.length !== 1 ? 's' : ''} without a file: ${gaps.map(g => g.title).join(', ')}`;
+        container.appendChild(div);
+      }
+
+      function updateFooter(footerEl) {
+        const confirmed = getConfirmed();
+        const btn = footerEl.querySelector('.pack-confirm-btn');
+        if (!btn) return;
+        btn.disabled = confirmed.length === 0;
+        btn.innerHTML = confirmed.length === 0
+          ? 'Nothing to organise'
+          : `${ICON_CHECK} Confirm & organise (${confirmed.length} file${confirmed.length !== 1 ? 's' : ''})`;
+      }
+
+      sec.innerHTML = '';
+
+      const headingRow = document.createElement('div');
+      headingRow.className = 'section-heading-row';
+      headingRow.innerHTML = `
+        <span class="section-heading">Series Pack — Review Mappings</span>
+        <button class="btn btn-secondary btn-sm" id="pack-rescan-btn" style="margin-left:auto">↺ Re-scan</button>`;
+      sec.appendChild(headingRow);
+
+      headingRow.querySelector('#pack-rescan-btn').onclick = async (e) => {
+        e.target.disabled = true;
+        e.target.innerHTML = ICON_SPINNER;
+        try {
+          await api(`/series/${id}/series-downloads/${dl.id}/rescan`, { method: 'POST' });
+          loadSeriesPackSection();
+        } catch (err) {
+          toast('Re-scan failed: ' + err.message, 'error');
+          e.target.disabled = false;
+          e.target.innerHTML = '↺ Re-scan';
+        }
+      };
+
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.style.padding = '0';
+      sec.appendChild(card);
+
+      const list = document.createElement('div');
+      card.appendChild(list);
+
+      fileMappings.forEach((m, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:0.5rem 1rem;border-bottom:1px solid var(--border)';
+
+        const fnDiv = document.createElement('div');
+        fnDiv.className = 'td-mono td-dim';
+        fnDiv.style.cssText = 'font-size:0.75rem;overflow-wrap:anywhere;margin-bottom:0.3rem';
+        fnDiv.textContent = m.filename;
+        row.appendChild(fnDiv);
+
+        const controlRow = document.createElement('div');
+        controlRow.style.cssText = 'display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap';
+
+        const sel = document.createElement('select');
+        sel.style.cssText = 'flex:1;min-width:120px;max-width:340px;font-size:0.85rem;padding:0.2rem 0.4rem';
+
+        const skipOpt = document.createElement('option');
+        skipOpt.value = '';
+        skipOpt.textContent = '— Skip —';
+        sel.appendChild(skipOpt);
+
+        seriesBooks.forEach(book => {
+          const opt = document.createElement('option');
+          opt.value = book.id;
+          opt.textContent = book.title + (book.in_library ? ' (in library)' : '');
+          sel.appendChild(opt);
+        });
+
+        sel.value = selections[i] || '';
+        sel.onchange = () => {
+          selections[i] = sel.value || null;
+          renderGapsSummary(gapsDiv);
+          updateFooter(footer);
+        };
+        controlRow.appendChild(sel);
+
+        if (m.score != null && m.score > 0) {
+          const badge = document.createElement('span');
+          badge.className = 'badge';
+          badge.style.cssText = 'background:var(--surface2);color:var(--text-dim);font-size:0.7rem;flex-shrink:0';
+          badge.textContent = m.score;
+          controlRow.appendChild(badge);
+        }
+
+        row.appendChild(controlRow);
+        list.appendChild(row);
+      });
+
+      const gapsDiv = document.createElement('div');
+      card.appendChild(gapsDiv);
+      renderGapsSummary(gapsDiv);
+
+      const footer = document.createElement('div');
+      footer.style.cssText = 'padding:0.75rem 1rem;display:flex;gap:0.5rem;justify-content:flex-end;border-top:1px solid var(--border)';
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'btn btn-primary btn-sm pack-confirm-btn';
+      footer.appendChild(confirmBtn);
+      card.appendChild(footer);
+
+      updateFooter(footer);
+
+      confirmBtn.onclick = async () => {
+        const confirmed = getConfirmed();
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = ICON_SPINNER + ' Starting…';
+        try {
+          await api(`/series/${id}/series-downloads/${dl.id}/confirm`, {
+            method: 'POST',
+            body: { mappings: confirmed },
+          });
+          toast('Organising series pack…');
+          loadSeriesPackSection();
+        } catch (err) {
+          toast('Failed: ' + err.message, 'error');
+          updateFooter(footer);
+        }
+      };
+    }
+
+    function renderSeriesPackResults(container, results) {
+      if (!results.length) {
+        container.innerHTML = `<div class="text-dim" style="padding:0.5rem 0">No results found.</div>`;
+        return;
+      }
+      container.innerHTML = '';
+      results.forEach(res => {
+        const fmtMatch = (res.title || '').match(/\b(epub|mobi|azw3?|pdf)\b/i);
+        const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
+        const titleHtml = res.info_url
+          ? `<a href="${escapeHtml(res.info_url)}" target="_blank" class="prowlarr-result-title">${escapeHtml(res.title || '—')}</a>`
+          : `<div class="prowlarr-result-title">${escapeHtml(res.title || '—')}</div>`;
+        const row = document.createElement('div');
+        row.className = 'prowlarr-result-row';
+        row.innerHTML = `
+          ${titleHtml}
+          <div class="prowlarr-result-meta">
+            <div class="prowlarr-result-info">
+              ${fmt ? `<span class="badge" style="background:var(--surface2);color:var(--text)">${fmt}</span>` : ''}
+              <span>${res.protocol === 'torrent' ? 'Torrent' : 'Usenet'}</span>
+              <span>${formatBytes(res.size)}</span>
+              ${res.seeders != null ? `<span>${res.seeders}S</span>` : ''}
+              <span>${escapeHtml(res.indexer || '—')}</span>
+            </div>
+            <button class="btn btn-primary btn-sm series-pack-dl-btn" style="flex-shrink:0">${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span></button>
+          </div>
+        `;
+        row.querySelector('.series-pack-dl-btn').onclick = async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          btn.innerHTML = ICON_SPINNER;
+          try {
+            await api(`/series/${id}/download-pack`, {
+              method: 'POST',
+              body: {
+                download_url: res.download_url, protocol: res.protocol,
+                indexer: res.indexer, guid: res.guid, title: res.title,
+                info_url: res.info_url, size: res.size, type: 'ebook',
+              },
+            });
+            btn.innerHTML = ICON_CHECK;
+            btn.classList.replace('btn-primary', 'btn-success');
+            toast('Series pack download started!');
+            // Switch to polling view
+            setTimeout(loadSeriesPackSection, 1500);
+          } catch (err) {
+            toast('Download failed: ' + err.message, 'error');
+            btn.disabled = false;
+            btn.innerHTML = `${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span>`;
+          }
+        };
+        container.appendChild(row);
+      });
+    }
+
     loadSeriesExtras();
     loadMissing();
+    if (isAdmin()) loadSeriesPackSection();
   } catch (err) {
     renderError(app, render);
   }
@@ -1793,10 +2102,13 @@ function renderProwlarrResults(container, results, reqId, onSuccess) {
   results.forEach(res => {
     const fmtMatch = (res.title || '').match(/\b(mp3|m4b|m4a|flac|opus|ogg|aac|epub|mobi|azw3?|pdf)\b/i);
     const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
+    const titleHtml = res.info_url
+      ? `<a href="${escapeHtml(res.info_url)}" target="_blank" class="prowlarr-result-title">${escapeHtml(res.title || '—')}</a>`
+      : `<div class="prowlarr-result-title">${escapeHtml(res.title || '—')}</div>`;
     const row = document.createElement('div');
     row.className = 'prowlarr-result-row';
     row.innerHTML = `
-      <div class="prowlarr-result-title">${escapeHtml(res.title || '—')}</div>
+      ${titleHtml}
       <div class="prowlarr-result-meta">
         <div class="prowlarr-result-info">
           ${fmt ? `<span class="badge" style="background:var(--surface2);color:var(--text)">${fmt}</span>` : ''}

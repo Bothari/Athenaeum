@@ -162,7 +162,7 @@ async def _auto_search_task():
 
 async def _download_monitor_tick():
     from .services.download_clients import QBittorrentClient, SABnzbdClient
-    from .services.organizer import auto_organize
+    from .services.organizer import auto_organize, auto_organize_series_pack, compute_series_pack_mappings
 
     settings = await get_settings()
     qbit_settings = settings.get("qbittorrent", {})
@@ -232,6 +232,60 @@ async def _download_monitor_tick():
         except Exception as e:
             logger.warning("download_monitor_tick: error for download %s: %s", row["dl_id"], e)
 
+    # Monitor series pack downloads
+    async with get_db() as db:
+        sd_rows = await (
+            await db.execute(
+                """SELECT id, download_id, download_client, status
+                   FROM series_downloads
+                   WHERE status IN ('snatched', 'downloading')
+                   AND download_client IS NOT NULL
+                   AND download_id IS NOT NULL"""
+            )
+        ).fetchall()
+
+    for row in sd_rows:
+        try:
+            if row["download_client"] == "qbittorrent":
+                if not qbit_settings.get("url"):
+                    continue
+                client = QBittorrentClient(qbit_settings)
+            elif row["download_client"] == "sabnzbd":
+                if not sab_settings.get("url"):
+                    continue
+                client = SABnzbdClient(sab_settings)
+            else:
+                continue
+
+            info = await client.check(row["download_id"])
+            status = info.get("status")
+            now = datetime.utcnow().isoformat()
+
+            async with get_db() as db:
+                if status == "downloading" and row["status"] == "snatched":
+                    await db.execute(
+                        "UPDATE series_downloads SET status='downloading', updated_at=? WHERE id=?",
+                        (now, row["id"]),
+                    )
+                    await db.commit()
+                elif status == "completed":
+                    path = info.get("path") or ""
+                    await db.execute(
+                        "UPDATE series_downloads SET status='downloaded', download_path=?, updated_at=? WHERE id=?",
+                        (path, now, row["id"]),
+                    )
+                    await db.commit()
+                    asyncio.create_task(compute_series_pack_mappings(row["id"]))
+                elif status == "failed":
+                    await db.execute(
+                        "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                        (now, row["id"]),
+                    )
+                    await db.commit()
+
+        except Exception as e:
+            logger.warning("download_monitor_tick: error for series_download %s: %s", row["id"], e)
+
 
 async def _download_monitor():
     while True:
@@ -252,7 +306,7 @@ async def startup():
     logger.info("Cleared stale task running flags")
 
     # Re-queue any requests that were mid-organize when the container last stopped
-    from .services.organizer import auto_organize
+    from .services.organizer import auto_organize, auto_organize_series_pack, compute_series_pack_mappings
     async with get_db() as db:
         stale = await (
             await db.execute(
@@ -262,6 +316,21 @@ async def startup():
     for row in stale:
         logger.info("Re-queuing stale organize for request %s", row["id"])
         asyncio.create_task(auto_organize(row["id"]))
+
+    # Re-queue stale series pack downloads
+    async with get_db() as db:
+        stale_packs = await (
+            await db.execute(
+                "SELECT id, status FROM series_downloads WHERE status IN ('downloaded', 'organizing')"
+            )
+        ).fetchall()
+    for row in stale_packs:
+        if row["status"] == "downloaded":
+            logger.info("Re-queuing stale series pack mapping compute for %s", row["id"])
+            asyncio.create_task(compute_series_pack_mappings(row["id"]))
+        else:
+            logger.info("Re-queuing stale series pack organize for %s", row["id"])
+            asyncio.create_task(auto_organize_series_pack(row["id"]))
 
     await ensure_session_secret()
     asyncio.create_task(_download_monitor())

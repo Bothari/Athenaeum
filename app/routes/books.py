@@ -7,10 +7,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ..auth import require_auth
+from ..auth import require_admin, require_auth
 from ..database import get_db
 from ..services import book_search as _book_search
 from ..settings import get_settings
+
+logger = __import__("logging").getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -341,15 +343,16 @@ async def list_series(
         rows = await (
             await db.execute(
                 f"""SELECT s.*,
-                    COUNT(DISTINCT CASE WHEN EXISTS (
-                        SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id
-                    ) THEN bs.book_id END) as library_count,
-                    COUNT(DISTINCT CASE WHEN NOT EXISTS (
-                        SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id
-                    ) AND EXISTS (
-                        SELECT 1 FROM requests r WHERE r.book_id = bs.book_id
-                        AND r.status NOT IN ('completed', 'failed')
-                    ) THEN bs.book_id END) as requested_count
+                    COUNT(DISTINCT CASE WHEN
+                        (s.show_secondary_works = 1 OR bs.position IS NULL OR CAST(bs.position AS REAL) = CAST(CAST(bs.position AS INTEGER) AS REAL))
+                        AND EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id)
+                    THEN bs.book_id END) as library_count,
+                    COUNT(DISTINCT CASE WHEN
+                        (s.show_secondary_works = 1 OR bs.position IS NULL OR CAST(bs.position AS REAL) = CAST(CAST(bs.position AS INTEGER) AS REAL))
+                        AND NOT EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id)
+                        AND EXISTS (SELECT 1 FROM requests r WHERE r.book_id = bs.book_id
+                            AND r.status NOT IN ('completed', 'failed'))
+                    THEN bs.book_id END) as requested_count
                     FROM series s{joins}
                     LEFT JOIN book_series bs ON bs.series_id = s.id
                     {where}
@@ -415,9 +418,14 @@ async def get_series(series_id: str):
                 "SELECT * FROM series_links WHERE series_id = ?", (series_id,)
             )
         ).fetchone()
+        secondary_filter = (
+            ""
+            if row["show_secondary_works"]
+            else "AND (CAST(bs.position AS REAL) = CAST(CAST(bs.position AS INTEGER) AS REAL) OR bs.position IS NULL)"
+        )
         counts_row = await (
             await db.execute(
-                """SELECT
+                f"""SELECT
                     COUNT(DISTINCT CASE WHEN EXISTS (
                         SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id
                     ) THEN bs.book_id END) as library_count,
@@ -427,7 +435,7 @@ async def get_series(series_id: str):
                         SELECT 1 FROM requests r WHERE r.book_id = bs.book_id
                         AND r.status NOT IN ('completed', 'failed')
                     ) THEN bs.book_id END) as requested_count
-                   FROM book_series bs WHERE bs.series_id = ?""",
+                   FROM book_series bs WHERE bs.series_id = ? {secondary_filter}""",
                 (series_id,),
             )
         ).fetchone()
@@ -604,6 +612,215 @@ async def get_series_missing(series_id: str):
         candidates = await _annotate_results(candidates, db)
 
     return {"items": candidates, "show_secondary_works": show_secondary}
+
+
+@router.get("/series/{series_id}/series-downloads")
+async def list_series_downloads(series_id: str, auth: dict = Depends(require_admin)):
+    """Return active series pack downloads for this series (excludes completed/failed)."""
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id FROM series WHERE id = ?", (series_id,))
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Series not found")
+
+        rows = await (
+            await db.execute(
+                """SELECT id, status, type, title, protocol, size, grabbed_at, updated_at, proposed_mappings
+                   FROM series_downloads
+                   WHERE series_id = ? AND status NOT IN ('completed', 'failed')
+                   ORDER BY grabbed_at DESC LIMIT 1""",
+                (series_id,),
+            )
+        ).fetchall()
+
+    return [
+        {
+            "id": r["id"],
+            "status": r["status"],
+            "type": r["type"],
+            "title": r["title"],
+            "protocol": r["protocol"],
+            "size": r["size"],
+            "grabbed_at": r["grabbed_at"],
+            "updated_at": r["updated_at"],
+            "proposed_mappings": json.loads(r["proposed_mappings"]) if r["proposed_mappings"] else None,
+        }
+        for r in rows
+    ]
+
+
+class ConfirmSeriesPackBody(BaseModel):
+    mappings: list[dict]
+
+
+@router.post("/series/{series_id}/series-downloads/{sdl_id}/confirm")
+async def confirm_series_pack(
+    series_id: str, sdl_id: str, body: ConfirmSeriesPackBody, auth: dict = Depends(require_admin)
+):
+    """Store confirmed mappings and kick off organise."""
+    async with get_db() as db:
+        row = await (
+            await db.execute(
+                "SELECT id, status FROM series_downloads WHERE id = ? AND series_id = ?",
+                (sdl_id, series_id),
+            )
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Series download not found")
+        if row["status"] != "awaiting_review":
+            raise HTTPException(status_code=400, detail=f"Status is {row['status']}, not awaiting_review")
+
+        confirmed = [
+            {"filepath": m["filepath"], "book_id": m["book_id"], "action": "place"}
+            for m in body.mappings
+            if m.get("filepath") and m.get("book_id")
+        ]
+        now = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "UPDATE series_downloads SET status='organizing', proposed_mappings=?, updated_at=? WHERE id=?",
+            (json.dumps(confirmed), now, sdl_id),
+        )
+        await db.commit()
+
+    from ..services.organizer import auto_organize_series_pack
+    asyncio.create_task(auto_organize_series_pack(sdl_id))
+    return {"ok": True}
+
+
+@router.post("/series/{series_id}/series-downloads/{sdl_id}/rescan")
+async def rescan_series_pack(series_id: str, sdl_id: str, auth: dict = Depends(require_admin)):
+    """Re-run file→book mapping computation (e.g. after adding a new book/request)."""
+    async with get_db() as db:
+        row = await (
+            await db.execute(
+                "SELECT id, status FROM series_downloads WHERE id = ? AND series_id = ?",
+                (sdl_id, series_id),
+            )
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Series download not found")
+        if row["status"] != "awaiting_review":
+            raise HTTPException(status_code=400, detail=f"Status is {row['status']}, not awaiting_review")
+        now = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "UPDATE series_downloads SET status='rescanning', updated_at=? WHERE id=?",
+            (now, sdl_id),
+        )
+        await db.commit()
+
+    from ..services.organizer import compute_series_pack_mappings
+    asyncio.create_task(compute_series_pack_mappings(sdl_id))
+    return {"ok": True}
+
+
+@router.post("/series/{series_id}/search-pack")
+async def search_series_pack(series_id: str, auth: dict = Depends(require_admin)):
+    """Search Prowlarr for series pack releases."""
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id, name FROM series WHERE id = ?", (series_id,))
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    settings = await get_settings()
+    prowlarr_settings = settings.get("prowlarr", {})
+    if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
+        return {"results": [], "error": "Prowlarr not configured"}
+
+    from ..services.download_clients import prowlarr_search
+
+    series_name = row["name"]
+    try:
+        raw_results = await prowlarr_search(
+            prowlarr_settings, series_name,
+            book_type="ebook",
+            title=series_name, author="",
+        )
+    except Exception as e:
+        logger.warning("Prowlarr series pack search failed for %s: %s", series_id, e)
+        return {"results": [], "error": str(e)}
+
+    results = [
+        {
+            "protocol": r.get("protocol"),
+            "title": r.get("title"),
+            "indexer": r.get("indexer"),
+            "size": r.get("size"),
+            "guid": r.get("guid"),
+            "download_url": r.get("downloadUrl"),
+            "info_url": r.get("infoUrl"),
+            "seeders": r.get("seeders"),
+            "leechers": r.get("leechers"),
+            "age": r.get("age"),
+        }
+        for r in raw_results
+    ]
+    return {"results": results}
+
+
+class SeriesPackDownloadBody(BaseModel):
+    download_url: str
+    protocol: str
+    indexer: Optional[str] = None
+    guid: Optional[str] = None
+    title: Optional[str] = None
+    info_url: Optional[str] = None
+    size: Optional[int] = None
+    type: str = "ebook"
+
+
+@router.post("/series/{series_id}/download-pack")
+async def trigger_series_pack_download(
+    series_id: str, body: SeriesPackDownloadBody, auth: dict = Depends(require_admin)
+):
+    """Send a series pack release to the download client and record it."""
+    async with get_db() as db:
+        row = await (
+            await db.execute("SELECT id FROM series WHERE id = ?", (series_id,))
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    settings = await get_settings()
+
+    from ..services.download_clients import QBittorrentClient, SABnzbdClient
+
+    if body.protocol == "torrent":
+        client_settings = settings.get("qbittorrent", {})
+        if not client_settings.get("url"):
+            raise HTTPException(status_code=400, detail="qBittorrent not configured")
+        client = QBittorrentClient(client_settings)
+        client_name = "qbittorrent"
+    elif body.protocol == "usenet":
+        client_settings = settings.get("sabnzbd", {})
+        if not client_settings.get("url"):
+            raise HTTPException(status_code=400, detail="SABnzbd not configured")
+        client = SABnzbdClient(client_settings)
+        client_name = "sabnzbd"
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown protocol: {body.protocol}")
+
+    try:
+        download_id = await client.add(body.download_url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Download client error: {e}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    sdl_id = str(uuid.uuid4())
+    async with get_db() as db:
+        await db.execute(
+            """INSERT OR IGNORE INTO series_downloads
+               (id, series_id, type, title, indexer, guid, info_url, protocol,
+                size, download_client, download_id, status, grabbed_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?, ?)""",
+            (sdl_id, series_id, body.type, body.title, body.indexer, body.guid,
+             body.info_url, body.protocol, body.size, client_name, download_id, now, now),
+        )
+        await db.commit()
+
+    return {"ok": True, "series_download_id": sdl_id}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

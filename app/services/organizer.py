@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 import uuid
+import zipfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -723,6 +724,467 @@ async def auto_organize(request_id: str):
                 await db.execute(
                     "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
                     (datetime.now(timezone.utc).isoformat(), request_id),
+                )
+                await db.commit()
+        except Exception:
+            pass
+
+
+# ── Series pack organizer ──────────────────────────────────────────────────────
+
+def _clean_pack_filename(stem: str) -> str:
+    """Strip pack-filename noise for fuzzy title matching."""
+    # Remove leading position prefix: "01 - ", "1. ", "#1 - "
+    stem = re.sub(r'^[\d#]+[.\-\s]+', '', stem)
+    # Remove trailing author suffix: " - Glen Cook"
+    stem = re.sub(r'\s+-\s+[^-]+$', '', stem)
+    # Remove underscore-based subtitle: "_ The Fourth Chronicles of t"
+    stem = re.sub(r'_\s+.*', '', stem)
+    # Remove bracketed/parenthesised tokens: [EPUB], (Retail), [ENG], etc.
+    stem = re.sub(r'\s*[\[\(][^\]\)]*[\]\)]', '', stem)
+    # Remove known format keywords
+    stem = re.sub(r'\b(epub|mobi|azw3?|pdf|retail|scan)\b', '', stem, flags=re.IGNORECASE)
+    return stem.strip()
+
+
+def _read_epub_title(path: Path) -> str | None:
+    """Extract dc:title from an epub file. Returns None on any error."""
+    try:
+        with zipfile.ZipFile(str(path)) as zf:
+            container = zf.read("META-INF/container.xml").decode("utf-8", errors="ignore")
+            m = re.search(r'full-path="([^"]+\.opf)"', container)
+            if not m:
+                return None
+            opf = zf.read(m.group(1)).decode("utf-8", errors="ignore")
+            t = re.search(r'<dc:title[^>]*>([^<]+)</dc:title>', opf, re.IGNORECASE)
+            return t.group(1).strip() if t else None
+    except Exception:
+        return None
+
+
+async def compute_series_pack_mappings(series_dl_id: str):
+    """Scan downloaded files, propose book mappings, set status=awaiting_review."""
+    from ..database import get_db
+
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
+
+    try:
+        async with get_db() as db:
+            sdl_row = await (
+                await db.execute("SELECT * FROM series_downloads WHERE id = ?", (series_dl_id,))
+            ).fetchone()
+        if not sdl_row:
+            logger.error("compute_series_pack_mappings: record %s not found", series_dl_id)
+            return
+
+        series_id = sdl_row["series_id"]
+        pack_type = sdl_row["type"] or "ebook"
+        path_str = sdl_row["download_path"]
+
+        if not path_str:
+            logger.error("compute_series_pack_mappings: no download_path for %s", series_dl_id)
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    (_now(), series_dl_id),
+                )
+                await db.commit()
+            return
+
+        async with get_db() as db:
+            book_rows = await (
+                await db.execute(
+                    """SELECT b.id, b.title, bs.position
+                       FROM books b
+                       JOIN book_series bs ON bs.book_id = b.id
+                       WHERE bs.series_id = ?""",
+                    (series_id,),
+                )
+            ).fetchall()
+
+        src = Path(path_str)
+        type_exts = EBOOK_EXTENSIONS if pack_type == "ebook" else AUDIO_EXTENSIONS
+        if src.is_dir():
+            media_files = sorted(
+                [f for f in src.rglob('*') if f.is_file() and f.suffix.lower() in type_exts],
+                key=_natural_sort_key,
+            )
+        elif src.is_file() and src.suffix.lower() in type_exts:
+            media_files = [src]
+        else:
+            logger.error("compute_series_pack_mappings: invalid source %s", src)
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    (_now(), series_dl_id),
+                )
+                await db.commit()
+            return
+
+        from rapidfuzz import fuzz
+
+        file_mappings = []
+        for media_file in media_files:
+            stem = _clean_pack_filename(media_file.stem)
+
+            best_score = 0
+            best_book = None
+            for book in book_rows:
+                score = fuzz.token_sort_ratio(stem.lower(), book["title"].lower())
+                if score > best_score:
+                    best_score = score
+                    best_book = book
+
+            if best_score < 75 and media_file.suffix.lower() == ".epub":
+                epub_title = _read_epub_title(media_file)
+                if epub_title:
+                    for book in book_rows:
+                        score = fuzz.token_sort_ratio(epub_title.lower(), book["title"].lower())
+                        if score > best_score:
+                            best_score = score
+                            best_book = book
+
+            if best_score < 75 or best_book is None:
+                file_mappings.append({
+                    "filepath": str(media_file),
+                    "filename": media_file.name,
+                    "book_id": None,
+                    "book_title": None,
+                    "best_guess_book_id": best_book["id"] if best_book else None,
+                    "best_guess_book_title": best_book["title"] if best_book else None,
+                    "score": best_score,
+                    "action": "no_match",
+                })
+                continue
+
+            book_id = best_book["id"]
+            async with get_db() as db:
+                fmt_row = await (
+                    await db.execute(
+                        "SELECT id FROM book_formats WHERE book_id = ? AND type = ?",
+                        (book_id, pack_type),
+                    )
+                ).fetchone()
+
+            action = "skip_in_library" if fmt_row else "place"
+            file_mappings.append({
+                "filepath": str(media_file),
+                "filename": media_file.name,
+                "book_id": book_id,
+                "book_title": best_book["title"],
+                "score": best_score,
+                "action": action,
+            })
+
+        # Build series_books list with in-library status (one batch query)
+        if book_rows:
+            placeholders = ','.join('?' for _ in book_rows)
+            async with get_db() as db:
+                lib_rows = await (
+                    await db.execute(
+                        f"SELECT book_id FROM book_formats WHERE book_id IN ({placeholders}) AND type = ?",
+                        [b["id"] for b in book_rows] + [pack_type],
+                    )
+                ).fetchall()
+            in_library_set = {r["book_id"] for r in lib_rows}
+        else:
+            in_library_set = set()
+
+        series_books = [
+            {
+                "id": b["id"],
+                "title": b["title"],
+                "position": b["position"] or "",
+                "in_library": b["id"] in in_library_set,
+            }
+            for b in book_rows
+        ]
+
+        mappings_data = {"series_books": series_books, "file_mappings": file_mappings}
+
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE series_downloads SET status='awaiting_review', proposed_mappings=?, updated_at=? WHERE id=?",
+                (json.dumps(mappings_data), _now(), series_dl_id),
+            )
+            await db.commit()
+
+        place_count = sum(1 for m in file_mappings if m["action"] == "place")
+        logger.info(
+            "compute_series_pack_mappings: %s — %d files, %d to place, %d series books",
+            series_dl_id, len(file_mappings), place_count, len(series_books),
+        )
+
+    except Exception as e:
+        logger.error("compute_series_pack_mappings crashed for %s: %s", series_dl_id, e, exc_info=True)
+        try:
+            from ..database import get_db
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    (datetime.now(timezone.utc).isoformat(), series_dl_id),
+                )
+                await db.commit()
+        except Exception:
+            pass
+
+
+async def auto_organize_series_pack(series_dl_id: str):
+    """Place confirmed series pack files, scan ABS, update DB."""
+    from ..database import get_db
+    from ..settings import get_settings
+    from .audiobookshelf import AudiobookshelfService
+
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
+
+    try:
+        settings = await get_settings()
+        api_key = settings.get("hardcover", {}).get("api_key") or ""
+        abs_settings = settings.get("audiobookshelf", {})
+
+        async with get_db() as db:
+            sdl_row = await (
+                await db.execute("SELECT * FROM series_downloads WHERE id = ?", (series_dl_id,))
+            ).fetchone()
+        if not sdl_row:
+            logger.error("auto_organize_series_pack: record %s not found", series_dl_id)
+            return
+
+        pack_type = sdl_row["type"] or "ebook"
+        download_client = sdl_row["download_client"]
+        mappings_raw = sdl_row["proposed_mappings"]
+
+        if not mappings_raw:
+            logger.error("auto_organize_series_pack: no proposed_mappings for %s", series_dl_id)
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    (_now(), series_dl_id),
+                )
+                await db.commit()
+            return
+
+        # Only process entries the user confirmed (action == 'place')
+        to_place = [m for m in json.loads(mappings_raw) if m.get("action") == "place"]
+
+        if not to_place:
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                    (_now(), series_dl_id),
+                )
+                await db.commit()
+            return
+
+        # (dest_dir, book_id, req_row, filenames_set, narrator)
+        placed: list[tuple] = []
+
+        for mapping in to_place:
+            filepath = mapping["filepath"]
+            book_id = mapping["book_id"]
+            media_file = Path(filepath)
+
+            if not media_file.exists():
+                logger.warning("auto_organize_series_pack: file not found: %s", filepath)
+                continue
+
+            async with get_db() as db:
+                book_row = await (
+                    await db.execute(
+                        """SELECT b.title,
+                                  (SELECT a.name FROM authors a
+                                   JOIN book_authors ba ON ba.author_id = a.id
+                                   WHERE ba.book_id = b.id
+                                   ORDER BY ba.author_position LIMIT 1) as author
+                           FROM books b WHERE b.id = ?""",
+                        (book_id,),
+                    )
+                ).fetchone()
+                if not book_row:
+                    logger.warning("auto_organize_series_pack: book %s not found", book_id)
+                    continue
+
+                # Re-check in case something changed since compute step
+                fmt_row = await (
+                    await db.execute(
+                        "SELECT id FROM book_formats WHERE book_id = ? AND type = ?",
+                        (book_id, pack_type),
+                    )
+                ).fetchone()
+                if fmt_row:
+                    logger.info("auto_organize_series_pack: %s already in library, skipping", book_row["title"])
+                    continue
+
+                req_row = await (
+                    await db.execute(
+                        """SELECT id, narrator FROM requests
+                           WHERE book_id = ? AND type = ?
+                           AND status NOT IN ('failed', 'completed', 'rejected', 'in_library')""",
+                        (book_id, pack_type),
+                    )
+                ).fetchone()
+
+            title = book_row["title"]
+            author = book_row["author"] or "Unknown"
+            narrator = req_row["narrator"] if req_row else ""
+
+            dest_dir = _build_dest_dir(settings, pack_type, author, title)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            fname = f"{_sanitise_path_component(title)} - {_sanitise_path_component(author)}{media_file.suffix.lower()}"
+            dest_file = dest_dir / fname
+
+            if not dest_file.exists():
+                if download_client == "qbittorrent":
+                    await asyncio.to_thread(shutil.copy2, str(media_file), str(dest_file))
+                else:
+                    await asyncio.to_thread(shutil.move, str(media_file), str(dest_file))
+
+            try:
+                async with get_db() as db:
+                    await write_metadata_opf(dest_dir, db, book_id, narrator or "", api_key)
+            except Exception as e:
+                logger.warning("auto_organize_series_pack: metadata.opf for %s: %s", title, e)
+
+            placed.append((dest_dir, book_id, req_row, {fname}, narrator or ""))
+            logger.info("auto_organize_series_pack: placed %s → %s", media_file.name, dest_file)
+
+        if not placed:
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                    (_now(), series_dl_id),
+                )
+                await db.commit()
+            return
+
+        # Single ABS scan then per-book poll
+        if abs_settings.get("url"):
+            abs_svc = AudiobookshelfService(abs_settings)
+            library_ids = abs_settings.get("library_id") or []
+            if isinstance(library_ids, str):
+                library_ids = [lid.strip() for lid in library_ids.split(",") if lid.strip()]
+
+            for lib_id in library_ids:
+                try:
+                    await abs_svc.scan_library(lib_id)
+                except Exception as e:
+                    logger.warning("auto_organize_series_pack: scan_library(%s) failed: %s", lib_id, e)
+
+            await asyncio.sleep(5)
+
+            for (dest_dir, book_id, req_row, filenames, narrator) in placed:
+                async with get_db() as db:
+                    link_row = await (
+                        await db.execute("SELECT abs_id FROM book_links WHERE book_id = ?", (book_id,))
+                    ).fetchone()
+                existing_abs_id = link_row["abs_id"] if link_row else None
+
+                matched_abs_id = None
+                for attempt in range(8):
+                    try:
+                        if existing_abs_id:
+                            matched_abs_id = await abs_svc.find_item_by_filename(
+                                filenames, pack_type, abs_id=existing_abs_id
+                            )
+                        if not matched_abs_id:
+                            title_hint = next(iter(filenames), "").rsplit(" - ", 1)[0]
+                            matched_abs_id = await abs_svc.find_item_by_filename(
+                                filenames, pack_type, title=title_hint
+                            )
+                    except Exception as e:
+                        logger.warning("auto_organize_series_pack: ABS poll %d: %s", attempt + 1, e)
+                    if matched_abs_id:
+                        break
+                    await asyncio.sleep(5)
+
+                now = _now()
+                fulfilled_req_id = req_row["id"] if req_row else None
+
+                async with get_db() as db:
+                    if matched_abs_id:
+                        abs_url = f"{abs_svc.public_url}/item/{matched_abs_id}"
+                        await db.execute(
+                            """INSERT INTO book_links (id, book_id, abs_id, linked_at)
+                               VALUES (?, ?, ?, ?)
+                               ON CONFLICT(book_id) DO UPDATE SET
+                                   abs_id=excluded.abs_id, linked_at=excluded.linked_at""",
+                            (str(uuid.uuid4()), book_id, matched_abs_id, now),
+                        )
+                        await db.execute(
+                            """INSERT INTO book_formats
+                                   (id, book_id, type, narrator, abs_id, abs_url,
+                                    fulfilled_by_request_id, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               ON CONFLICT(book_id, type) DO UPDATE SET
+                                   abs_id=excluded.abs_id, abs_url=excluded.abs_url,
+                                   fulfilled_by_request_id=COALESCE(excluded.fulfilled_by_request_id, fulfilled_by_request_id),
+                                   updated_at=excluded.updated_at""",
+                            (str(uuid.uuid4()), book_id, pack_type, narrator,
+                             matched_abs_id, abs_url, fulfilled_req_id, now, now),
+                        )
+                    else:
+                        await db.execute(
+                            """INSERT INTO book_formats
+                                   (id, book_id, type, narrator, abs_id, abs_url,
+                                    fulfilled_by_request_id, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+                               ON CONFLICT(book_id, type) DO NOTHING""",
+                            (str(uuid.uuid4()), book_id, pack_type, narrator, fulfilled_req_id, now, now),
+                        )
+                    if req_row:
+                        await db.execute(
+                            "UPDATE requests SET status='in_library', updated_at=? WHERE id=?",
+                            (now, req_row["id"]),
+                        )
+                    await db.commit()
+
+                if matched_abs_id:
+                    try:
+                        async with get_db() as db:
+                            meta_payload = await _build_abs_metadata(db, book_id, narrator, api_key)
+                        await abs_svc.update_item_metadata(matched_abs_id, meta_payload)
+                    except Exception as e:
+                        logger.warning("auto_organize_series_pack: ABS metadata error for %s: %s", matched_abs_id, e)
+        else:
+            now = _now()
+            async with get_db() as db:
+                for (dest_dir, book_id, req_row, filenames, narrator) in placed:
+                    fulfilled_req_id = req_row["id"] if req_row else None
+                    await db.execute(
+                        """INSERT INTO book_formats
+                               (id, book_id, type, narrator, abs_id, abs_url,
+                                fulfilled_by_request_id, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+                           ON CONFLICT(book_id, type) DO NOTHING""",
+                        (str(uuid.uuid4()), book_id, pack_type, narrator, fulfilled_req_id, now, now),
+                    )
+                    if req_row:
+                        await db.execute(
+                            "UPDATE requests SET status='in_library', updated_at=? WHERE id=?",
+                            (now, req_row["id"]),
+                        )
+                await db.commit()
+
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                (_now(), series_dl_id),
+            )
+            await db.commit()
+
+        logger.info("auto_organize_series_pack: completed, placed %d files", len(placed))
+
+    except Exception as e:
+        logger.error("auto_organize_series_pack crashed for %s: %s", series_dl_id, e, exc_info=True)
+        try:
+            from ..database import get_db
+            async with get_db() as db:
+                await db.execute(
+                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    (datetime.now(timezone.utc).isoformat(), series_dl_id),
                 )
                 await db.commit()
         except Exception:

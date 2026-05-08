@@ -332,6 +332,33 @@ async def _run_migrations(db):
         await db.execute("CREATE INDEX idx_book_formats_book ON book_formats(book_id)")
         await db.execute("PRAGMA user_version = 10")
 
+    if current < 11:
+        await db.execute("""
+            CREATE TABLE series_downloads (
+                id              TEXT PRIMARY KEY,
+                series_id       TEXT NOT NULL REFERENCES series(id),
+                type            TEXT NOT NULL DEFAULT 'ebook',
+                title           TEXT,
+                indexer         TEXT,
+                guid            TEXT UNIQUE,
+                info_url        TEXT,
+                protocol        TEXT,
+                size            INTEGER,
+                download_client TEXT,
+                download_id     TEXT,
+                download_path   TEXT,
+                status          TEXT NOT NULL DEFAULT 'snatched',
+                grabbed_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX idx_series_downloads_series ON series_downloads(series_id)")
+        await db.execute("PRAGMA user_version = 11")
+
+    if current < 12:
+        await db.execute("ALTER TABLE series_downloads ADD COLUMN proposed_mappings TEXT")
+        await db.execute("PRAGMA user_version = 12")
+
     await db.commit()
 
 
