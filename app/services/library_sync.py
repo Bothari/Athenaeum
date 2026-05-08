@@ -1,9 +1,10 @@
 import asyncio
+import json
 import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from rapidfuzz import fuzz
@@ -170,7 +171,17 @@ async def _get_or_create_series(db, name: str, abs_series_id: str = "", hc_serie
                 )
             return series_id
 
-    # 2. Match by name
+    # 2. Match by ABS series ID — handles ABS name variants that differ from our stored name
+    if abs_series_id:
+        row = await (
+            await db.execute(
+                "SELECT series_id FROM series_links WHERE abs_series_id = ?", (abs_series_id,)
+            )
+        ).fetchone()
+        if row:
+            return row[0]
+
+    # 3. Match by name
     row = await (
         await db.execute("SELECT id FROM series WHERE lower(name) = lower(?)", (name,))
     ).fetchone()
@@ -792,6 +803,114 @@ async def _hc_refresh_meta(api_key: str) -> int:
     return updated
 
 
+def _is_primary_position(pos: str) -> bool:
+    try:
+        n = float(pos)
+        return n == int(n)
+    except (ValueError, TypeError):
+        return False
+
+
+async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
+    """Pre-fetch full series book lists for all HC-linked series and cache them.
+
+    Stores series_books_rich (full list for the detail page) and
+    series_missing_stats (lightweight counts for the list page).
+    Skips series whose cache is still fresh.
+    """
+    from .book_search import get_hc_series_books
+
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        return {"updated": 0, "skipped": 0}
+
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    expires_iso = (now_dt + timedelta(days=14)).isoformat()
+
+    async with get_db() as db:
+        series_rows = await (
+            await db.execute(
+                """SELECT sl.series_id, sl.hardcover_series_id
+                   FROM series_links sl
+                   WHERE sl.hardcover_series_id IS NOT NULL AND sl.hardcover_series_id != ''"""
+            )
+        ).fetchall()
+
+    updated = 0
+    skipped = 0
+
+    for row in series_rows:
+        if time.monotonic() > deadline:
+            break
+
+        hc_series_id = row["hardcover_series_id"]
+        series_id = row["series_id"]
+
+        # Skip if cache is still fresh
+        async with get_db() as db:
+            cache_row = await (
+                await db.execute(
+                    "SELECT 1 FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
+                    (hc_series_id, "series_books_rich", now_iso),
+                )
+            ).fetchone()
+        if cache_row:
+            skipped += 1
+            continue
+
+        try:
+            all_books = await get_hc_series_books(hc_series_id, api_key)
+
+            async with get_db() as db:
+                # Owned HC IDs for this series (books with formats = in library)
+                owned_rows = await (
+                    await db.execute(
+                        """SELECT bl.hardcover_id FROM book_series bs
+                           JOIN books b ON b.id = bs.book_id
+                           LEFT JOIN book_links bl ON bl.book_id = b.id
+                           WHERE bs.series_id = ?
+                           AND EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = b.id)""",
+                        (series_id,),
+                    )
+                ).fetchall()
+                owned_hc_ids = {r["hardcover_id"] for r in owned_rows if r["hardcover_id"]}
+
+                primary = [
+                    b for b in all_books
+                    if not b.get("compilation")
+                    and _is_primary_position(b.get("series_position") or "")
+                ]
+                missing_primary = sum(
+                    1 for b in primary if b.get("metadata_id") not in owned_hc_ids
+                )
+                stats = {"missing_primary": missing_primary, "total_primary": len(primary)}
+
+                for source, payload in [
+                    ("series_books_rich", all_books),
+                    ("series_missing_stats", stats),
+                ]:
+                    await db.execute(
+                        """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
+                           VALUES (?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(query, source) DO UPDATE SET
+                             results_json = excluded.results_json,
+                             created_at   = excluded.created_at,
+                             expires_at   = excluded.expires_at""",
+                        (str(uuid.uuid4()), hc_series_id, source,
+                         json.dumps(payload), now_iso, expires_iso),
+                    )
+                await db.commit()
+
+            updated += 1
+        except Exception as e:
+            logger.warning("_hc_refresh_series_cache(%s): %s", hc_series_id, e)
+
+        await asyncio.sleep(2)
+
+    return {"updated": updated, "skipped": skipped}
+
+
 async def cache_refresh() -> dict:
     """HC linking: books (primary), then author/series catch-up. Rate-limited, 1hr time slice."""
     settings = await get_settings()
@@ -822,16 +941,18 @@ async def cache_refresh() -> dict:
         s = await _hc_catchup_series(settings, deadline, on_progress=await make_progress("series"))
         api_key = settings.get("hardcover", {}).get("api_key", "")
         meta_updated = await _hc_refresh_meta(api_key)
+        sc = await _hc_refresh_series_cache(settings, deadline)
         result = (
             f"books {b['linked']}/{b['linked']+b['failed']} linked"
             + (f" ({b['skipped']} skipped)" if b['skipped'] else "")
             + f" | authors {a['linked']}/{a['linked']+a['failed']}"
             + f" | series {s['linked']}/{s['linked']+s['failed']}"
             + f" | meta {meta_updated} refreshed"
+            + f" | series cache {sc['updated']} updated, {sc['skipped']} fresh"
         )
         logger.info(f"cache_refresh complete: {result}")
         await _upsert_task_state("cache_refresh", running=False, last_result=result)
-        return {"books": b, "authors": a, "series": s, "meta_updated": meta_updated}
+        return {"books": b, "authors": a, "series": s, "meta_updated": meta_updated, "series_cache": sc}
     except Exception as e:
         logger.error(f"cache_refresh failed: {e}", exc_info=True)
         await _upsert_task_state("cache_refresh", running=False, last_result=f"error: {e}")

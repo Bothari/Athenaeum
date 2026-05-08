@@ -2530,3 +2530,50 @@ Port: **8743** (different from BookOrganizeClaude's 8742, so both can run simult
 
 **Security note:** No authentication is implemented. Athenaeum is designed for self-hosted use on a trusted network. Do not expose port 8743 to the public internet.
 
+
+---
+
+## Series Pack Downloads
+
+A "series pack" is a single torrent/NZB containing one ebook file per book in a series
+(e.g. "The Black Company Series by Glen Cook [ENG / EPUB MOBI]").
+
+### Trigger
+
+A "Download series pack" button on the series detail page. Opens a Prowlarr search
+pre-queried with the series name, shows results, and lets the user pick one.
+Creates a `series_download` request type (or reuses existing request infrastructure
+with `series_id` set).
+
+### Organize logic
+
+When a series pack download completes, the organizer iterates all ebook files in the
+download folder and matches each to a book in the series using rapidfuzz title scoring
+against known series book titles (from `book_series` + `books` tables).
+
+Per-file logic after matching:
+
+1. **Already in library** (book_format exists for that type) → skip, log.
+2. **Has active request** → organize normally (copy to ABS folder, mark request
+   fulfilled, create/update book_format).
+3. **In DB but no request/format** → organize directly, create book_format without
+   a request (same as library sync discovering a new file).
+4. **Not in DB at all** → skip and log. The next library sync after ABS scans the
+   new folder will pick it up via normal sync.
+
+### Matching strategy
+
+- Primary: rapidfuzz `token_sort_ratio` of filename stem (stripped of position
+  prefixes like "01 - ", brackets, "EPUB"/"MOBI" suffixes) vs. book title.
+- Fallback: read epub `dc:title` metadata if rapidfuzz score < threshold (75).
+- A file with no match above threshold is logged and left in place for manual review.
+
+### File naming
+
+Same as single-book organize: `AuthorLastname, Firstname/Title/Title.ext`.
+Each matched book gets its own subfolder in the ABS library path.
+
+### ABS scan
+
+After all files are placed, trigger one ABS library scan (not per-book) to pick up
+all new items in one pass.

@@ -578,7 +578,7 @@ async def trigger_download(request_id: str, body: DownloadBody):
     dl_id = str(uuid.uuid4())
     async with get_db() as db:
         await db.execute(
-            """INSERT INTO downloads
+            """INSERT OR IGNORE INTO downloads
                (id, request_id, title, indexer, guid, info_url, protocol,
                 size, download_client, download_id, status, grabbed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?)""",

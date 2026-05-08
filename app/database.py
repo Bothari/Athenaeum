@@ -309,6 +309,29 @@ async def _run_migrations(db):
         await db.execute("ALTER TABLE requests ADD COLUMN requested_by_user_id TEXT REFERENCES users(id)")
         await db.execute("PRAGMA user_version = 9")
 
+    if current < 10:
+        # Recreate book_formats with ON DELETE SET NULL on fulfilled_by_request_id
+        # so that deleting a request doesn't violate the FK when the format still exists.
+        await db.execute("""
+            CREATE TABLE book_formats_new (
+                id                      TEXT PRIMARY KEY,
+                book_id                 TEXT NOT NULL REFERENCES books(id),
+                type                    TEXT NOT NULL,
+                narrator                TEXT NOT NULL DEFAULT '',
+                abs_id                  TEXT,
+                abs_url                 TEXT,
+                fulfilled_by_request_id TEXT REFERENCES requests(id) ON DELETE SET NULL,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL,
+                UNIQUE(book_id, type)
+            )
+        """)
+        await db.execute("INSERT INTO book_formats_new SELECT * FROM book_formats")
+        await db.execute("DROP TABLE book_formats")
+        await db.execute("ALTER TABLE book_formats_new RENAME TO book_formats")
+        await db.execute("CREATE INDEX idx_book_formats_book ON book_formats(book_id)")
+        await db.execute("PRAGMA user_version = 10")
+
     await db.commit()
 
 

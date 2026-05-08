@@ -1503,14 +1503,23 @@ route('/library/series', async (params, qp) => {
     headers: [
       { label: 'Name', key: 'name', sortable: true },
       { label: 'Books', key: 'library_count', sortable: true, style: 'width:80px' },
+      { label: 'Missing', style: 'width:90px' },
     ],
     fetchFn: (p) => api('/series?' + new URLSearchParams(p).toString()),
     extraFetchParams: () => seriesUnlinked ? { unlinked: '1' } : {},
     extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="series-unlinked-cb"${seriesUnlinked ? ' checked' : ''}> Unlinked only</label>`,
-    renderRow: (s) => `
-      <td><a href="#/library/series/${s.id}">${escapeHtml(s.name)}</a></td>
-      <td class="td-dim">${s.library_count || 0}${s.requested_count > 0 ? ` <span style="opacity:0.6">(+${s.requested_count})</span>` : ''}</td>
-    `,
+    renderRow: (s) => {
+      const missingBadge = s.missing_primary == null
+        ? `<span class="td-dim" style="font-size:0.75rem">—</span>`
+        : s.missing_primary === 0
+          ? `<span style="color:var(--green);font-size:0.75rem">Complete</span>`
+          : `<span class="badge badge-pending" style="font-size:0.75rem">${s.missing_primary} missing</span>`;
+      return `
+        <td><a href="#/library/series/${s.id}">${escapeHtml(s.name)}</a></td>
+        <td class="td-dim">${s.library_count || 0}${s.requested_count > 0 ? ` <span style="opacity:0.6">(+${s.requested_count})</span>` : ''}</td>
+        <td>${missingBadge}</td>
+      `;
+    },
     emptyMessage: 'No series yet. Series are added automatically when books with series data are synced.',
   });
   content.querySelector('#series-unlinked-cb').addEventListener('change', e => {
