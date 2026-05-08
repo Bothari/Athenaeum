@@ -262,6 +262,17 @@ _Completed 2026-05-02_
 
 ---
 
+## Post-Phase-8 polish (v0.8.10)
+_Completed 2026-05-08_
+
+- [x] Series pack download — search Prowlarr for series pack, download, compute file→book mappings, review UI with per-file dropdown (pre-populated by fuzzy match, fully editable), confirm & auto-organise
+- [x] Re-scan button on pack review — re-runs mapping computation after new books or requests are added
+- [x] `_clean_pack_filename` — strips trailing author suffix (` - Glen Cook`) and underscore subtitles so e.g. `Shadow Games_ The Fourth Chronicles - Glen Cook.epub` matches correctly
+- [x] Fix ABS sync wiping series links — `else: DELETE FROM book_series` removed; missing ABS series data no longer clobbers HC-linked series memberships
+- [x] Fix series library/requested counts ignoring `show_secondary_works` — fractional positions (e.g. 3.5) now excluded from `library_count`/`requested_count` when secondary works are hidden
+
+---
+
 ## Future Work / Backlog
 
 - **Author deduplication on HC conflict**: when two local authors match the same HC author ID, merge the duplicate — re-point all `book_authors` rows, delete the duplicate author and `author_links` row.
