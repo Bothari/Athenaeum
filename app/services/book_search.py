@@ -188,6 +188,7 @@ query GetSeriesBooks($id: Int!) {
         id slug title users_count
         rating
         ratings_count
+        release_date
         image { url }
         contributions(limit: 5) {
           author { id name }
@@ -309,6 +310,8 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
         book_id = str(book.get("id") or "")
         cover_url = (book.get("image") or {}).get("url") or ""
         rating_raw = book.get("rating") or 0
+        release_date = book.get("release_date") or ""
+        published_year = release_date[:4] if len(release_date) >= 4 else None
 
         authors = []
         seen_names: set = set()
@@ -332,7 +335,8 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
             "asin": "",
             "pages": None,
             "publisher": "",
-            "published_year": None,
+            "release_date": release_date,
+            "published_year": published_year,
             "language": "",
             "genres": [],
             "rating": round(float(rating_raw), 1) if rating_raw else None,

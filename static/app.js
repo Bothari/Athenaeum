@@ -593,14 +593,30 @@ function renderAuthorCard(author) {
   return el;
 }
 
+// ── Shared: series status badge ────────────────────────────────────────────────
+
+function seriesStatusBadge(s) {
+  const useAll = s.show_secondary_works;
+  const missing  = useAll ? s.missing_all  : s.missing_primary;
+  const upcoming = useAll ? s.upcoming_all : s.upcoming_primary;
+  if (missing == null && upcoming == null) return '';
+  if (missing > 0)  return `<span class="badge badge-missing" style="font-size:0.75rem">${missing} missing</span>`;
+  if (upcoming > 0) return `<span class="badge badge-upcoming" style="font-size:0.75rem">${upcoming} upcoming</span>`;
+  return `<span class="badge badge-completed" style="font-size:0.75rem">Complete</span>`;
+}
+
 // ── Shared: renderSeriesCard ───────────────────────────────────────────────────
 
 function renderSeriesCard(series) {
   const el = document.createElement('div');
   el.className = 'entity-card';
+  const badge = seriesStatusBadge(series);
   el.innerHTML = `
     <div class="entity-card-name">${escapeHtml(series.name)}</div>
-    <div class="entity-card-meta">${series.library_count || 0} book${series.library_count !== 1 ? 's' : ''}${series.requested_count > 0 ? ` <span class="td-dim">(+${series.requested_count})</span>` : ''}</div>
+    <div class="entity-card-meta" style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">
+      <span>${series.library_count || 0} book${series.library_count !== 1 ? 's' : ''}${series.requested_count > 0 ? ` <span class="td-dim">(+${series.requested_count})</span>` : ''}</span>
+      ${badge}
+    </div>
   `;
   el.onclick = () => navigate('/library/series/' + series.id);
   return el;
@@ -1509,15 +1525,11 @@ route('/library/series', async (params, qp) => {
     extraFetchParams: () => seriesUnlinked ? { unlinked: '1' } : {},
     extraControls: `<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.875rem;white-space:nowrap;cursor:pointer"><input type="checkbox" id="series-unlinked-cb"${seriesUnlinked ? ' checked' : ''}> Unlinked only</label>`,
     renderRow: (s) => {
-      const missingBadge = s.missing_primary == null
-        ? `<span class="td-dim" style="font-size:0.75rem">—</span>`
-        : s.missing_primary === 0
-          ? `<span style="color:var(--green);font-size:0.75rem">Complete</span>`
-          : `<span class="badge badge-pending" style="font-size:0.75rem">${s.missing_primary} missing</span>`;
+      const badge = seriesStatusBadge(s) || `<span class="td-dim" style="font-size:0.75rem">—</span>`;
       return `
         <td><a href="#/library/series/${s.id}">${escapeHtml(s.name)}</a></td>
         <td class="td-dim">${s.library_count || 0}${s.requested_count > 0 ? ` <span style="opacity:0.6">(+${s.requested_count})</span>` : ''}</td>
-        <td>${missingBadge}</td>
+        <td>${badge}</td>
       `;
     },
     emptyMessage: 'No series yet. Series are added automatically when books with series data are synced.',

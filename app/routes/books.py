@@ -374,9 +374,13 @@ async def list_series(
             items.append({
                 "id": row["id"],
                 "name": row["name"],
+                "show_secondary_works": bool(row["show_secondary_works"]),
                 "library_count": row["library_count"],
                 "requested_count": row["requested_count"],
                 "missing_primary": None,
+                "upcoming_primary": None,
+                "missing_all": None,
+                "upcoming_all": None,
                 "total_primary": None,
                 "link": {
                     "hardcover_series_id": link_row["hardcover_series_id"] if link_row else None,
@@ -399,8 +403,12 @@ async def list_series(
             for it in items:
                 hc_id = it["link"]["hardcover_series_id"]
                 if hc_id and hc_id in stats_by_hc_id:
-                    it["missing_primary"] = stats_by_hc_id[hc_id]["missing_primary"]
-                    it["total_primary"] = stats_by_hc_id[hc_id]["total_primary"]
+                    s = stats_by_hc_id[hc_id]
+                    it["missing_primary"] = s.get("missing_primary")
+                    it["upcoming_primary"] = s.get("upcoming_primary")
+                    it["missing_all"] = s.get("missing_all")
+                    it["upcoming_all"] = s.get("upcoming_all")
+                    it["total_primary"] = s.get("total_primary")
 
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
 
@@ -589,12 +597,25 @@ async def get_series_missing(series_id: str):
         if not show_secondary:
             candidates = [b for b in candidates if _is_primary_position(b.get("series_position") or "")]
 
-        # Write missing stats to cache so the series list can show them without a full fetch
-        primary = [b for b in all_books if not b.get("compilation") and _is_primary_position(b.get("series_position") or "")]
-        stats = {
-            "missing_primary": sum(1 for b in primary if b.get("metadata_id") not in owned_hc_ids),
-            "total_primary": len(primary),
-        }
+        # Cross-reference local release_date for books already in DB
+        local_dates = await (
+            await db.execute(
+                """SELECT bl.hardcover_id, b.release_date
+                   FROM book_series bs
+                   JOIN books b ON b.id = bs.book_id
+                   LEFT JOIN book_links bl ON bl.book_id = b.id
+                   WHERE bs.series_id = ? AND b.release_date IS NOT NULL""",
+                (series_id,),
+            )
+        ).fetchall()
+        local_date_map = {r["hardcover_id"]: r["release_date"] for r in local_dates if r["hardcover_id"]}
+        for b in all_books:
+            if not b.get("release_date") and b.get("metadata_id") in local_date_map:
+                b["release_date"] = local_date_map[b["metadata_id"]]
+
+        # Write missing stats to cache
+        from ..services.library_sync import _compute_series_stats
+        stats = _compute_series_stats(all_books, owned_hc_ids, show_secondary)
         expires_iso = (now_dt + timedelta(days=14)).isoformat()
         await db.execute(
             """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)

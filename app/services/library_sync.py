@@ -811,12 +811,57 @@ def _is_primary_position(pos: str) -> bool:
         return False
 
 
+def _book_is_unreleased(b: dict) -> bool:
+    """True if the book's release_date is in the future (or year-precision current year)."""
+    from datetime import date
+    rd = (b.get("release_date") or "")[:10]
+    if not rd:
+        return False
+    try:
+        d = date.fromisoformat(rd)
+        today = date.today()
+        if d.month == 1 and d.day == 1 and d.year > today.year:
+            return True
+        return d > today
+    except ValueError:
+        return False
+
+
+def _compute_series_stats(all_books: list, owned_hc_ids: set, show_secondary: bool) -> dict:
+    """Compute missing/upcoming counts for a series, respecting show_secondary."""
+    primary = [
+        b for b in all_books
+        if not b.get("compilation") and _is_primary_position(b.get("series_position") or "")
+    ]
+    all_works = [b for b in all_books if not b.get("compilation")]
+
+    def _counts(subset):
+        not_owned = [b for b in subset if b.get("metadata_id") not in owned_hc_ids]
+        return (
+            sum(1 for b in not_owned if not _book_is_unreleased(b)),
+            sum(1 for b in not_owned if _book_is_unreleased(b)),
+        )
+
+    missing_primary, upcoming_primary = _counts(primary)
+    missing_all, upcoming_all = _counts(all_works)
+
+    return {
+        "missing_primary": missing_primary,
+        "upcoming_primary": upcoming_primary,
+        "missing_all": missing_all,
+        "upcoming_all": upcoming_all,
+        "total_primary": len(primary),
+        "total_all": len(all_works),
+    }
+
+
 async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
     """Pre-fetch full series book lists for all HC-linked series and cache them.
 
     Stores series_books_rich (full list for the detail page) and
     series_missing_stats (lightweight counts for the list page).
-    Skips series whose cache is still fresh.
+    Books data is skipped when still fresh; stats are always recomputed so
+    they reflect the current library state.
     """
     from .book_search import get_hc_series_books
 
@@ -831,8 +876,9 @@ async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
     async with get_db() as db:
         series_rows = await (
             await db.execute(
-                """SELECT sl.series_id, sl.hardcover_series_id
+                """SELECT sl.series_id, sl.hardcover_series_id, s.show_secondary_works
                    FROM series_links sl
+                   JOIN series s ON s.id = sl.series_id
                    WHERE sl.hardcover_series_id IS NOT NULL AND sl.hardcover_series_id != ''"""
             )
         ).fetchall()
@@ -846,24 +892,38 @@ async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
 
         hc_series_id = row["hardcover_series_id"]
         series_id = row["series_id"]
-
-        # Skip if cache is still fresh
-        async with get_db() as db:
-            cache_row = await (
-                await db.execute(
-                    "SELECT 1 FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
-                    (hc_series_id, "series_books_rich", now_iso),
-                )
-            ).fetchone()
-        if cache_row:
-            skipped += 1
-            continue
+        show_secondary = bool(row["show_secondary_works"])
 
         try:
-            all_books = await get_hc_series_books(hc_series_id, api_key)
-
+            # Check if books data is still fresh — reuse cached if so
             async with get_db() as db:
-                # Owned HC IDs for this series (books with formats = in library)
+                cache_row = await (
+                    await db.execute(
+                        "SELECT results_json FROM metadata_cache WHERE query = ? AND source = ? AND expires_at > ?",
+                        (hc_series_id, "series_books_rich", now_iso),
+                    )
+                ).fetchone()
+
+            if cache_row:
+                all_books = json.loads(cache_row["results_json"])
+                skipped += 1
+            else:
+                all_books = await get_hc_series_books(hc_series_id, api_key)
+                async with get_db() as db:
+                    await db.execute(
+                        """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
+                           VALUES (?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(query, source) DO UPDATE SET
+                             results_json = excluded.results_json,
+                             created_at   = excluded.created_at,
+                             expires_at   = excluded.expires_at""",
+                        (str(uuid.uuid4()), hc_series_id, "series_books_rich",
+                         json.dumps(all_books), now_iso, expires_iso),
+                    )
+                    await db.commit()
+
+            # Always recompute stats — they depend on current library state
+            async with get_db() as db:
                 owned_rows = await (
                     await db.execute(
                         """SELECT bl.hardcover_id FROM book_series bs
@@ -876,37 +936,43 @@ async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
                 ).fetchall()
                 owned_hc_ids = {r["hardcover_id"] for r in owned_rows if r["hardcover_id"]}
 
-                primary = [
-                    b for b in all_books
-                    if not b.get("compilation")
-                    and _is_primary_position(b.get("series_position") or "")
-                ]
-                missing_primary = sum(
-                    1 for b in primary if b.get("metadata_id") not in owned_hc_ids
-                )
-                stats = {"missing_primary": missing_primary, "total_primary": len(primary)}
-
-                for source, payload in [
-                    ("series_books_rich", all_books),
-                    ("series_missing_stats", stats),
-                ]:
+                # Cross-reference local release_date for books already in DB
+                local_dates = await (
                     await db.execute(
-                        """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
-                           VALUES (?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(query, source) DO UPDATE SET
-                             results_json = excluded.results_json,
-                             created_at   = excluded.created_at,
-                             expires_at   = excluded.expires_at""",
-                        (str(uuid.uuid4()), hc_series_id, source,
-                         json.dumps(payload), now_iso, expires_iso),
+                        """SELECT bl.hardcover_id, b.release_date
+                           FROM book_series bs
+                           JOIN books b ON b.id = bs.book_id
+                           LEFT JOIN book_links bl ON bl.book_id = b.id
+                           WHERE bs.series_id = ? AND b.release_date IS NOT NULL""",
+                        (series_id,),
                     )
+                ).fetchall()
+                local_date_map = {r["hardcover_id"]: r["release_date"] for r in local_dates if r["hardcover_id"]}
+
+                # Patch in local release dates where HC didn't provide them
+                for b in all_books:
+                    if not b.get("release_date") and b.get("metadata_id") in local_date_map:
+                        b["release_date"] = local_date_map[b["metadata_id"]]
+
+                stats = _compute_series_stats(all_books, owned_hc_ids, show_secondary)
+
+                await db.execute(
+                    """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(query, source) DO UPDATE SET
+                         results_json = excluded.results_json,
+                         created_at   = excluded.created_at,
+                         expires_at   = excluded.expires_at""",
+                    (str(uuid.uuid4()), hc_series_id, "series_missing_stats",
+                     json.dumps(stats), now_iso, expires_iso),
+                )
                 await db.commit()
 
             updated += 1
         except Exception as e:
             logger.warning("_hc_refresh_series_cache(%s): %s", hc_series_id, e)
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
     return {"updated": updated, "skipped": skipped}
 
