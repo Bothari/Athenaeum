@@ -635,6 +635,78 @@ async def get_series_missing(series_id: str):
     return {"items": candidates, "show_secondary_works": show_secondary}
 
 
+class LinkLibraryBookBody(BaseModel):
+    book_id: str
+    position: Optional[str] = None
+
+
+@router.post("/series/{series_id}/link-library-book")
+async def link_library_book_to_series(
+    series_id: str,
+    body: LinkLibraryBookBody,
+    auth: dict = Depends(require_admin),
+):
+    """Add a book already in the library to this series (local DB + ABS metadata patch)."""
+    settings = await get_settings()
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+
+    async with get_db() as db:
+        series_row = await (
+            await db.execute("SELECT id, name FROM series WHERE id = ?", (series_id,))
+        ).fetchone()
+        if not series_row:
+            raise HTTPException(status_code=404, detail="Series not found")
+
+        book_row = await (
+            await db.execute("SELECT id, title FROM books WHERE id = ?", (body.book_id,))
+        ).fetchone()
+        if not book_row:
+            raise HTTPException(status_code=404, detail="Book not found")
+
+        fmt_rows = await (
+            await db.execute(
+                "SELECT abs_id FROM book_formats WHERE book_id = ? AND abs_id IS NOT NULL",
+                (body.book_id,),
+            )
+        ).fetchall()
+        if not fmt_rows:
+            raise HTTPException(status_code=400, detail="Book is not in the library")
+
+        now = _now()
+        await db.execute(
+            """INSERT INTO book_series (id, book_id, series_id, position, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(book_id, series_id) DO NOTHING""",
+            (str(uuid.uuid4()), body.book_id, series_id, body.position or "", now),
+        )
+        await db.commit()
+
+        # Rebuild ABS metadata with all series now including the new one
+        from ..services.organizer import _build_abs_metadata
+        from ..services.audiobookshelf import AudiobookshelfService
+
+        abs_svc = AudiobookshelfService(settings.get("audiobookshelf", {}))
+        seen_abs_ids = set()
+        for fmt_row in fmt_rows:
+            abs_id = fmt_row["abs_id"]
+            if abs_id in seen_abs_ids:
+                continue
+            seen_abs_ids.add(abs_id)
+            narrator_row = await (
+                await db.execute(
+                    "SELECT narrator FROM book_formats WHERE book_id = ? AND abs_id = ?",
+                    (body.book_id, abs_id),
+                )
+            ).fetchone()
+            narrator = (narrator_row["narrator"] or "") if narrator_row else ""
+            meta = await _build_abs_metadata(db, body.book_id, narrator, api_key)
+            print(f"link-library-book: patching ABS item {abs_id} seriesName={meta.get('seriesName')}", flush=True)
+            ok = await abs_svc.update_item_metadata(abs_id, meta)
+            print(f"link-library-book: ABS patch result={ok}", flush=True)
+
+    return {"ok": True}
+
+
 @router.get("/series/{series_id}/series-downloads")
 async def list_series_downloads(series_id: str, auth: dict = Depends(require_admin)):
     """Return active series pack downloads for this series (excludes completed/failed)."""

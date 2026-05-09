@@ -1693,6 +1693,38 @@ route('/library/series/:id', async ({ id }) => {
                 titleRow.insertBefore(badge, titleEl);
               }
             }
+            if (result.in_library && result.book_id) {
+              const fmtRows = card.querySelector('.search-card-fmt-rows');
+              if (fmtRows) {
+                const row = document.createElement('div');
+                row.className = 'fmt-row fmt-add-series-row';
+                const label = document.createElement('span');
+                label.className = 'fmt-label';
+                label.textContent = 'Series';
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-primary btn-sm';
+                btn.textContent = 'Add to this series';
+                btn.addEventListener('click', async () => {
+                  btn.disabled = true;
+                  btn.textContent = 'Adding…';
+                  try {
+                    await api(`/series/${id}/link-library-book`, {
+                      method: 'POST',
+                      body: { book_id: result.book_id, position: result.series_position || null },
+                    });
+                    btn.textContent = 'Added';
+                    setTimeout(() => loadMissing(), 800);
+                  } catch {
+                    btn.disabled = false;
+                    btn.textContent = 'Add to this series';
+                    showToast('Failed to add book to series', 'error');
+                  }
+                });
+                row.appendChild(label);
+                row.appendChild(btn);
+                fmtRows.appendChild(row);
+              }
+            }
             sec.appendChild(card);
           });
         }
@@ -1783,9 +1815,9 @@ route('/library/series/:id', async ({ id }) => {
 
     function renderPackSearchUI(sec) {
       sec.innerHTML = `
-        <div class="section-heading-row">
-          <span class="section-heading">Series Pack</span>
-          <button class="btn btn-secondary btn-sm" id="series-pack-search-btn">${ICON_SEARCH} Search Prowlarr</button>
+        <div class="section-heading">Series Pack</div>
+        <div style="margin-bottom:0.75rem">
+          <button class="btn btn-primary btn-sm" id="series-pack-search-btn">${ICON_SEARCH} Search Prowlarr</button>
         </div>
         <div id="series-pack-results"></div>`;
 

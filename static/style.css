@@ -327,6 +327,7 @@ html.light .badge-unmonitored { background: var(--surface2); color: var(--text-d
 }
 .fmt-narrator-input:focus { outline: none; border-color: var(--accent); }
 .fmt-narrator-text { font-size: 0.78rem; color: var(--text-dim); font-style: italic; margin-left: 0.2rem; }
+.fmt-add-series-row { border-top: 1px solid var(--border); padding-top: 0.5rem; margin-top: 0.1rem; }
 
 /* Author / series card */
 .entity-card {
