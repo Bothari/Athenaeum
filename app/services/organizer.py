@@ -227,11 +227,10 @@ async def _build_abs_metadata(db, book_id: str, narrator: str, api_key: str) -> 
         if narrators:
             meta["narratorName"] = ", ".join(narrators)
     if series_rows:
-        parts = []
-        for r in series_rows:
-            pos = (r["position"] or "").strip()
-            parts.append(f"{r['name']} #{pos}" if pos else r["name"])
-        meta["seriesName"] = ", ".join(parts)
+        meta["series"] = [
+            {"name": r["name"], "sequence": (r["position"] or "").strip()}
+            for r in series_rows
+        ]
     if hc_meta.get("subtitle"):
         meta["subtitle"] = hc_meta["subtitle"]
     if hc_meta.get("description"):
