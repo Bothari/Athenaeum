@@ -396,6 +396,8 @@ html.light .badge-unmonitored { background: var(--surface2); color: var(--text-d
 .badge-completed    { background: #1e3428; color: #68a868; }
 .badge-in_library   { background: #1e3428; color: #5a9a5a; }
 .badge-failed       { background: #3a1e1e; color: #c05050; }
+.badge-missing      { background: #3a1e1e; color: #c05050; }
+.badge-upcoming     { background: #2a2200; color: #e0b820; }
 .badge-audiobook    { background: #1e2e3e; color: #7aaccf; }
 .badge-ebook        { background: #1e3428; color: #68a868; }
 
@@ -411,6 +413,8 @@ html.light .badge-organizing   { background: #fce8d8; color: #7a2c00; }
 html.light .badge-completed    { background: #d8eedd; color: #1a5020; }
 html.light .badge-in_library   { background: #d8eedd; color: #1a5020; }
 html.light .badge-failed       { background: #fcd8d8; color: #8a1818; }
+html.light .badge-missing      { background: #fcd8d8; color: #8a1818; }
+html.light .badge-upcoming     { background: #fffbe0; color: #7a5e00; }
 html.light .badge-audiobook    { background: #d8e8f4; color: #1a4068; }
 html.light .badge-ebook        { background: #d8eedd; color: #1a5020; }
 
