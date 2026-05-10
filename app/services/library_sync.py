@@ -812,19 +812,24 @@ def _is_primary_position(pos: str) -> bool:
 
 
 def _book_is_unreleased(b: dict) -> bool:
-    """True if the book's release_date is in the future (or year-precision current year)."""
+    """True if the book has no date or its release date is in the future.
+
+    No date (empty string) means HC has no release date for this book — treat as
+    upcoming/unannounced. YYYY-01-01 for current or future year is year-precision
+    only (no confirmed day), so also treat as upcoming.
+    """
     from datetime import date
     rd = (b.get("release_date") or "")[:10]
     if not rd:
-        return False
+        return True
     try:
         d = date.fromisoformat(rd)
         today = date.today()
-        if d.month == 1 and d.day == 1 and d.year > today.year:
+        if d.month == 1 and d.day == 1 and d.year >= today.year:
             return True
         return d > today
     except ValueError:
-        return False
+        return True
 
 
 def _compute_series_stats(all_books: list, owned_hc_ids: set, show_secondary: bool) -> dict:

@@ -2202,18 +2202,36 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
   } else if (row.status !== 'missing') {
     const req = row.request;
     const canSearch = isAdmin() && ['requested', 'failed', 'completed'].includes(req.status);
+    const canRetry = isAdmin() && req.status === 'failed';
     const canCancel = isAdmin() || !_authUser || !req.requested_by_user_id || req.requested_by_user_id === _authUser?.user_id;
     container.innerHTML = `
       <div class="detail-fmt-detail">
         <div class="detail-fmt-kv"><span class="td-dim">Status</span> <span class="badge badge-${req.status}">${escapeHtml(req.status)}</span></div>
         ${isAdmin() && req.requested_by_username ? `<div class="detail-fmt-kv"><span class="td-dim">Requested by</span> <span>${escapeHtml(req.requested_by_username)}</span></div>` : ''}
         <div class="detail-fmt-actions">
-          ${canSearch ? `<button class="btn btn-primary btn-sm detail-fmt-search">${ICON_SEARCH} Search Prowlarr</button>` : ''}
+          ${canRetry ? `<button class="btn btn-primary btn-sm detail-fmt-retry">Retry organize</button>` : ''}
+          ${canSearch ? `<button class="btn btn-secondary btn-sm detail-fmt-search">${ICON_SEARCH} Search Prowlarr</button>` : ''}
           ${canCancel ? `<button class="btn btn-secondary btn-sm detail-fmt-cancel">Cancel</button>` : ''}
         </div>
         <div class="detail-fmt-search-results mt-1"></div>
       </div>
     `;
+    if (canRetry) {
+      const retryBtn = container.querySelector('.detail-fmt-retry');
+      retryBtn.onclick = async () => {
+        retryBtn.disabled = true;
+        retryBtn.textContent = 'Retrying…';
+        try {
+          await api(`/requests/${req.id}/organize`, { method: 'POST' });
+          toast('Organize restarted');
+          setTimeout(refresh, 1500);
+        } catch {
+          toast('Retry failed', 'error');
+          retryBtn.disabled = false;
+          retryBtn.textContent = 'Retry organize';
+        }
+      };
+    }
     if (canCancel) container.querySelector('.detail-fmt-cancel').onclick = async () => {
       try {
         await api(`/requests/${req.id}`, { method: 'DELETE' });
