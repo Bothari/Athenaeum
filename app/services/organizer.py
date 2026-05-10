@@ -579,14 +579,28 @@ async def auto_organize(request_id: str):
             else:
                 await asyncio.to_thread(shutil.move, str(src), str(dest_file))
         else:
-            logger.error("auto_organize: source path does not exist: %s", src)
-            async with get_db() as db:
-                await db.execute(
-                    "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
-                    (_now(), request_id),
+            # Source is gone — check if a previous organize attempt already moved files to dest.
+            # This happens when the move succeeded but the ABS poll timed out and marked failed.
+            type_exts = AUDIO_EXTENSIONS if book_type == "audiobook" else EBOOK_EXTENSIONS
+            existing = (
+                [f for f in dest_dir.rglob("*") if f.is_file() and f.suffix.lower() in type_exts]
+                if dest_dir.exists() else []
+            )
+            if existing:
+                organized_filenames = {f.name for f in existing}
+                logger.info(
+                    "auto_organize: source gone but dest populated (%s), resuming ABS scan",
+                    dest_dir,
                 )
-                await db.commit()
-            return
+            else:
+                logger.error("auto_organize: source path does not exist: %s", src)
+                async with get_db() as db:
+                    await db.execute(
+                        "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
+                        (_now(), request_id),
+                    )
+                    await db.commit()
+                return
 
         # Update merge_jobs.organized_path if present
         async with get_db() as db:
@@ -621,9 +635,9 @@ async def auto_organize(request_id: str):
 
         for lib_id in library_ids:
             try:
-                await abs_svc.scan_library(lib_id)
+                await abs_svc.scan_folder(lib_id, str(dest_dir))
             except Exception as e:
-                logger.warning("ABS scan_library(%s) failed: %s", lib_id, e)
+                logger.warning("ABS scan_folder(%s) failed: %s", lib_id, e)
 
         await asyncio.sleep(5)
 
