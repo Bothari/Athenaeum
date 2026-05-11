@@ -841,6 +841,8 @@ async def _hc_refresh_meta(api_key: str) -> int:
 
 
 def _is_primary_position(pos: str) -> bool:
+    if not pos:
+        return True  # announced but unplaced — treat as primary
     try:
         n = float(pos)
         return n == int(n)

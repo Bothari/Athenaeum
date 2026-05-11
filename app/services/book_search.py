@@ -288,8 +288,9 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
     series = (data.get("data") or {}).get("series_by_pk") or {}
     series_name = series.get("name") or ""
 
-    # Collect raw entries with dedup metadata attached
+    # Collect raw entries, separating null-position (announced but unplaced) from positioned
     raw: list[dict] = []
+    null_pos_raw: list[dict] = []
     for entry in (series.get("book_series") or []):
         book = entry.get("book") or {}
         if not book.get("title"):
@@ -299,33 +300,28 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
             pos_num = float(pos_raw) if pos_raw is not None else None
         except (ValueError, TypeError):
             pos_num = None
-        if pos_num is None:
-            continue
-        raw.append({
+        item = {
             "entry": entry,
             "book": book,
             "details": entry.get("details") or "",
             "position_num": pos_num,
             "users_count": book.get("users_count") or 0,
-        })
+        }
+        if pos_num is None:
+            null_pos_raw.append(item)
+        else:
+            raw.append(item)
 
     deduped = _dedup_series_entries(raw)
 
-    results = []
-    for item in deduped:
-        entry = item["entry"]
+    def _normalise_item(item: dict, position: str) -> dict:
         book = item["book"]
-        position = _normalize_position(entry.get("details") or entry.get("position") or "")
-        if not position:
-            continue
-
         slug = book.get("slug") or ""
         book_id = str(book.get("id") or "")
         cover_url = (book.get("image") or {}).get("url") or ""
         rating_raw = book.get("rating") or 0
         release_date = book.get("release_date") or ""
         published_year = release_date[:4] if len(release_date) >= 4 else None
-
         authors = []
         seen_names: set = set()
         for c in (book.get("contributions") or []):
@@ -334,8 +330,7 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
             if name and name not in seen_names:
                 seen_names.add(name)
                 authors.append({"name": name, "id": str(a.get("id") or "")})
-
-        result = {
+        return {
             "title": book.get("title") or "",
             "subtitle": "",
             "author": authors[0]["name"] if authors else "",
@@ -371,9 +366,26 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
             "series_position": position,
             "alt_ids": item.get("_alt_ids") or [],
         }
-        results.append(result)
 
-    return results
+    # Null-position books: dedup by book ID, keep highest users_count, show first
+    null_pos_by_id: dict[str, dict] = {}
+    for item in null_pos_raw:
+        bid = str(item["book"].get("id") or "")
+        if not bid:
+            continue
+        cur = null_pos_by_id.get(bid)
+        if not cur or item["users_count"] > cur["users_count"]:
+            null_pos_by_id[bid] = item
+    null_results = [_normalise_item(item, "") for item in null_pos_by_id.values()]
+
+    results = []
+    for item in deduped:
+        position = _normalize_position(item["entry"].get("details") or item["entry"].get("position") or "")
+        if not position:
+            continue
+        results.append(_normalise_item(item, position))
+
+    return null_results + results
 
 
 async def advanced_search_books(
