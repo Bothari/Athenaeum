@@ -126,6 +126,48 @@ async def get_book(book_id: str):
     return book
 
 
+@router.post("/books/{book_id}/refresh-hc")
+async def refresh_hc_book(book_id: str, auth=Depends(require_admin)):
+    """Re-fetch HC metadata for a book: canonicalize hardcover_id, update slug and release_date."""
+    from ..services.library_sync import _fetch_hc_book_meta
+    async with get_db() as db:
+        link_row = await (
+            await db.execute("SELECT hardcover_id FROM book_links WHERE book_id = ?", (book_id,))
+        ).fetchone()
+    if not link_row or not link_row["hardcover_id"]:
+        raise HTTPException(status_code=400, detail="Book not linked to Hardcover")
+
+    settings = await get_settings()
+    api_key = settings.get("hardcover", {}).get("api_key", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Hardcover API key not configured")
+
+    meta = await _fetch_hc_book_meta(int(link_row["hardcover_id"]), api_key)
+    if not meta:
+        raise HTTPException(status_code=502, detail="Hardcover lookup failed")
+
+    async with get_db() as db:
+        if meta.get("release_date"):
+            await db.execute(
+                "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ?",
+                (meta["release_date"], book_id),
+            )
+        else:
+            await db.execute("UPDATE books SET release_date_fetched = 1 WHERE id = ?", (book_id,))
+        if meta.get("slug"):
+            await db.execute(
+                "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ?",
+                (meta["slug"], book_id),
+            )
+        if meta.get("canonical_id"):
+            await db.execute(
+                "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?",
+                (meta["canonical_id"], book_id),
+            )
+        await db.commit()
+    return {"ok": True, "canonical_id": meta.get("canonical_id"), "slug": meta.get("slug"), "release_date": meta.get("release_date")}
+
+
 @router.get("/authors")
 async def list_authors(
     q: str = Query(default=""),
@@ -262,7 +304,11 @@ async def get_author_also_by(author_id: str):
         ).fetchall()
         owned_hc_ids = {r["hardcover_id"] for r in owned_rows if r["hardcover_id"]}
 
-        candidates = [b for b in all_books if b.get("metadata_id") not in owned_hc_ids]
+        candidates = [
+            b for b in all_books
+            if b.get("metadata_id") not in owned_hc_ids
+            and not any(aid in owned_hc_ids for aid in (b.get("alt_ids") or []))
+        ]
         candidates = await _annotate_results(candidates, db)
 
     return {"items": candidates}
@@ -592,6 +638,7 @@ async def get_series_missing(series_id: str):
             b for b in all_books
             if not b.get("compilation")
             and b.get("metadata_id") not in owned_hc_ids
+            and not any(aid in owned_hc_ids for aid in (b.get("alt_ids") or []))
         ]
 
         if not show_secondary:

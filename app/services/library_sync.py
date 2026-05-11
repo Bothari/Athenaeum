@@ -359,12 +359,19 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
 
         book_series_rows = await (
             await db.execute(
-                """SELECT bs.series_id, s.name FROM book_series bs
+                """SELECT bs.series_id, s.name, sl.hardcover_series_id
+                   FROM book_series bs
                    JOIN series s ON s.id = bs.series_id
+                   LEFT JOIN series_links sl ON sl.series_id = bs.series_id
                    WHERE bs.book_id = ?""",
                 (book_id,),
             )
         ).fetchall()
+        known_hc_series_ids = {
+            str(r["hardcover_series_id"])
+            for r in book_series_rows
+            if r["hardcover_series_id"]
+        }
 
     if not title.strip():
         return False
@@ -382,7 +389,7 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
         return False
 
     best = None
-    best_score = (0, 0)
+    best_score = (0, 0, 0)
     for hit in hits:
         doc = hit.get("document", {})
         doc_title = doc.get("title", "") or ""
@@ -405,11 +412,21 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
         else:
             a_score = 85
 
-        logger.debug(f"HC candidate '{doc_title}' by '{doc_author}': t={t_score} a={a_score}")
+        featured = doc.get("featured_series") or {}
+        doc_series_id = str((featured.get("series") or {}).get("id") or "")
+        has_any_series = bool(featured or doc.get("series_names"))
+        if known_hc_series_ids and doc_series_id in known_hc_series_ids:
+            series_bonus = 2
+        elif has_any_series:
+            series_bonus = 1
+        else:
+            series_bonus = 0
 
-        if t_score >= 90 and a_score >= 85 and (t_score, a_score) > best_score:
+        logger.debug(f"HC candidate '{doc_title}' by '{doc_author}': t={t_score} a={a_score} s={series_bonus}")
+
+        if t_score >= 90 and a_score >= 85 and (t_score, a_score, series_bonus) > best_score:
             best = doc
-            best_score = (t_score, a_score)
+            best_score = (t_score, a_score, series_bonus)
 
     if not best:
         logger.warning(f"HC no confident match for '{title}' by '{author}' (best scores: {best_score})")
@@ -476,7 +493,8 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
                 "UPDATE books SET release_date_fetched = 1 WHERE id = ?",
                 (book_id,),
             )
-        for local_series_id, local_series_name in book_series_rows:
+        for row in book_series_rows:
+            local_series_id, local_series_name = row["series_id"], row["name"]
             best_match_name = None
             best_s_score = 0
             for sname in series_names:
@@ -860,7 +878,11 @@ def _compute_series_stats(all_books: list, owned_hc_ids: set, show_secondary: bo
     all_works = [b for b in all_books if not b.get("compilation")]
 
     def _counts(subset):
-        not_owned = [b for b in subset if b.get("metadata_id") not in owned_hc_ids]
+        not_owned = [
+            b for b in subset
+            if b.get("metadata_id") not in owned_hc_ids
+            and not any(aid in owned_hc_ids for aid in (b.get("alt_ids") or []))
+        ]
         return (
             sum(1 for b in not_owned if not _book_is_unreleased(b)),
             sum(1 for b in not_owned if _book_is_unreleased(b)),
@@ -1075,12 +1097,19 @@ async def try_link_book(book_id: str, settings: dict) -> dict:
 
         book_series_rows = await (
             await db.execute(
-                """SELECT bs.series_id, s.name FROM book_series bs
+                """SELECT bs.series_id, s.name, sl.hardcover_series_id
+                   FROM book_series bs
                    JOIN series s ON s.id = bs.series_id
+                   LEFT JOIN series_links sl ON sl.series_id = bs.series_id
                    WHERE bs.book_id = ?""",
                 (book_id,),
             )
         ).fetchall()
+        known_hc_series_ids = {
+            str(r["hardcover_series_id"])
+            for r in book_series_rows
+            if r["hardcover_series_id"]
+        }
 
         existing_link = await (
             await db.execute(
@@ -1130,6 +1159,16 @@ async def try_link_book(book_id: str, settings: dict) -> dict:
             )
         else:
             a_score = 85
+        featured = doc.get("featured_series") or {}
+        doc_series_id = str((featured.get("series") or {}).get("id") or "")
+        has_any_series = bool(featured or doc.get("series_names"))
+        if known_hc_series_ids and doc_series_id in known_hc_series_ids:
+            series_bonus = 2
+        elif has_any_series:
+            series_bonus = 1
+        else:
+            series_bonus = 0
+
         above = t_score >= 90 and a_score >= 85
         candidate = {
             "hc_id": str(doc.get("id", "")),
@@ -1138,17 +1177,18 @@ async def try_link_book(book_id: str, settings: dict) -> dict:
             "slug": doc.get("slug", ""),
             "t_score": t_score,
             "a_score": a_score,
+            "series_bonus": series_bonus,
             "above_threshold": above,
             "is_best": False,
             "series_names": doc.get("series_names") or [],
             "featured_series": doc.get("featured_series"),
         }
         log["candidates"].append(candidate)
-        if above and (t_score, a_score) > best_score:
+        if above and (t_score, a_score, series_bonus) > best_score:
             best = doc
-            best_score = (t_score, a_score)
+            best_score = (t_score, a_score, series_bonus)
 
-    log["candidates"].sort(key=lambda c: (c["t_score"], c["a_score"]), reverse=True)
+    log["candidates"].sort(key=lambda c: (c["t_score"], c["a_score"], c["series_bonus"]), reverse=True)
 
     if best:
         for c in log["candidates"]:

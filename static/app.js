@@ -427,6 +427,7 @@ function setupHcCard(containerEl, type, entityId, initialHcId, initialSlug) {
           : `<span style="display:flex;align-items:center;opacity:0.6">${ICON_HC()}</span>`
         }
         <button class="btn btn-secondary btn-sm hc-unlink-btn" style="padding:2px 8px;font-size:0.8rem">Unlink</button>
+        ${type === 'book' ? `<button class="btn btn-secondary btn-sm hc-refresh-btn" style="padding:2px 8px;font-size:0.8rem">Refresh HC data</button>` : ''}
       </div>
     ` : `
       <button class="btn btn-secondary btn-sm hc-find-btn">Find Hardcover match</button>
@@ -454,6 +455,22 @@ function setupHcCard(containerEl, type, entityId, initialHcId, initialSlug) {
           this.disabled = false;
         }
       };
+      const refreshBtn = containerEl.querySelector('.hc-refresh-btn');
+      if (refreshBtn) {
+        refreshBtn.onclick = async function() {
+          this.disabled = true;
+          this.textContent = 'Refreshing…';
+          try {
+            const result = await api(`/books/${entityId}/refresh-hc`, { method: 'POST' });
+            render(result.canonical_id || hcId, result.slug || slug);
+            toast('HC data refreshed', 'success');
+          } catch (e) {
+            toast('Refresh failed: ' + e, 'error');
+            this.disabled = false;
+            this.textContent = 'Refresh HC data';
+          }
+        };
+      }
       return;
     }
 
