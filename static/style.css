@@ -828,6 +828,20 @@ body.home-page .home-title { display: block; }
 .toast-info    { border-left: 3px solid var(--accent); }
 
 /* ── Section heading ── */
+/* ── Series stats block ── */
+.series-stats-block { margin-bottom: 0.75rem; }
+.series-progress-bar {
+  height: 6px; border-radius: 3px; background: var(--surface2);
+  margin-bottom: 0.5rem; overflow: hidden;
+}
+.series-progress-bar.series-progress-loading { opacity: 0.4; }
+.series-progress-fill { height: 100%; background: var(--green); border-radius: 3px; transition: width 0.4s ease; }
+.series-stats-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3rem; font-size: 0.85rem; }
+.series-stat-sep { color: var(--text-dim); }
+.series-stat-missing  { color: var(--red); font-weight: 500; }
+.series-stat-upcoming { color: var(--yellow); font-weight: 500; }
+.series-stat-complete { color: var(--green); font-weight: 500; }
+
 .section-heading {
   font-size: 1rem;
   font-weight: 600;
