@@ -1607,7 +1607,6 @@ route('/library/series/:id', async ({ id }) => {
         <div id="series-missing-section"></div>
         ${isAdmin() ? `<div id="series-pack-section" class="mt-2"></div>` : ''}
         <div id="series-hc-section" class="mt-2"></div>
-        <div id="series-debug-section"></div>
       </div>`;
       document.getElementById('vt-poster').onclick = () => { localStorage.setItem('detail_view', 'poster'); stopPackPoll(); renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); if (isAdmin()) loadSeriesPackSection(); };
       document.getElementById('vt-list').onclick   = () => { localStorage.setItem('detail_view', 'list');   stopPackPoll(); renderSeriesBooksView(); loadSeriesExtras(); loadMissing(); if (isAdmin()) loadSeriesPackSection(); };
@@ -1793,7 +1792,7 @@ route('/library/series/:id', async ({ id }) => {
             loadMissing();
           });
         }
-      } catch {
+      } catch (err) {
         sec.innerHTML = '';
         const missingCard = document.getElementById('series-stat-missing');
         if (missingCard) missingCard.querySelector('.stat-value').textContent = '—';

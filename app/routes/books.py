@@ -966,7 +966,9 @@ async def trigger_series_pack_download(
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _is_primary_position(pos: str) -> bool:
-    """True if the series position is a whole number (primary work)."""
+    """True if the series position is a whole number or unset (primary work)."""
+    if not pos:
+        return True
     try:
         n = float(pos)
         return n == int(n)
