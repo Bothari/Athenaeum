@@ -241,6 +241,8 @@ function renderTable(config) {
   let loading = false;
   let allLoaded = false;
   let observer = null;
+  let loadedCount = 0;
+  let restoring = false;
 
   function updateUrlParams() {
     const allParams = getHashParams();
@@ -276,7 +278,7 @@ function renderTable(config) {
       const data = await fetchFn({ q, sort, dir, limit: LIMIT, offset, ...extra });
       total = data.total;
       const tbody = container.querySelector('tbody');
-      if (reset) tbody.innerHTML = '';
+      if (reset) { tbody.innerHTML = ''; loadedCount = 0; }
       if (data.items.length === 0 && reset) {
         tbody.innerHTML = `<tr><td colspan="${headers.length}" class="state-empty">${emptyMessage}</td></tr>`;
         allLoaded = true;
@@ -288,8 +290,9 @@ function renderTable(config) {
         if (typeof html === 'string') tr.innerHTML = html;
         tbody.appendChild(tr);
       });
+      loadedCount += data.items.length;
       allLoaded = data.items.length < LIMIT;
-      if (!allLoaded) attachObserver();
+      if (!allLoaded && !restoring) attachObserver();
     } finally {
       loading = false;
     }
@@ -357,9 +360,24 @@ function renderTable(config) {
     }, 200);
   });
 
-  fetchAndAppend(true);
+  async function initAndRestore() {
+    await fetchAndAppend(true);
+    if (config.restoreScroll) {
+      restoring = true;
+      const { scrollY, count } = config.restoreScroll;
+      while (!allLoaded && loadedCount < count) {
+        offset += LIMIT;
+        await fetchAndAppend(false);
+      }
+      restoring = false;
+      attachObserver();
+      requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
+    }
+  }
+  initAndRestore();
   return {
-    reload() { offset = 0; allLoaded = false; fetchAndAppend(true); },
+    reload() { offset = 0; allLoaded = false; loadedCount = 0; fetchAndAppend(true); },
+    getCount() { return loadedCount; },
   };
 }
 
@@ -962,11 +980,18 @@ function matchRoute(path) {
 }
 
 const app = document.getElementById('app');
+let _prevPath = null;
 
 async function render() {
   // Remove home-page class before every render; home route re-adds it
   document.body.classList.remove('home-page');
   const path = getHashPath() || '/';
+
+  // Clear saved series scroll when navigating to the list fresh (not back from a detail page)
+  if (path === '/library/series' && !(_prevPath || '').startsWith('/library/series/')) {
+    sessionStorage.removeItem('series_list_scroll');
+  }
+  _prevPath = path;
   const match = matchRoute(path);
   if (!match) {
     app.innerHTML = `<div class="state-empty" style="margin-top:4rem">Page not found.</div>`;
@@ -1539,6 +1564,9 @@ route('/library/authors/:id', async ({ id }) => {
 
 // Library: Series list
 route('/library/series', async (params, qp) => {
+  const savedScroll = JSON.parse(sessionStorage.getItem('series_list_scroll') || 'null');
+  sessionStorage.removeItem('series_list_scroll');
+
   app.innerHTML = `<div class="narrow-page">
     <div class="page-header"><span class="page-title">${ICON_SERIES} Series</span></div>
     <div id="series-content"></div>
@@ -1565,6 +1593,12 @@ route('/library/series', async (params, qp) => {
       `;
     },
     emptyMessage: 'No series yet. Series are added automatically when books with series data are synced.',
+    restoreScroll: savedScroll || undefined,
+  });
+  content.addEventListener('click', e => {
+    if (e.target.closest('a[href^="#/library/series/"]')) {
+      sessionStorage.setItem('series_list_scroll', JSON.stringify({ scrollY: window.scrollY, count: seriesTable.getCount() }));
+    }
   });
   content.querySelector('#series-unlinked-cb').addEventListener('change', e => {
     seriesUnlinked = e.target.checked;
