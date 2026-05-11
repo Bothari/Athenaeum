@@ -215,20 +215,25 @@ def _dedup_series_entries(entries: list[dict]) -> list[dict]:
        (e.g. '8') over split-book strings (e.g. '8 part 1', 'tome 1').
        If no pure-number entry exists at a position, keep the most popular.
     """
-    # Pass 1: best book per exact details string
+    # Pass 1: best book per exact details string; collect all IDs per details key
     by_details: dict[str, dict] = {}
+    all_ids_by_details: dict[str, list[str]] = {}
     for e in entries:
         key = e.get("details") or ""
+        bid = str((e.get("book") or {}).get("id") or "")
+        if bid:
+            all_ids_by_details.setdefault(key, []).append(bid)
         cur = by_details.get(key)
         if not cur or (e.get("users_count") or 0) > (cur.get("users_count") or 0):
             by_details[key] = e
 
     # Pass 2: group by numeric position, prefer pure-number details
     by_pos: dict[float, list[dict]] = {}
-    for e in by_details.values():
+    for key, e in by_details.items():
         pos = e.get("position_num")
         if pos is None:
             continue
+        e["_details_key"] = key
         by_pos.setdefault(pos, []).append(e)
 
     result = []
@@ -237,6 +242,14 @@ def _dedup_series_entries(entries: list[dict]) -> list[dict]:
         pure = [c for c in candidates if _is_pure_position(c.get("details") or "")]
         pool = pure if pure else candidates
         best = max(pool, key=lambda c: c.get("users_count") or 0)
+        # Collect every HC book ID at this position that wasn't selected as winner
+        winner_id = str((best.get("book") or {}).get("id") or "")
+        alt_ids: list[str] = []
+        for e in candidates:
+            for bid in all_ids_by_details.get(e.get("_details_key") or "", []):
+                if bid and bid != winner_id and bid not in alt_ids:
+                    alt_ids.append(bid)
+        best["_alt_ids"] = alt_ids
         result.append(best)
 
     return result
@@ -356,6 +369,7 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
             "existing_requests": [],
             "abs_links": [],
             "series_position": position,
+            "alt_ids": item.get("_alt_ids") or [],
         }
         results.append(result)
 
