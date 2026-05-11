@@ -567,6 +567,7 @@ async def get_series_books(series_id: str):
 @router.get("/series/{series_id}/missing")
 async def get_series_missing(series_id: str):
     """Return missing books for a series, with full metadata per entry."""
+    from ..services.library_sync import _compute_series_stats, _is_primary_position
 
     async with get_db() as db:
         series_row = await (
@@ -661,7 +662,6 @@ async def get_series_missing(series_id: str):
                 b["release_date"] = local_date_map[b["metadata_id"]]
 
         # Write missing stats to cache
-        from ..services.library_sync import _compute_series_stats
         stats = _compute_series_stats(all_books, owned_hc_ids, show_secondary)
         expires_iso = (now_dt + timedelta(days=14)).isoformat()
         await db.execute(
@@ -965,15 +965,6 @@ async def trigger_series_pack_download(
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _is_primary_position(pos: str) -> bool:
-    """True if the series position is a whole number or unset (primary work)."""
-    if not pos:
-        return True
-    try:
-        n = float(pos)
-        return n == int(n)
-    except (ValueError, TypeError):
-        return False
 
 async def _get_book_authors(db, book_id: str) -> list:
     rows = await (
