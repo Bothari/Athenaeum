@@ -318,8 +318,8 @@ html.light .hc-icon { filter: none; }
 .fmt-pill { cursor: pointer; border: none; transition: opacity 0.15s; }
 .fmt-pill:disabled { cursor: default; }
 .fmt-pill:not(:disabled):hover { opacity: 0.75; }
-.badge-unmonitored { background: var(--surface2); color: var(--text-dim); opacity: 0.6; }
-html.light .badge-unmonitored { background: var(--surface2); color: var(--text-dim); }
+.badge-neutral { background: var(--surface2); color: var(--text-dim); opacity: 0.6; }
+html.light .badge-neutral { background: var(--surface2); color: var(--text-dim); }
 .fmt-narrator-input {
   flex: 1; padding: 0.1rem 0.4rem; border-radius: var(--radius);
   border: 1px solid var(--border); background: var(--surface); color: var(--text);
@@ -386,38 +386,34 @@ html.light .badge-unmonitored { background: var(--surface2); color: var(--text-d
   white-space: nowrap;
 }
 /* Dark mode badges */
-.badge-pending      { background: #2a2200; color: #e0b820; }
-.badge-requested    { background: #2a3a4a; color: #8ab8e8; }
-.badge-monitored    { background: #2a3a4a; color: #a8ccf0; }
-.badge-snatched     { background: #3a2a10; color: #d4882a; }
-.badge-downloading  { background: #3a2a10; color: #d4a030; }
-.badge-downloaded   { background: #3a2e10; color: #c8b040; }
-.badge-merging      { background: #2e1e38; color: #b888cc; }
-.badge-organizing   { background: #3a2010; color: #c85520; }
-.badge-completed    { background: #1e3428; color: #68a868; }
-.badge-in_library   { background: #1e3428; color: #5a9a5a; }
-.badge-failed       { background: #3a1e1e; color: #c05050; }
-.badge-missing      { background: #3a1e1e; color: #c05050; }
-.badge-upcoming     { background: #2a2200; color: #e0b820; }
-.badge-audiobook    { background: #1e2e3e; color: #7aaccf; }
-.badge-ebook        { background: #1e3428; color: #68a868; }
+.badge-pending      { background: #2a2600; color: #c8a020; }
+.badge-requested    { background: #1a2a40; color: #60a0d8; }
+.badge-sso          { background: #183828; color: #50a060; }
+.badge-snatched     { background: #3a2000; color: #e07020; }
+.badge-downloading  { background: #382800; color: #d09020; }
+.badge-downloaded   { background: #382800; color: #d09020; }
+.badge-merging      { background: #281848; color: #9060d8; }
+.badge-organizing   { background: #281848; color: #9060d8; }
+.badge-completed    { background: #183828; color: #50a060; }
+.badge-in_library   { background: #183828; color: #50a060; }
+.badge-failed       { background: #3a1818; color: #c04040; }
+.badge-missing      { background: #3a2010; color: #d05828; }
+.badge-upcoming     { background: #181e40; color: #6078d0; }
 
 /* Light mode badges */
-html.light .badge-pending      { background: #fffbe0; color: #7a5e00; }
-html.light .badge-requested    { background: #d8eaf8; color: #1a5080; }
-html.light .badge-monitored    { background: #d8eaf8; color: #205898; }
-html.light .badge-snatched     { background: #fdefd8; color: #7a4400; }
-html.light .badge-downloading  { background: #fef5d8; color: #6a5000; }
-html.light .badge-downloaded   { background: #fef8d8; color: #5a5800; }
-html.light .badge-merging      { background: #eeddf8; color: #602880; }
-html.light .badge-organizing   { background: #fce8d8; color: #7a2c00; }
-html.light .badge-completed    { background: #d8eedd; color: #1a5020; }
-html.light .badge-in_library   { background: #d8eedd; color: #1a5020; }
-html.light .badge-failed       { background: #fcd8d8; color: #8a1818; }
-html.light .badge-missing      { background: #fcd8d8; color: #8a1818; }
-html.light .badge-upcoming     { background: #fffbe0; color: #7a5e00; }
-html.light .badge-audiobook    { background: #d8e8f4; color: #1a4068; }
-html.light .badge-ebook        { background: #d8eedd; color: #1a5020; }
+html.light .badge-pending      { background: #fff8d0; color: #7a6000; }
+html.light .badge-requested    { background: #d8eaf8; color: #185080; }
+html.light .badge-sso          { background: #d8eedc; color: #185828; }
+html.light .badge-snatched     { background: #feecd8; color: #8a3800; }
+html.light .badge-downloading  { background: #fef0d0; color: #7a5000; }
+html.light .badge-downloaded   { background: #fef0d0; color: #7a5000; }
+html.light .badge-merging      { background: #ece0ff; color: #502898; }
+html.light .badge-organizing   { background: #ece0ff; color: #502898; }
+html.light .badge-completed    { background: #d8eedc; color: #185828; }
+html.light .badge-in_library   { background: #d8eedc; color: #185828; }
+html.light .badge-failed       { background: #fcd8d8; color: #881818; }
+html.light .badge-missing      { background: #fde8d8; color: #883010; }
+html.light .badge-upcoming     { background: #dde0f8; color: #283898; }
 
 /* Light mode banner */
 html.light .banner-abs {
