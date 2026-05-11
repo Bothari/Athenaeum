@@ -624,7 +624,7 @@ function renderSeriesCard(series) {
   el.innerHTML = `
     <div class="entity-card-name">${escapeHtml(series.name)}</div>
     <div class="entity-card-meta" style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">
-      <span>${series.library_count || 0} book${series.library_count !== 1 ? 's' : ''}${series.requested_count > 0 ? ` <span class="td-dim">(+${series.requested_count})</span>` : ''}</span>
+      <span class="badge badge-in_library">${series.library_count || 0}</span>${series.requested_count > 0 ? `<span class="badge badge-requested">+${series.requested_count}</span>` : ''}
       ${badge}
     </div>
   `;
@@ -651,8 +651,8 @@ function renderDetailStats(name, stats) {
   if (loading) {
     summaryParts.push(`<span class="td-dim" id="series-stat-missing">checking…</span>`);
   } else {
-    if (stats.missing)  summaryParts.push(`<span class="series-stat-missing" id="series-stat-missing">${stats.missing} missing</span>`);
-    if (stats.upcoming) summaryParts.push(`<span class="series-stat-upcoming">${stats.upcoming} upcoming</span>`);
+    if (stats.missing)  summaryParts.push(`<a class="series-stat-missing" href="#series-section-missing" onclick="document.getElementById('series-section-missing')?.scrollIntoView({behavior:'smooth',block:'start'});return false;">${stats.missing} missing</a>`);
+    if (stats.upcoming) summaryParts.push(`<a class="series-stat-upcoming" href="#series-section-upcoming" onclick="document.getElementById('series-section-upcoming')?.scrollIntoView({behavior:'smooth',block:'start'});return false;">${stats.upcoming} upcoming</a>`);
     if (!stats.missing && !stats.upcoming) summaryParts.push(`<span class="series-stat-complete">complete</span>`);
   }
 
@@ -1543,7 +1543,7 @@ route('/library/series', async (params, qp) => {
       const badge = seriesStatusBadge(s) || `<span class="td-dim" style="font-size:0.75rem">—</span>`;
       return `
         <td><a href="#/library/series/${s.id}">${escapeHtml(s.name)}</a></td>
-        <td class="td-dim">${s.library_count || 0}${s.requested_count > 0 ? ` <span style="opacity:0.6">(+${s.requested_count})</span>` : ''}</td>
+        <td><span class="badge badge-in_library">${s.library_count || 0}</span>${s.requested_count > 0 ? ` <span class="badge badge-requested">${s.requested_count}</span>` : ''}</td>
         <td>${badge}</td>
       `;
     },
@@ -1702,10 +1702,11 @@ route('/library/series/:id', async ({ id }) => {
 
           sec.innerHTML = '';
 
-          function renderSubsection(items, heading, headingClass) {
+          function renderSubsection(items, heading, headingClass, anchorId) {
             if (!items.length) return;
             const headRow = document.createElement('div');
             headRow.className = 'section-heading-row mt-2';
+            if (anchorId) headRow.id = anchorId;
             headRow.innerHTML = `<span class="section-heading ${headingClass}">${heading} (${items.length}${data.truncated ? '+' : ''})</span>`;
             if (heading.startsWith('Missing')) headRow.appendChild((() => { const d = document.createElement('div'); d.innerHTML = toggleChk; return d.firstChild; })());
             sec.appendChild(headRow);
@@ -1761,8 +1762,8 @@ route('/library/series/:id', async ({ id }) => {
             });
           }
 
-          renderSubsection(missing,  'Missing from Series', '');
-          renderSubsection(upcoming, 'Upcoming',            '');
+          renderSubsection(missing,  'Missing from Series', '', 'series-section-missing');
+          renderSubsection(upcoming, 'Upcoming',            '', 'series-section-upcoming');
 
           // toggle only wired to Missing heading — re-attach after render
         }
