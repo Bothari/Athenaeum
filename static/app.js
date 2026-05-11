@@ -593,6 +593,16 @@ function renderAuthorCard(author) {
   return el;
 }
 
+// ── Shared: release date helpers ──────────────────────────────────────────────
+
+function _isUnreleased(result) {
+  const rd = (result.release_date || '').slice(0, 10);
+  if (!rd) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  if (rd.endsWith('-01-01') && rd.slice(0, 4) >= String(new Date().getFullYear())) return true;
+  return rd > today;
+}
+
 // ── Shared: series status badge ────────────────────────────────────────────────
 
 function seriesStatusBadge(s) {
@@ -623,28 +633,33 @@ function renderSeriesCard(series) {
 }
 
 // ── Shared: renderDetailStats ──────────────────────────────────────────────────
-// stats: { inLibrary, total, requested, missing, loadingMissing }
+// stats: { inLibrary, requested, missing, upcoming, total }
+// missing/upcoming/total may be null while loading.
 
 function renderDetailStats(name, stats) {
-  const missingVal = stats.loadingMissing
-    ? `<span class="spin" style="font-size:1.2rem;line-height:1">⟳</span>`
-    : (stats.missing != null ? stats.missing : '—');
+  const loading = stats.missing == null;
+  const total = stats.total != null ? stats.total : null;
+  const pct = (total && stats.inLibrary != null) ? Math.round((stats.inLibrary / total) * 100) : null;
+
+  const barHtml = total != null ? `
+    <div class="series-progress-bar" title="${stats.inLibrary} of ${total} in library">
+      <div class="series-progress-fill" style="width:${pct}%"></div>
+    </div>` : `<div class="series-progress-bar series-progress-loading"></div>`;
+
+  const summaryParts = [`<span>${stats.inLibrary || 0} in library</span>`];
+  if (stats.requested) summaryParts.push(`<span>${stats.requested} requested</span>`);
+  if (loading) {
+    summaryParts.push(`<span class="td-dim" id="series-stat-missing">checking…</span>`);
+  } else {
+    if (stats.missing)  summaryParts.push(`<span class="series-stat-missing" id="series-stat-missing">${stats.missing} missing</span>`);
+    if (stats.upcoming) summaryParts.push(`<span class="series-stat-upcoming">${stats.upcoming} upcoming</span>`);
+    if (!stats.missing && !stats.upcoming) summaryParts.push(`<span class="series-stat-complete">complete</span>`);
+  }
+
   return `
-    <div class="card mb-2">
-      <div class="stats-row" style="margin-bottom:0">
-        <div class="stat-card">
-          <div class="stat-value">${stats.inLibrary || 0}</div>
-          <div class="stat-label">In library</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${stats.requested || 0}</div>
-          <div class="stat-label">Requested</div>
-        </div>
-        <div class="stat-card" id="series-stat-missing">
-          <div class="stat-value">${missingVal}</div>
-          <div class="stat-label">Missing</div>
-        </div>
-      </div>
+    <div class="series-stats-block mb-2" id="series-stats-block">
+      ${barHtml}
+      <div class="series-stats-summary">${summaryParts.join('<span class="series-stat-sep">·</span>')}</div>
     </div>
   `;
 }
@@ -1569,7 +1584,7 @@ route('/library/series/:id', async ({ id }) => {
             <button class="view-toggle-btn${view === 'list' ? ' active' : ''}" id="vt-list" title="List">${ICON_LIST_V}</button>
           </div>
         </div>
-        <div id="series-stats">${renderDetailStats(seriesName, { inLibrary, total: booksData.length, requested, loadingMissing: true })}</div>
+        <div id="series-stats">${renderDetailStats(seriesName, { inLibrary, requested, missing: null, upcoming: null, total: null })}</div>
         <div class="section-heading">Books in Library</div>
         <div id="series-books"></div>
         <div id="series-missing-section"></div>
@@ -1662,10 +1677,16 @@ route('/library/series/:id', async ({ id }) => {
       sec.innerHTML = `<div class="section-heading mt-2">Missing from Series</div><div class="state-loading">Checking Hardcover…</div>`;
       try {
         const data = await api(`/series/${id}/missing`);
-        const missingCard = document.getElementById('series-stat-missing');
-        if (missingCard) {
-          const count = (data.items && !data.error) ? data.items.length : null;
-          missingCard.querySelector('.stat-value').textContent = count != null ? String(count) : '—';
+        if (data.items && !data.error) {
+          const nMissing  = data.items.filter(b => !_isUnreleased(b)).length;
+          const nUpcoming = data.items.filter(b =>  _isUnreleased(b)).length;
+          const total = inLibrary + nMissing + nUpcoming;
+          const statsEl = document.getElementById('series-stats');
+          if (statsEl) {
+            statsEl.innerHTML = renderDetailStats(seriesName, {
+              inLibrary, requested, missing: nMissing, upcoming: nUpcoming, total,
+            });
+          }
         }
 
         const showSecondary = !!data.show_secondary_works;
@@ -1676,57 +1697,74 @@ route('/library/series/:id', async ({ id }) => {
             ? `<div class="section-heading-row mt-2"><span class="section-heading">Missing from Series</span>${toggleChk}</div><p class="td-dim" style="padding:0.5rem 0">All books accounted for.</p>`
             : '';
         } else {
-          const label = `Missing from Series (${data.items.length}${data.truncated ? '+' : ''})`;
-          sec.innerHTML = `<div class="section-heading-row mt-2"><span class="section-heading">${label}</span>${toggleChk}</div>`;
-          data.items.forEach(result => {
-            const card = document.createElement('div');
-            card.className = 'search-card';
-            populateBookCard(card, result, null);
-            if (result.series_position) {
-              const titleRow = card.querySelector('.search-card-title-row');
-              const titleEl = titleRow && titleRow.querySelector('.search-card-title');
-              if (titleRow && titleEl) {
-                const badge = document.createElement('span');
-                badge.className = 'badge';
-                badge.style.cssText = 'background:var(--surface2);color:var(--text-dim);margin-right:0.4rem;font-size:0.75rem;vertical-align:middle;flex-shrink:0';
-                badge.textContent = `#${result.series_position}`;
-                titleRow.insertBefore(badge, titleEl);
+          const missing  = data.items.filter(b => !_isUnreleased(b));
+          const upcoming = data.items.filter(b =>  _isUnreleased(b));
+
+          sec.innerHTML = '';
+
+          function renderSubsection(items, heading, headingClass) {
+            if (!items.length) return;
+            const headRow = document.createElement('div');
+            headRow.className = 'section-heading-row mt-2';
+            headRow.innerHTML = `<span class="section-heading ${headingClass}">${heading} (${items.length}${data.truncated ? '+' : ''})</span>`;
+            if (heading.startsWith('Missing')) headRow.appendChild((() => { const d = document.createElement('div'); d.innerHTML = toggleChk; return d.firstChild; })());
+            sec.appendChild(headRow);
+
+            items.forEach(result => {
+              const card = document.createElement('div');
+              card.className = 'search-card';
+              populateBookCard(card, result, null);
+              if (result.series_position) {
+                const titleRow = card.querySelector('.search-card-title-row');
+                const titleEl = titleRow && titleRow.querySelector('.search-card-title');
+                if (titleRow && titleEl) {
+                  const badge = document.createElement('span');
+                  badge.className = 'badge';
+                  badge.style.cssText = 'background:var(--surface2);color:var(--text-dim);margin-right:0.4rem;font-size:0.75rem;vertical-align:middle;flex-shrink:0';
+                  badge.textContent = `#${result.series_position}`;
+                  titleRow.insertBefore(badge, titleEl);
+                }
               }
-            }
-            if (result.in_library && result.book_id) {
-              const fmtRows = card.querySelector('.search-card-fmt-rows');
-              if (fmtRows) {
-                const row = document.createElement('div');
-                row.className = 'fmt-row fmt-add-series-row';
-                const label = document.createElement('span');
-                label.className = 'fmt-label';
-                label.textContent = 'Series';
-                const btn = document.createElement('button');
-                btn.className = 'btn btn-primary btn-sm';
-                btn.textContent = 'Add to this series';
-                btn.addEventListener('click', async () => {
-                  btn.disabled = true;
-                  btn.textContent = 'Adding…';
-                  try {
-                    await api(`/series/${id}/link-library-book`, {
-                      method: 'POST',
-                      body: { book_id: result.book_id, position: result.series_position || null },
-                    });
-                    btn.textContent = 'Added';
-                    setTimeout(() => loadMissing(), 800);
-                  } catch {
-                    btn.disabled = false;
-                    btn.textContent = 'Add to this series';
-                    showToast('Failed to add book to series', 'error');
-                  }
-                });
-                row.appendChild(label);
-                row.appendChild(btn);
-                fmtRows.appendChild(row);
+              if (result.in_library && result.book_id) {
+                const fmtRows = card.querySelector('.search-card-fmt-rows');
+                if (fmtRows) {
+                  const row = document.createElement('div');
+                  row.className = 'fmt-row fmt-add-series-row';
+                  const lbl = document.createElement('span');
+                  lbl.className = 'fmt-label';
+                  lbl.textContent = 'Series';
+                  const btn = document.createElement('button');
+                  btn.className = 'btn btn-primary btn-sm';
+                  btn.textContent = 'Add to this series';
+                  btn.addEventListener('click', async () => {
+                    btn.disabled = true;
+                    btn.textContent = 'Adding…';
+                    try {
+                      await api(`/series/${id}/link-library-book`, {
+                        method: 'POST',
+                        body: { book_id: result.book_id, position: result.series_position || null },
+                      });
+                      btn.textContent = 'Added';
+                      setTimeout(() => loadMissing(), 800);
+                    } catch {
+                      btn.disabled = false;
+                      btn.textContent = 'Add to this series';
+                      showToast('Failed to add book to series', 'error');
+                    }
+                  });
+                  row.appendChild(lbl);
+                  row.appendChild(btn);
+                  fmtRows.appendChild(row);
+                }
               }
-            }
-            sec.appendChild(card);
-          });
+              sec.appendChild(card);
+            });
+          }
+
+          renderSubsection(missing,  'Missing from Series', '');
+          renderSubsection(upcoming, 'Upcoming',            '');
+
+          // toggle only wired to Missing heading — re-attach after render
         }
 
         const toggleEl = document.getElementById('missing-secondary-toggle');
