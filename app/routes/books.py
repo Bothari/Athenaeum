@@ -434,27 +434,53 @@ async def list_series(
                 },
             })
 
-        # Batch-fetch missing stats from cache for all HC-linked series
+        # Compute missing/upcoming counts on-demand: HC data from cache, owned state live from DB.
+        # This means counts always reflect the current library without needing a cache invalidation.
+        from ..services.library_sync import _compute_series_stats, _is_primary_position
         hc_ids = [it["link"]["hardcover_series_id"] for it in items if it["link"]["hardcover_series_id"]]
         if hc_ids:
             now_iso = datetime.now(timezone.utc).isoformat()
             placeholders = ",".join("?" * len(hc_ids))
-            stats_rows = await (
+            # Load cached HC book lists (populated by cache_refresh or series page visits)
+            books_rows = await (
                 await db.execute(
-                    f"SELECT query, results_json FROM metadata_cache WHERE query IN ({placeholders}) AND source = 'series_missing_stats' AND expires_at > ?",
+                    f"SELECT query, results_json FROM metadata_cache WHERE query IN ({placeholders}) AND source = 'series_books_rich' AND expires_at > ?",
                     hc_ids + [now_iso],
                 )
             ).fetchall()
-            stats_by_hc_id = {r["query"]: json.loads(r["results_json"]) for r in stats_rows}
+            books_by_hc_id = {r["query"]: json.loads(r["results_json"]) for r in books_rows}
+
+            # Batch-load owned HC IDs for all series in one query
+            series_ids = [it["id"] for it in items]
+            s_placeholders = ",".join("?" * len(series_ids))
+            owned_rows = await (
+                await db.execute(
+                    f"""SELECT bs.series_id, bl.hardcover_id
+                        FROM book_series bs
+                        JOIN books b ON b.id = bs.book_id
+                        LEFT JOIN book_links bl ON bl.book_id = b.id
+                        WHERE bs.series_id IN ({s_placeholders})
+                        AND EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = b.id)""",
+                    series_ids,
+                )
+            ).fetchall()
+            owned_by_series: dict = {}
+            for r in owned_rows:
+                if r["hardcover_id"]:
+                    owned_by_series.setdefault(r["series_id"], set()).add(r["hardcover_id"])
+
             for it in items:
                 hc_id = it["link"]["hardcover_series_id"]
-                if hc_id and hc_id in stats_by_hc_id:
-                    s = stats_by_hc_id[hc_id]
-                    it["missing_primary"] = s.get("missing_primary")
-                    it["upcoming_primary"] = s.get("upcoming_primary")
-                    it["missing_all"] = s.get("missing_all")
-                    it["upcoming_all"] = s.get("upcoming_all")
-                    it["total_primary"] = s.get("total_primary")
+                if not hc_id or hc_id not in books_by_hc_id:
+                    continue
+                all_books = books_by_hc_id[hc_id]
+                owned_hc_ids = owned_by_series.get(it["id"], set())
+                stats = _compute_series_stats(all_books, owned_hc_ids, it["show_secondary_works"])
+                it["missing_primary"] = stats["missing_primary"]
+                it["upcoming_primary"] = stats["upcoming_primary"]
+                it["missing_all"] = stats["missing_all"]
+                it["upcoming_all"] = stats["upcoming_all"]
+                it["total_primary"] = stats["total_primary"]
 
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
 
@@ -660,21 +686,6 @@ async def get_series_missing(series_id: str):
         for b in all_books:
             if not b.get("release_date") and b.get("metadata_id") in local_date_map:
                 b["release_date"] = local_date_map[b["metadata_id"]]
-
-        # Write missing stats to cache
-        stats = _compute_series_stats(all_books, owned_hc_ids, show_secondary)
-        expires_iso = (now_dt + timedelta(days=14)).isoformat()
-        await db.execute(
-            """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(query, source) DO UPDATE SET
-                 results_json = excluded.results_json,
-                 created_at   = excluded.created_at,
-                 expires_at   = excluded.expires_at""",
-            (str(uuid.uuid4()), hc_series_id, "series_missing_stats",
-             json.dumps(stats), now_iso, expires_iso),
-        )
-        await db.commit()
 
         # Annotate with live library/request state
         candidates = await _annotate_results(candidates, db)

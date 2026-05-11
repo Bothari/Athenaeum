@@ -1691,16 +1691,16 @@ async def _sync_item(item: dict) -> str:
                     changed = True
 
             # Remove series links that are no longer present in ABS.
-            # Only trim when ABS actually reported series for this book — if it returned
-            # none, that means ABS metadata is incomplete, not that the links are wrong.
             if current_series_ids:
                 placeholders = ",".join("?" * len(current_series_ids))
                 r = await db.execute(
                     f"DELETE FROM book_series WHERE book_id = ? AND series_id NOT IN ({placeholders})",
                     [book_id, *current_series_ids],
                 )
-                if r.rowcount:
-                    changed = True
+            else:
+                r = await db.execute("DELETE FROM book_series WHERE book_id = ?", (book_id,))
+            if r.rowcount:
+                changed = True
 
             seen_types = set()
             for fmt in formats:
