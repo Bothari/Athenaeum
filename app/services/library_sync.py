@@ -254,8 +254,10 @@ async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int
 
 
 async def _fetch_hc_book_meta(hc_book_id: int, api_key: str) -> dict:
-    """Fetch slug and release_date for a single HC book. Returns dict with those keys."""
-    gql = "query Meta($id: Int!) { books_by_pk(id: $id) { slug release_date } }"
+    """Fetch slug, release_date, and canonical_id for a single HC book.
+    If the book has a canonical_id, follows it once and returns the canonical book's
+    data with 'canonical_id' set so callers can update stored HC IDs."""
+    gql = "query Meta($id: Int!) { books_by_pk(id: $id) { slug release_date canonical_id } }"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -264,10 +266,17 @@ async def _fetch_hc_book_meta(hc_book_id: int, api_key: str) -> dict:
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             )
             resp.raise_for_status()
-        return (resp.json().get("data") or {}).get("books_by_pk") or {}
+        book = (resp.json().get("data") or {}).get("books_by_pk") or {}
     except Exception as e:
         logger.warning("_fetch_hc_book_meta(%s) failed: %s", hc_book_id, e)
         return {}
+    canonical_id = book.get("canonical_id")
+    if canonical_id:
+        canon = await _fetch_hc_book_meta(int(canonical_id), api_key)
+        if canon:
+            canon["canonical_id"] = str(canonical_id)
+        return canon
+    return {"slug": book.get("slug") or "", "release_date": book.get("release_date") or ""}
 
 
 async def _fetch_hc_release_date(hc_book_id: int, api_key: str) -> str:
@@ -411,8 +420,12 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
     if not hardcover_id:
         return False
 
-    # Fetch exact release_date from HC GraphQL (more reliable than Typesense field)
-    release_date = await _fetch_hc_release_date(int(hardcover_id), api_key)
+    # Fetch exact release_date and canonical ID from HC GraphQL
+    meta = await _fetch_hc_book_meta(int(hardcover_id), api_key)
+    release_date = meta.get("release_date") or ""
+    if meta.get("canonical_id"):
+        hardcover_id = meta["canonical_id"]
+        hardcover_slug = meta.get("slug") or hardcover_slug
 
     # Extract series from featured_series and series_names (confirmed present in HC Typesense docs)
     featured = best.get("featured_series") or {}
@@ -796,6 +809,12 @@ async def _hc_refresh_meta(api_key: str) -> int:
                         "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
                         (meta["slug"], book_id),
                     )
+                if meta.get("canonical_id"):
+                    await db.execute(
+                        "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?",
+                        (meta["canonical_id"], book_id),
+                    )
+                    logger.info("_refresh_one: corrected hardcover_id for %s to canonical %s", book_id, meta["canonical_id"])
                 await db.commit()
             updated += 1
 

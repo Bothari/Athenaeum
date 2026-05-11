@@ -1329,6 +1329,11 @@ async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
                                 "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
                                 (meta["slug"], book_id),
                             )
+                        if meta.get("canonical_id"):
+                            await db.execute(
+                                "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?",
+                                (meta["canonical_id"], book_id),
+                            )
                         await db.commit()
             except Exception:
                 pass  # non-fatal; cache_refresh will backfill
