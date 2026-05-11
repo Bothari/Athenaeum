@@ -713,7 +713,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
       const typeName = type === 'audiobook' ? 'Audiobook' : 'Ebook';
       const canCancel = s.mode !== 'requested' || isAdmin() || !_authUser || !s.reqOwnerId || s.reqOwnerId === _authUser.user_id;
       const tips = { 'in-library': `${typeName} — in library`, 'requested': canCancel ? `${typeName} — click to cancel` : `${typeName} — requested by another user`, 'unmonitored': `${typeName} — click to request` };
-      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? (s.reqStatus === 'pending' ? 'badge-pending' : s.reqStatus === 'completed' ? 'badge-completed' : 'badge-requested') : 'badge-unmonitored';
+      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? (s.reqStatus === 'pending' ? 'badge-pending' : s.reqStatus === 'completed' ? 'badge-completed' : 'badge-requested') : 'badge-neutral';
       const isDisabled = s.mode === 'in-library' || (s.mode === 'requested' && !canCancel);
       return `<button class="badge ${badgeClass} fmt-pill" data-type="${type}" title="${tips[s.mode]}"${isDisabled ? ' disabled' : ''}>${typeIcon(type)}</button>`;
     }
@@ -831,11 +831,11 @@ function populateBookCard(el, result, onRequestSuccess, { showFmtRows = true } =
   const rd = result.release_date || '';
   const rdYearOnly = rd && rd.endsWith('-01-01') && rd.substring(0, 4) >= String(new Date().getFullYear());
   const releaseBadge = (rd && (rd >= today || rdYearOnly))
-    ? `<span class="badge badge-unmonitored" title="${rdYearOnly && rd < today ? 'Expected ' + rd.substring(0, 4) : 'Releases ' + rd}">Unreleased</span>`
+    ? `<span class="badge badge-neutral" title="${rdYearOnly && rd < today ? 'Expected ' + rd.substring(0, 4) : 'Releases ' + rd}">Unreleased</span>`
     : (!rd && result.release_date_fetched)
-      ? `<span class="badge badge-unmonitored" title="No release date known">No date</span>`
+      ? `<span class="badge badge-neutral" title="No release date known">No date</span>`
       : (!rd && result.published_year && String(result.published_year) > String(new Date().getFullYear()))
-        ? `<span class="badge badge-unmonitored" title="Expected ${result.published_year}">Unreleased</span>`
+        ? `<span class="badge badge-neutral" title="Expected ${result.published_year}">Unreleased</span>`
         : '';
 
   const hcLink = result.hardcover_url
@@ -2151,7 +2151,7 @@ function renderDetailFormats(container, book, onRefresh) {
     const badgeCls = row.status === 'in_library'
       ? 'badge-completed'
       : row.status === 'missing'
-        ? 'badge-unmonitored'
+        ? 'badge-neutral'
         : `badge-${row.status}`;
     const badgeTitle = row.status === 'in_library' ? 'In library' : row.status;
     const typeLabel = row.type === 'audiobook' ? 'Audiobook' : 'Ebook';
@@ -2377,7 +2377,7 @@ route('/library/book', async (params, qp) => {
             ${authorHtml ? `<div class="detail-author">${authorHtml}</div>` : ''}
             ${seriesItems.length ? `<div class="detail-series">${seriesItems.join('<br>')}</div>` : ''}
             ${book.rating ? `<div class="detail-rating">${ICON_STAR} ${book.rating.toFixed(1)} <span style="opacity:0.6">(${book.rating_count || 0})</span></div>` : ''}
-            ${book.release_date ? `<div class="detail-release-date td-dim">${(book.release_date >= new Date().toISOString().slice(0,10) || (book.release_date.endsWith('-01-01') && book.release_date.substring(0,4) >= String(new Date().getFullYear()))) ? '<span class="badge badge-unmonitored">Unreleased</span> ' : ''}${book.release_date.endsWith('-01-01') && book.release_date.substring(0,4) >= String(new Date().getFullYear()) ? book.release_date.substring(0,4) : book.release_date}</div>` : ''}
+            ${book.release_date ? `<div class="detail-release-date td-dim">${(book.release_date >= new Date().toISOString().slice(0,10) || (book.release_date.endsWith('-01-01') && book.release_date.substring(0,4) >= String(new Date().getFullYear()))) ? '<span class="badge badge-neutral">Unreleased</span> ' : ''}${book.release_date.endsWith('-01-01') && book.release_date.substring(0,4) >= String(new Date().getFullYear()) ? book.release_date.substring(0,4) : book.release_date}</div>` : ''}
             ${hcUrl ? `<a href="${escapeHtml(hcUrl)}" target="_blank" class="detail-hc-link">${ICON_HC()} Hardcover</a>` : ''}
           </div>
         </div>
@@ -2520,7 +2520,7 @@ function renderRequestsTab(content, qp) {
       tr.dataset.reqStatus = r.status;
       tr.dataset.releaseDate = r.release_date || '';
       tr.innerHTML = `
-        <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a>${r.release_date && (r.release_date >= new Date().toISOString().slice(0,10) || (r.release_date.endsWith('-01-01') && r.release_date.substring(0,4) >= String(new Date().getFullYear()))) ? ` <span class="badge badge-unmonitored" title="${r.release_date.endsWith('-01-01') && r.release_date < new Date().toISOString().slice(0,10) ? 'Expected ' + r.release_date.substring(0,4) : 'Releases ' + r.release_date}">Unreleased</span>` : (r.release_date_fetched && !r.release_date ? ` <span class="badge badge-unmonitored" title="No release date known">No date</span>` : '')}</td>
+        <td><a href="#/library/book?book_id=${r.book_id}">${escapeHtml(r.book_title || r.title || '—')}</a>${r.release_date && (r.release_date >= new Date().toISOString().slice(0,10) || (r.release_date.endsWith('-01-01') && r.release_date.substring(0,4) >= String(new Date().getFullYear()))) ? ` <span class="badge badge-neutral" title="${r.release_date.endsWith('-01-01') && r.release_date < new Date().toISOString().slice(0,10) ? 'Expected ' + r.release_date.substring(0,4) : 'Releases ' + r.release_date}">Unreleased</span>` : (r.release_date_fetched && !r.release_date ? ` <span class="badge badge-neutral" title="No release date known">No date</span>` : '')}</td>
         <td class="td-dim col-hide-mobile">${escapeHtml(r.author || '—')}</td>
         <td><span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}<span class="col-hide-mobile"> ${r.status}</span></span></td>
         <td class="td-dim col-hide-mobile">${escapeHtml(r.narrator || '—')}</td>
@@ -2729,7 +2729,7 @@ function renderPendingTab(container) {
           } else if (extraTypes.has(t)) {
             return `<button class="badge badge-requested fmt-pill" data-add="${t}" title="Remove ${t}">${typeIcon(t)}</button>`;
           } else {
-            return `<button class="badge badge-unmonitored fmt-pill" data-add="${t}" title="Also approve ${t}">${typeIcon(t)}</button>`;
+            return `<button class="badge badge-neutral fmt-pill" data-add="${t}" title="Also approve ${t}">${typeIcon(t)}</button>`;
           }
         }).join('');
 
@@ -2806,9 +2806,10 @@ route('/dashboard', async () => {
   if (!isAdmin()) { navigate('/'); return; }
   renderLoading(app);
   try {
-    const [status, syncStatus] = await Promise.all([
+    const [status, syncStatus, settings] = await Promise.all([
       api('/status'),
       api('/sync/status'),
+      api('/settings'),
     ]);
 
     const req = status.requests || {};
@@ -2883,6 +2884,19 @@ route('/dashboard', async () => {
 
       <div class="section-heading">Scheduled Tasks</div>
       <div class="tasks-list" id="dash-tasks"></div>
+
+      ${(settings.general || {}).debug_view ? `
+      <div class="section-heading mt-2">Status Pill Legend</div>
+      <div class="card" style="padding:0.75rem 1rem;display:flex;flex-direction:column;gap:0.6rem">
+        ${[
+          ['Request states', [['pending','Pending'],['requested','Requested'],['snatched','Snatched'],['downloading','Downloading'],['downloaded','Downloaded'],['merging','Merging'],['organizing','Organizing'],['completed','Completed'],['in_library','In Library'],['failed','Failed']]],
+          ['Misc',           [['upcoming','Upcoming'],['missing','Missing'],['sso','SSO'],['neutral','Neutral']]],
+        ].map(([heading, pills]) => `
+          <div>
+            <div style="font-size:0.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.35rem">${heading}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:0.4rem">${pills.map(([cls, label]) => `<span class="badge badge-${cls}">${label}</span>`).join('')}</div>
+          </div>`).join('')}
+      </div>` : ''}
     </div>`;
 
     const DASH_TASKS = [
@@ -3503,7 +3517,7 @@ route('/settings', async (params, qp) => {
             if (!users.length) { listEl.innerHTML = '<div class="text-dim">No users yet.</div>'; return; }
             listEl.innerHTML = `<div class="user-cards">${users.map(u => `
               <div class="card user-card">
-                <div class="user-card-name">${escapeHtml(u.username)}${u.force_password_change ? ' <span class="badge badge-warn">PW change</span>' : ''}${u.oidc_linked ? ' <span class="badge badge-monitored">SSO</span>' : ''}</div>
+                <div class="user-card-name">${escapeHtml(u.username)}${u.force_password_change ? ' <span class="badge badge-warn">PW change</span>' : ''}${u.oidc_linked ? ' <span class="badge badge-sso">SSO</span>' : ''}</div>
                 <div class="form-group" style="margin-bottom:0.5rem">
                   <label class="form-label">Email</label>
                   <input type="email" class="form-input" data-user-email="${u.id}" value="${escapeHtml(u.email || '')}" placeholder="—">
