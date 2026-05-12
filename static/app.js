@@ -84,6 +84,13 @@ function formatDateTime(iso) {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
+function formatAge(days) {
+  if (days == null) return null;
+  if (days === 0) return 'today';
+  if (days < 365) return `${days}d`;
+  return `${Math.floor(days / 365)}y`;
+}
+
 function formatBytes(bytes) {
   if (!bytes) return '—';
   const gb = bytes / 1e9;
@@ -2091,9 +2098,11 @@ route('/library/series/:id', async ({ id }) => {
         return;
       }
       container.innerHTML = '';
-      results.forEach(res => {
+      const sorted = [...results].sort((a, b) => (a.age ?? Infinity) - (b.age ?? Infinity));
+      sorted.forEach(res => {
         const fmtMatch = (res.title || '').match(/\b(epub|mobi|azw3?|pdf)\b/i);
         const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
+        const age = formatAge(res.age);
         const titleHtml = res.info_url
           ? `<a href="${escapeHtml(res.info_url)}" target="_blank" class="prowlarr-result-title">${escapeHtml(res.title || '—')}</a>`
           : `<div class="prowlarr-result-title">${escapeHtml(res.title || '—')}</div>`;
@@ -2107,6 +2116,7 @@ route('/library/series/:id', async ({ id }) => {
               <span>${res.protocol === 'torrent' ? 'Torrent' : 'Usenet'}</span>
               <span>${formatBytes(res.size)}</span>
               ${res.seeders != null ? `<span>${res.seeders}S</span>` : ''}
+              ${age != null ? `<span class="td-dim">${age}</span>` : ''}
               <span>${escapeHtml(res.indexer || '—')}</span>
             </div>
             <button class="btn btn-primary btn-sm series-pack-dl-btn" style="flex-shrink:0">${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span></button>
@@ -2232,9 +2242,11 @@ function renderProwlarrResults(container, results, reqId, onSuccess) {
     return;
   }
   container.innerHTML = '';
-  results.forEach(res => {
+  const sorted = [...results].sort((a, b) => (a.age ?? Infinity) - (b.age ?? Infinity));
+  sorted.forEach(res => {
     const fmtMatch = (res.title || '').match(/\b(mp3|m4b|m4a|flac|opus|ogg|aac|epub|mobi|azw3?|pdf)\b/i);
     const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
+    const age = formatAge(res.age);
     const titleHtml = res.info_url
       ? `<a href="${escapeHtml(res.info_url)}" target="_blank" class="prowlarr-result-title">${escapeHtml(res.title || '—')}</a>`
       : `<div class="prowlarr-result-title">${escapeHtml(res.title || '—')}</div>`;
@@ -2248,6 +2260,7 @@ function renderProwlarrResults(container, results, reqId, onSuccess) {
           <span>${res.protocol === 'torrent' ? 'Torrent' : 'Usenet'}</span>
           <span>${formatBytes(res.size)}</span>
           ${res.seeders != null ? `<span>${res.seeders}S</span>` : ''}
+          ${age != null ? `<span class="td-dim">${age}</span>` : ''}
           <span>${escapeHtml(res.indexer || '—')}</span>
         </div>
         ${isAdmin() ? `<button class="btn btn-primary btn-sm prowlarr-dl-btn" style="flex-shrink:0">${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span></button>` : ''}
