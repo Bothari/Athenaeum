@@ -784,7 +784,8 @@ function buildFormatRows(card, result, onRequestSuccess) {
 
         // Always POST /books to ensure series association is created even for existing books
         const book = await api('/books', { method: 'POST', body: {
-          title: result.title, author: result.author,
+          title: result.title,
+          authors: (result.authors || []).map(a => ({ name: a.name, hc_id: a.id || null })),
           cover_url: result.cover_url || null,
           series_list: (result.series || []).map(s => ({
             name: s.name,
