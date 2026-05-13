@@ -121,9 +121,34 @@ async def _set_hc_series_id(db, series_id: str, hc_series_id: str, hc_series_slu
     return True
 
 
-async def _get_or_create_author(db, name: str, abs_author_id: str = "") -> str:
-    """Return author_id, creating author and author_links rows if needed."""
+async def _get_or_create_author(db, name: str, abs_author_id: str = "", hc_author_id: str = "") -> str:
+    """Return author_id, creating author and author_links rows if needed.
+
+    Lookup order: HC author ID → ABS author ID → name.
+    """
     name = " ".join(name.split())  # collapse internal whitespace
+
+    # 1. Match by HC author ID — most authoritative
+    if hc_author_id:
+        row = await (
+            await db.execute(
+                "SELECT author_id FROM author_links WHERE hardcover_author_id = ?", (hc_author_id,)
+            )
+        ).fetchone()
+        if row:
+            return row[0]
+
+    # 2. Match by ABS author ID
+    if abs_author_id:
+        row = await (
+            await db.execute(
+                "SELECT author_id FROM author_links WHERE abs_author_id = ?", (abs_author_id,)
+            )
+        ).fetchone()
+        if row:
+            return row[0]
+
+    # 3. Match by name
     row = await (
         await db.execute("SELECT id FROM authors WHERE lower(name) = lower(?)", (name,))
     ).fetchone()
@@ -140,6 +165,11 @@ async def _get_or_create_author(db, name: str, abs_author_id: str = "") -> str:
         "INSERT OR IGNORE INTO author_links (id, author_id, linked_at) VALUES (?, ?, ?)",
         (str(uuid.uuid4()), author_id, _now()),
     )
+    if hc_author_id:
+        await db.execute(
+            "UPDATE author_links SET hardcover_author_id = ? WHERE author_id = ? AND (hardcover_author_id IS NULL OR hardcover_author_id = '')",
+            (hc_author_id, author_id),
+        )
     if abs_author_id:
         await db.execute(
             "UPDATE author_links SET abs_author_id = ? WHERE author_id = ? AND (abs_author_id IS NULL OR abs_author_id = '')",

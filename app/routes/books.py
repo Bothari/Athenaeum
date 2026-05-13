@@ -1243,9 +1243,15 @@ class SeriesItem(BaseModel):
     hardcover_id: Optional[str] = None
 
 
+class AuthorItem(BaseModel):
+    name: str
+    hc_id: Optional[str] = None
+
+
 class CreateBookBody(BaseModel):
     title: str
-    author: str = ""
+    author: str = ""          # legacy single-author string, used if authors list absent
+    authors: list[AuthorItem] = []
     cover_url: Optional[str] = None
     series_list: list[SeriesItem] = []
     metadata_source: Optional[str] = None
@@ -1264,7 +1270,8 @@ async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
     async with get_db() as db:
         book_id = None
 
-        # 1. Check by hardcover_id first (most reliable dedup)
+        # Dedup by hardcover_id only — title matching is intentionally omitted because
+        # books with the same title (e.g. "Untitled" announcements) are distinct works.
         if body.metadata_id:
             link_row = await (
                 await db.execute(
@@ -1275,18 +1282,7 @@ async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
             if link_row:
                 book_id = link_row["book_id"]
 
-        # 2. Fall back to title + primary author match
-        if not book_id and body.title:
-            title_match = await (
-                await db.execute(
-                    "SELECT b.id FROM books b WHERE lower(b.title) = lower(?)",
-                    (body.title.strip(),),
-                )
-            ).fetchone()
-            if title_match:
-                book_id = title_match["id"]
-
-        # 3. Create new book
+        # Create new book
         now = _now()
         book_is_new = not book_id
         if not book_id:
@@ -1316,10 +1312,13 @@ async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
                 (body.hardcover_slug, book_id),
             )
 
-        # Authors — always upsert so existing books without authors get filled in
-        author_names = _split_authors(body.author) if body.author else []
-        for pos, name in enumerate(author_names, 1):
-            author_id = await _get_or_create_author(db, name)
+        # Authors — prefer the structured list (with HC IDs); fall back to splitting author string
+        if body.authors:
+            author_entries = [(a.name, a.hc_id or "") for a in body.authors]
+        else:
+            author_entries = [(n, "") for n in (_split_authors(body.author) if body.author else [])]
+        for pos, (name, hc_id) in enumerate(author_entries, 1):
+            author_id = await _get_or_create_author(db, name, hc_author_id=hc_id)
             await db.execute(
                 "INSERT OR IGNORE INTO book_authors (id, book_id, author_id, author_position, created_at) VALUES (?, ?, ?, ?, ?)",
                 (str(uuid.uuid4()), book_id, author_id, pos, now),
