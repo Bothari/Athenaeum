@@ -25,7 +25,7 @@ EXPECTED_TABLES = {
 async def test_migrations_set_user_version(db_path):
     async with aiosqlite.connect(db_path) as db:
         row = await (await db.execute("PRAGMA user_version")).fetchone()
-        assert row[0] == 12
+        assert row[0] == 14
 
 
 async def test_all_tables_created(db_path):
@@ -46,4 +46,4 @@ async def test_migrations_are_idempotent(tmp_path, monkeypatch):
     await init_db()
     async with aiosqlite.connect(path) as db:
         row = await (await db.execute("PRAGMA user_version")).fetchone()
-        assert row[0] == 12
+        assert row[0] == 14

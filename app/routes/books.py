@@ -126,6 +126,35 @@ async def get_book(book_id: str):
     return book
 
 
+@router.get("/books/{book_id}/request-history")
+async def get_book_request_history(book_id: str):
+    """Return all logged events for every request ever made for this book."""
+    import json as _json
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                """SELECT e.id, e.request_id, e.event_type, e.detail, e.created_at,
+                          r.type as request_type, r.status as request_status
+                   FROM request_events e
+                   LEFT JOIN requests r ON r.id = e.request_id
+                   WHERE e.book_id = ?
+                   ORDER BY e.created_at ASC""",
+                (book_id,),
+            )
+        ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "request_id": r["request_id"],
+            "request_type": r["request_type"],
+            "event_type": r["event_type"],
+            "detail": _json.loads(r["detail"] or "{}"),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
 @router.post("/books/{book_id}/refresh-hc")
 async def refresh_hc_book(book_id: str, auth=Depends(require_admin)):
     """Re-fetch HC metadata for a book: canonicalize hardcover_id, update slug and release_date."""

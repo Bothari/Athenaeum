@@ -2159,6 +2159,63 @@ route('/library/series/:id', async ({ id }) => {
   }
 });
 
+// ── Book detail: request history helpers ──────────────────────────────────────
+
+function historyEventIcon(type) {
+  if (type === 'created')      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>';
+  if (type === 'state_change') return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>';
+  if (type === 'searched')     return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+  if (type === 'grabbed')      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+  if (type === 'cancelled')    return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
+  return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/></svg>';
+}
+
+function historyEventLabel(ev) {
+  const d = ev.detail || {};
+  if (ev.event_type === 'created')
+    return `Request created — ${d.status || ''}`;
+  if (ev.event_type === 'state_change')
+    return `Status: ${d.from || '?'} → ${d.to || '?'}` + (d.reason ? ` <span class="td-dim">— ${escapeHtml(d.reason)}</span>` : '');
+  if (ev.event_type === 'searched')
+    return `Searched Prowlarr — ${d.results ?? '?'} result${d.results === 1 ? '' : 's'}`;
+  if (ev.event_type === 'grabbed') {
+    const mb = d.size ? ` ${(d.size / 1024 / 1024).toFixed(0)} MB` : '';
+    const titleHtml = d.info_url
+      ? `<a href="${escapeHtml(d.info_url)}" target="_blank" style="color:var(--accent);text-decoration:none">${escapeHtml(d.title || '?')}</a>`
+      : escapeHtml(d.title || '?');
+    return `Grabbed: ${titleHtml} via ${escapeHtml(d.indexer || '?')}${mb}`;
+  }
+  if (ev.event_type === 'cancelled')
+    return `Request cancelled`;
+  return escapeHtml(ev.event_type);
+}
+
+function appendFormatHistory(container, bookId, type) {
+  api(`/books/${bookId}/request-history`).then(events => {
+    // Build request_id → type map: prefer live JOIN data, fall back to created event detail
+    const reqTypeMap = {};
+    for (const ev of events) {
+      if (ev.request_type) reqTypeMap[ev.request_id] = ev.request_type;
+      else if (ev.event_type === 'created' && (ev.detail || {}).type) reqTypeMap[ev.request_id] = ev.detail.type;
+    }
+    const filtered = events.filter(ev => reqTypeMap[ev.request_id] === type);
+    if (!filtered.length) return;
+    const rows = filtered.map(ev => {
+      const ts = ev.created_at ? new Date(ev.created_at).toLocaleString() : '';
+      return `<div class="history-row">
+        <span class="history-icon td-dim">${historyEventIcon(ev.event_type)}</span>
+        <span class="history-label">${historyEventLabel(ev)}</span>
+        <span class="history-ts td-dim">${ts}</span>
+      </div>`;
+    }).join('');
+    const histEl = document.createElement('div');
+    histEl.className = 'detail-fmt-history mt-1';
+    histEl.innerHTML = `<div class="td-dim" style="font-size:0.78rem;margin-bottom:0.25rem;margin-top:0.75rem">History</div><div class="history-timeline">${rows}</div>`;
+    const detail = container.querySelector('.detail-fmt-detail');
+    if (detail) detail.appendChild(histEl);
+  }).catch(() => {});
+}
+
 // ── Book detail: format rows ───────────────────────────────────────────────────
 
 function renderDetailFormats(container, book, onRefresh) {
@@ -2388,6 +2445,7 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
       }
     };
   }
+  appendFormatHistory(container, bookId, row.type);
 }
 
 // Book detail
