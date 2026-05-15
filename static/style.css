@@ -1098,3 +1098,23 @@ body.square-covers .detail-cover-placeholder.abs-cover {
   .prowlarr-dl-label { display: none; }
   .prowlarr-dl-btn { padding: 0.4rem 0.6rem; }
 }
+
+/* ── Request history timeline ── */
+.history-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.history-row {
+  display: grid;
+  grid-template-columns: 1.2rem 1fr auto;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.history-row:last-child { border-bottom: none; }
+.history-icon { display: flex; align-items: center; opacity: 0.6; }
+.history-label { line-height: 1.4; }
+.history-ts { white-space: nowrap; font-size: 0.75rem; }

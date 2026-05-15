@@ -363,6 +363,21 @@ async def _run_migrations(db):
         await db.execute("ALTER TABLE books ADD COLUMN metadata_refreshed_at TEXT")
         await db.execute("PRAGMA user_version = 13")
 
+    if current < 14:
+        await db.execute("""
+            CREATE TABLE request_events (
+                id          TEXT PRIMARY KEY,
+                request_id  TEXT NOT NULL,
+                book_id     TEXT NOT NULL,
+                event_type  TEXT NOT NULL,
+                detail      TEXT,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX idx_request_events_request ON request_events(request_id)")
+        await db.execute("CREATE INDEX idx_request_events_book    ON request_events(book_id)")
+        await db.execute("PRAGMA user_version = 14")
+
     await db.commit()
 
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ..auth import require_admin, require_auth
 from ..database import get_db
 from ..services.notifications import notify
+from ..services.request_events import log_request_event, set_request_status
 from ..settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ async def _create_request(
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (req_id, book_id, req_type, status, narrator, stored_user_id, now, now),
     )
+    await log_request_event(db, req_id, "created", {"type": req_type, "status": status}, book_id=book_id)
     return {
         "id": req_id,
         "book_id": book_id,
@@ -302,6 +304,7 @@ async def delete_request(request_id: str, auth: dict = Depends(require_auth)):
             if row["requested_by_user_id"] != auth["user_id"]:
                 raise HTTPException(status_code=403, detail="Cannot cancel another user's request")
         book_id = row["book_id"]
+        await log_request_event(db, request_id, "cancelled", {}, book_id=book_id)
         await db.execute("DELETE FROM requests WHERE id = ?", (request_id,))
         # If the book has no formats and no remaining requests it only exists due to this
         # request — remove it from book_series so it reappears correctly in missing sections
@@ -449,6 +452,9 @@ async def search_indexers(request_id: str):
         }
         for r in raw_results
     ]
+    async with get_db() as db:
+        await log_request_event(db, request_id, "searched", {"query": query, "results": len(results)})
+        await db.commit()
     return {"results": results}
 
 
@@ -585,10 +591,11 @@ async def trigger_download(request_id: str, body: DownloadBody):
             (dl_id, request_id, body.title, body.indexer, body.guid,
              body.info_url, body.protocol, body.size, client_name, download_id, now),
         )
-        await db.execute(
-            "UPDATE requests SET status='snatched', updated_at=? WHERE id=?",
-            (now, request_id),
-        )
+        await log_request_event(db, request_id, "grabbed", {
+            "title": body.title, "indexer": body.indexer,
+            "protocol": body.protocol, "size": body.size, "info_url": body.info_url,
+        })
+        await set_request_status(db, request_id, "snatched", now)
         await db.commit()
 
     return {"ok": True, "download_id": dl_id}
@@ -652,10 +659,7 @@ async def approve_book_requests(book_id: str, body: ApproveBookBody, auth: dict 
 
         for t in body.types:
             if t in pending:
-                await db.execute(
-                    "UPDATE requests SET status='requested', updated_at=? WHERE id=?",
-                    (now, pending[t]),
-                )
+                await set_request_status(db, pending[t], "requested", now, book_id=book_id)
             else:
                 existing = await (
                     await db.execute(
@@ -665,19 +669,18 @@ async def approve_book_requests(book_id: str, body: ApproveBookBody, auth: dict 
                     )
                 ).fetchone()
                 if not existing:
+                    new_req_id = str(uuid.uuid4())
                     await db.execute(
                         """INSERT INTO requests
                                (id, book_id, type, status, narrator, requested_by_user_id, created_at, updated_at)
                            VALUES (?, ?, ?, 'requested', '', ?, ?, ?)""",
-                        (str(uuid.uuid4()), book_id, t, auth["user_id"], now, now),
+                        (new_req_id, book_id, t, auth["user_id"], now, now),
                     )
+                    await log_request_event(db, new_req_id, "created", {"type": t, "status": "requested"}, book_id=book_id)
 
         for t, req_id in pending.items():
             if t not in body.types:
-                await db.execute(
-                    "UPDATE requests SET status='rejected', updated_at=? WHERE id=?",
-                    (now, req_id),
-                )
+                await set_request_status(db, req_id, "rejected", now, book_id=book_id)
         await db.commit()
     return {"ok": True}
 
@@ -686,10 +689,14 @@ async def approve_book_requests(book_id: str, body: ApproveBookBody, auth: dict 
 async def reject_book_requests(book_id: str, auth: dict = Depends(require_admin)):
     now = _now()
     async with get_db() as db:
-        await db.execute(
-            "UPDATE requests SET status='rejected', updated_at=? WHERE book_id=? AND status='pending'",
-            (now, book_id),
-        )
+        pending = await (
+            await db.execute(
+                "SELECT id FROM requests WHERE book_id=? AND status='pending'",
+                (book_id,),
+            )
+        ).fetchall()
+        for r in pending:
+            await set_request_status(db, r["id"], "rejected", now, book_id=book_id)
         await db.commit()
     return {"ok": True}
 
@@ -704,10 +711,8 @@ async def approve_request(request_id: str, auth: dict = Depends(require_admin)):
             raise HTTPException(404, "Request not found")
         if row["status"] != "pending":
             raise HTTPException(400, "Request is not pending")
-        await db.execute(
-            "UPDATE requests SET status='requested', updated_at=? WHERE id=?",
-            (_now(), request_id),
-        )
+        now = _now()
+        await set_request_status(db, request_id, "requested", now)
         await db.commit()
     return {"ok": True, "status": "requested"}
 
@@ -722,9 +727,7 @@ async def reject_request(request_id: str, auth: dict = Depends(require_admin)):
             raise HTTPException(404, "Request not found")
         if row["status"] != "pending":
             raise HTTPException(400, "Request is not pending")
-        await db.execute(
-            "UPDATE requests SET status='rejected', updated_at=? WHERE id=?",
-            (_now(), request_id),
-        )
+        now = _now()
+        await set_request_status(db, request_id, "rejected", now)
         await db.commit()
     return {"ok": True, "status": "rejected"}

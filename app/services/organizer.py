@@ -11,6 +11,8 @@ import zipfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from .request_events import set_request_status, log_request_event
+
 logger = logging.getLogger(__name__)
 
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus", ".aac", ".wav"}
@@ -456,10 +458,7 @@ async def auto_organize(request_id: str):
         if not path_str:
             logger.error("auto_organize: no download_path for request %s", request_id)
             async with get_db() as db:
-                await db.execute(
-                    "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
-                    (_now(), request_id),
-                )
+                await set_request_status(db, request_id, "failed", _now(), book_id=book_id, extra={"reason": "no download_path"})
                 await db.commit()
             return
 
@@ -481,10 +480,7 @@ async def auto_organize(request_id: str):
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     (merge_id, request_id, str(src), file_count, now, now),
                 )
-                await db.execute(
-                    "UPDATE requests SET status='merging', updated_at=? WHERE id=?",
-                    (now, request_id),
-                )
+                await set_request_status(db, request_id, "merging", now, book_id=book_id, extra={"files": file_count})
                 await db.commit()
 
             tmp_output = Path(tempfile.mkdtemp()) / f"{_sanitise_path_component(title)}.m4b"
@@ -497,10 +493,7 @@ async def auto_organize(request_id: str):
                         "UPDATE merge_jobs SET merge_error=?, updated_at=? WHERE request_id=?",
                         (str(e), _now(), request_id),
                     )
-                    await db.execute(
-                        "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
-                        (_now(), request_id),
-                    )
+                    await set_request_status(db, request_id, "failed", _now(), book_id=book_id, extra={"reason": f"merge failed: {e}"})
                     await db.commit()
                 return
 
@@ -514,10 +507,7 @@ async def auto_organize(request_id: str):
 
         # ── Organizing ─────────────────────────────────────────────────────────
         async with get_db() as db:
-            await db.execute(
-                "UPDATE requests SET status='organizing', updated_at=? WHERE id=?",
-                (_now(), request_id),
-            )
+            await set_request_status(db, request_id, "organizing", _now(), book_id=book_id)
             await db.commit()
 
         dest_dir = _build_dest_dir(settings, book_type, author, title)
@@ -595,10 +585,7 @@ async def auto_organize(request_id: str):
             else:
                 logger.error("auto_organize: source path does not exist: %s", src)
                 async with get_db() as db:
-                    await db.execute(
-                        "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
-                        (_now(), request_id),
-                    )
+                    await set_request_status(db, request_id, "failed", _now(), book_id=book_id, extra={"reason": "source path missing"})
                     await db.commit()
                 return
 
@@ -621,10 +608,7 @@ async def auto_organize(request_id: str):
         if not abs_settings.get("url"):
             logger.info("No ABS URL configured, leaving request %s as organizing", request_id)
             async with get_db() as db:
-                await db.execute(
-                    "UPDATE requests SET status='completed', updated_at=? WHERE id=?",
-                    (_now(), request_id),
-                )
+                await set_request_status(db, request_id, "completed", _now(), book_id=book_id)
                 await db.commit()
             return
 
@@ -682,10 +666,7 @@ async def auto_organize(request_id: str):
         now = _now()
         async with get_db() as db:
             if matched_abs_id:
-                await db.execute(
-                    "UPDATE requests SET status='in_library', updated_at=? WHERE id=?",
-                    (now, request_id),
-                )
+                await set_request_status(db, request_id, "in_library", now, book_id=book_id, extra={"abs_id": matched_abs_id})
                 # Upsert book_links with abs_id
                 await db.execute(
                     """INSERT INTO book_links (id, book_id, abs_id, linked_at)
@@ -710,10 +691,7 @@ async def auto_organize(request_id: str):
                 await db.execute("DELETE FROM merge_jobs WHERE request_id=?", (request_id,))
                 logger.info("Request %s organised and in library (abs_id=%s)", request_id, matched_abs_id)
             else:
-                await db.execute(
-                    "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
-                    (now, request_id),
-                )
+                await set_request_status(db, request_id, "failed", now, book_id=book_id, extra={"reason": "ABS poll exhausted"})
                 logger.warning(
                     "Request %s: ABS poll exhausted without finding item — marked failed",
                     request_id,
@@ -734,10 +712,7 @@ async def auto_organize(request_id: str):
         try:
             from ..database import get_db
             async with get_db() as db:
-                await db.execute(
-                    "UPDATE requests SET status='failed', updated_at=? WHERE id=?",
-                    (datetime.now(timezone.utc).isoformat(), request_id),
-                )
+                await set_request_status(db, request_id, "failed", datetime.now(timezone.utc).isoformat(), extra={"reason": str(e)})
                 await db.commit()
         except Exception:
             pass
@@ -1148,10 +1123,7 @@ async def auto_organize_series_pack(series_dl_id: str):
                             (str(uuid.uuid4()), book_id, pack_type, narrator, fulfilled_req_id, now, now),
                         )
                     if req_row:
-                        await db.execute(
-                            "UPDATE requests SET status='in_library', updated_at=? WHERE id=?",
-                            (now, req_row["id"]),
-                        )
+                        await set_request_status(db, req_row["id"], "in_library", now, book_id=book_id, extra={"abs_id": matched_abs_id} if matched_abs_id else {})
                     await db.commit()
 
                 if matched_abs_id:
@@ -1175,10 +1147,7 @@ async def auto_organize_series_pack(series_dl_id: str):
                         (str(uuid.uuid4()), book_id, pack_type, narrator, fulfilled_req_id, now, now),
                     )
                     if req_row:
-                        await db.execute(
-                            "UPDATE requests SET status='in_library', updated_at=? WHERE id=?",
-                            (now, req_row["id"]),
-                        )
+                        await set_request_status(db, req_row["id"], "in_library", now, book_id=book_id)
                 await db.commit()
 
         async with get_db() as db:
