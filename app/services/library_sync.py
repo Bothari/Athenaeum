@@ -283,11 +283,12 @@ async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int
     return sorted(deduped, key=lambda h: h.get("document", {}).get("users_count") or 0, reverse=True)
 
 
-async def _fetch_hc_book_meta(hc_book_id: int, api_key: str) -> dict:
-    """Fetch slug, release_date, and canonical_id for a single HC book.
+async def _fetch_hc_book_meta(hc_book_id: int, api_key: str, _retry: int = 0) -> dict:
+    """Fetch title, slug, release_date, and canonical_id for a single HC book.
     If the book has a canonical_id, follows it once and returns the canonical book's
-    data with 'canonical_id' set so callers can update stored HC IDs."""
-    gql = "query Meta($id: Int!) { books_by_pk(id: $id) { slug release_date canonical_id } }"
+    data with 'canonical_id' set so callers can update stored HC IDs.
+    Retries up to 4 times with exponential backoff on 429."""
+    gql = "query Meta($id: Int!) { books_by_pk(id: $id) { title slug release_date canonical_id } }"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -297,6 +298,14 @@ async def _fetch_hc_book_meta(hc_book_id: int, api_key: str) -> dict:
             )
             resp.raise_for_status()
         book = (resp.json().get("data") or {}).get("books_by_pk") or {}
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429 and _retry < 4:
+            backoff = min(2 ** _retry * 3, 30)
+            logger.warning("_fetch_hc_book_meta(%s) 429, retrying in %ss", hc_book_id, backoff)
+            await asyncio.sleep(backoff)
+            return await _fetch_hc_book_meta(hc_book_id, api_key, _retry + 1)
+        logger.warning("_fetch_hc_book_meta(%s) failed: %s", hc_book_id, e)
+        return {}
     except Exception as e:
         logger.warning("_fetch_hc_book_meta(%s) failed: %s", hc_book_id, e)
         return {}
@@ -306,7 +315,7 @@ async def _fetch_hc_book_meta(hc_book_id: int, api_key: str) -> dict:
         if canon:
             canon["canonical_id"] = str(canonical_id)
         return canon
-    return {"slug": book.get("slug") or "", "release_date": book.get("release_date") or ""}
+    return {"title": book.get("title") or "", "slug": book.get("slug") or "", "release_date": book.get("release_date") or ""}
 
 
 async def _fetch_hc_release_date(hc_book_id: int, api_key: str) -> str:
@@ -830,17 +839,28 @@ async def _hc_refresh_meta(api_key: str) -> int:
         ).fetchall()
     if not stale_rows:
         return 0
-    sem = asyncio.Semaphore(2)
+    sem = asyncio.Semaphore(1)
     updated = 0
 
     async def _refresh_one(book_id: str, hc_id: str) -> None:
         nonlocal updated
         async with sem:
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(1.0)
             meta = await _fetch_hc_book_meta(int(hc_id), api_key)
             if not meta:
                 return
+            now_iso = datetime.now(timezone.utc).isoformat()
             async with get_db() as db:
+                if meta.get("title"):
+                    await db.execute(
+                        "UPDATE books SET title = ?, metadata_refreshed_at = ? WHERE id = ?",
+                        (meta["title"], now_iso, book_id),
+                    )
+                else:
+                    await db.execute(
+                        "UPDATE books SET metadata_refreshed_at = ? WHERE id = ?",
+                        (now_iso, book_id),
+                    )
                 if meta.get("release_date"):
                     await db.execute(
                         "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ?",
@@ -998,6 +1018,25 @@ async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
                         (str(uuid.uuid4()), hc_series_id, "series_books_rich",
                          json.dumps(all_books), now_iso, expires_iso),
                     )
+                    # Backfill titles + metadata_refreshed_at for matched DB books
+                    for b in all_books:
+                        hc_id = b.get("metadata_id")
+                        title = b.get("title")
+                        if not hc_id or not title:
+                            continue
+                        await db.execute(
+                            """UPDATE books SET title = ?, metadata_refreshed_at = ?
+                               WHERE id = (SELECT book_id FROM book_links WHERE hardcover_id = ?)""",
+                            (title, now_iso, hc_id),
+                        )
+                        release_date = b.get("release_date")
+                        if release_date:
+                            await db.execute(
+                                """UPDATE books SET release_date = ?, release_date_fetched = 1
+                                   WHERE id = (SELECT book_id FROM book_links WHERE hardcover_id = ?)
+                                     AND (release_date IS NULL OR release_date = '')""",
+                                (release_date, hc_id),
+                            )
                     await db.commit()
 
             # Always recompute stats — they depend on current library state
@@ -1055,6 +1094,75 @@ async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
     return {"updated": updated, "skipped": skipped}
 
 
+async def _hc_refresh_book_titles(api_key: str, deadline: float) -> int:
+    """Fetch title + release_date from HC for books whose metadata is stale (>14 days old or never refreshed).
+
+    Complements _hc_refresh_series_cache: that path covers books in HC-linked series on fresh fetches;
+    this path covers books not in any series, and series books whose cache was still fresh.
+    Returns count of books updated.
+    """
+    if not api_key:
+        return 0
+    stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    async with get_db() as db:
+        rows = await (
+            await db.execute(
+                """SELECT b.id, bl.hardcover_id FROM books b
+                   JOIN book_links bl ON bl.book_id = b.id
+                   WHERE bl.hardcover_id IS NOT NULL AND bl.hardcover_id != ''
+                     AND (b.metadata_refreshed_at IS NULL OR b.metadata_refreshed_at < ?)""",
+                (stale_cutoff,),
+            )
+        ).fetchall()
+    if not rows:
+        return 0
+
+    sem = asyncio.Semaphore(1)
+    updated = 0
+
+    async def _update_one(book_id: str, hc_id: str) -> None:
+        nonlocal updated
+        if time.monotonic() > deadline:
+            return
+        async with sem:
+            await asyncio.sleep(1.0)
+            meta = await _fetch_hc_book_meta(int(hc_id), api_key)
+            if not meta:
+                return
+            now_iso = datetime.now(timezone.utc).isoformat()
+            async with get_db() as db:
+                if meta.get("title"):
+                    await db.execute(
+                        "UPDATE books SET title = ?, metadata_refreshed_at = ? WHERE id = ?",
+                        (meta["title"], now_iso, book_id),
+                    )
+                else:
+                    await db.execute(
+                        "UPDATE books SET metadata_refreshed_at = ? WHERE id = ?",
+                        (now_iso, book_id),
+                    )
+                if meta.get("release_date"):
+                    await db.execute(
+                        "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ? AND (release_date IS NULL OR release_date = '')",
+                        (meta["release_date"], book_id),
+                    )
+                if meta.get("slug"):
+                    await db.execute(
+                        "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
+                        (meta["slug"], book_id),
+                    )
+                if meta.get("canonical_id"):
+                    await db.execute(
+                        "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?",
+                        (meta["canonical_id"], book_id),
+                    )
+                await db.commit()
+            updated += 1
+
+    await asyncio.gather(*[_update_one(r["id"], r["hardcover_id"]) for r in rows])
+    return updated
+
+
 async def cache_refresh() -> dict:
     """HC linking: books (primary), then author/series catch-up. Rate-limited, 1hr time slice."""
     settings = await get_settings()
@@ -1063,10 +1171,16 @@ async def cache_refresh() -> dict:
     # Snapshot of completed phases, built up as we go
     done: dict[str, dict] = {}
 
+    def _fmt_done() -> str:
+        lines = []
+        for p, r in done.items():
+            lines.append(f"{p}: {r['linked']} linked, {r['failed']} failed" + (f" ({r['skipped']} skipped)" if r.get('skipped') else ""))
+        return "\n".join(lines)
+
     def _fmt_progress(phase: str, linked: int, failed: int, remaining: int) -> str:
-        parts = [f"{p}: {r['linked']} linked, {r['failed']} failed" for p, r in done.items()]
-        parts.append(f"{phase}: {linked} linked, {failed} failed, {remaining} remaining")
-        return " | ".join(parts)
+        parts = _fmt_done()
+        current = f"{phase}: {linked} linked, {failed} failed, {remaining} remaining"
+        return f"{parts}\n{current}" if parts else current
 
     async def make_progress(phase: str):
         async def _cb(linked: int, failed: int, remaining: int):
@@ -1083,20 +1197,25 @@ async def cache_refresh() -> dict:
         a = await _hc_catchup_authors(settings, deadline, on_progress=await make_progress("authors"))
         done["authors"] = a
         s = await _hc_catchup_series(settings, deadline, on_progress=await make_progress("series"))
+        done["series"] = s
         api_key = settings.get("hardcover", {}).get("api_key", "")
+        await _upsert_task_state("cache_refresh", running=True, last_result=_fmt_done() + "\nrefreshing metadata...")
         meta_updated = await _hc_refresh_meta(api_key)
+        await _upsert_task_state("cache_refresh", running=True, last_result=_fmt_done() + "\nrefreshing series cache...")
         sc = await _hc_refresh_series_cache(settings, deadline)
-        result = (
-            f"books {b['linked']}/{b['linked']+b['failed']} linked"
-            + (f" ({b['skipped']} skipped)" if b['skipped'] else "")
-            + f" | authors {a['linked']}/{a['linked']+a['failed']}"
-            + f" | series {s['linked']}/{s['linked']+s['failed']}"
-            + f" | meta {meta_updated} refreshed"
-            + f" | series cache {sc['updated']} updated, {sc['skipped']} fresh"
-        )
+        await _upsert_task_state("cache_refresh", running=True, last_result=_fmt_done() + "\nrefreshing titles...")
+        titles_updated = await _hc_refresh_book_titles(api_key, deadline)
+        result = "\n".join([
+            f"books: {b['linked']} linked, {b['failed']} failed" + (f" ({b['skipped']} skipped)" if b.get('skipped') else ""),
+            f"authors: {a['linked']} linked, {a['failed']} failed",
+            f"series: {s['linked']} linked, {s['failed']} failed",
+            f"meta: {meta_updated} refreshed",
+            f"series cache: {sc['updated']} updated, {sc['skipped']} fresh",
+            f"titles: {titles_updated} refreshed",
+        ])
         logger.info(f"cache_refresh complete: {result}")
         await _upsert_task_state("cache_refresh", running=False, last_result=result)
-        return {"books": b, "authors": a, "series": s, "meta_updated": meta_updated, "series_cache": sc}
+        return {"books": b, "authors": a, "series": s, "meta_updated": meta_updated, "series_cache": sc, "titles_updated": titles_updated}
     except Exception as e:
         logger.error(f"cache_refresh failed: {e}", exc_info=True)
         await _upsert_task_state("cache_refresh", running=False, last_result=f"error: {e}")

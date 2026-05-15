@@ -2953,9 +2953,16 @@ route('/dashboard', async () => {
       { key: 'auto_search',   label: 'Auto search',   endpoint: null                  },
     ];
 
+    function _taskResultHtml(result, running) {
+      if (!result) return '';
+      if (running) return escapeHtml(result);
+      if (result.startsWith('error:')) return `<span class="text-red">${escapeHtml(result)}</span>`;
+      if (result === 'ok') return '<span class="text-green">ok</span>';
+      return escapeHtml(result) + '\n<span class="text-green">done</span>';
+    }
+
     function renderDashTask(key, label, endpoint, t) {
       const disabled = !t.next_run && !t.running;
-      const resultClass = (t.last_result === 'ok') ? 'text-green' : (t.last_result ? 'text-red' : '');
       return `
         <div class="stat-card${disabled ? ' stat-card-disabled' : ''}" id="dash-task-${key}">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
@@ -2965,7 +2972,7 @@ route('/dashboard', async () => {
           <div class="text-dim mt-1" style="font-size:0.78rem" id="dash-task-status-${key}">
             ${disabled ? 'Disabled' : t.running ? `${ICON_SPINNER} running` : t.last_run ? `Last: ${formatDate(t.last_run)}` : 'Never run'}
           </div>
-          ${!disabled && (t.last_result || t.running) ? `<div class="${t.running ? 'text-dim' : resultClass}" style="font-size:0.78rem;margin-top:0.2rem" id="dash-task-result-${key}">${escapeHtml(t.last_result || '')}</div>` : `<div id="dash-task-result-${key}"></div>`}
+          ${!disabled && (t.last_result || t.running) ? `<div class="${t.running ? 'text-dim' : ''}" style="font-size:0.78rem;margin-top:0.2rem;white-space:pre-line" id="dash-task-result-${key}">${_taskResultHtml(t.last_result || '', t.running)}</div>` : `<div id="dash-task-result-${key}"></div>`}
         </div>
       `;
     }
@@ -2980,11 +2987,11 @@ route('/dashboard', async () => {
         const disabled = !t.next_run && !t.running;
         if (statusEl) statusEl.innerHTML = disabled ? 'Disabled' : t.running ? `${ICON_SPINNER} running` : t.last_run ? `Last: ${formatDate(t.last_run)}` : 'Never run';
         if (resultEl) {
-          const resultClass = (t.last_result === 'ok') ? 'text-green' : (t.last_result ? 'text-red' : '');
-          resultEl.className = t.running ? 'text-dim' : resultClass;
+          resultEl.className = t.running ? 'text-dim' : '';
           resultEl.style.fontSize = '0.78rem';
           resultEl.style.marginTop = '0.2rem';
-          resultEl.textContent = (!disabled && t.last_result) ? t.last_result : '';
+          resultEl.style.whiteSpace = 'pre-line';
+          resultEl.innerHTML = (!disabled && t.last_result) ? _taskResultHtml(t.last_result, t.running) : '';
         }
       });
     }
