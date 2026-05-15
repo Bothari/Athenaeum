@@ -56,11 +56,19 @@ def _strip_subtitle(title: str) -> str:
     return re.split(r':\s+', title, maxsplit=1)[0].strip()
 
 
+def _author_surname(author: str) -> str:
+    """Return the last token of an author name (the surname)."""
+    parts = author.strip().split()
+    return parts[-1] if parts else ""
+
+
 def _score_result(result_title: str, original_title: str, author: str = "") -> int:
     """Score a Prowlarr result title against the book title+author (0–100).
 
     Uses token-set ratio so word order and extra tokens (e.g. '[MP3]', narrator
-    name) don't hurt the score.
+    name) don't hurt the score.  Author matching also checks the surname alone
+    so pen-name initials (S. A. Chakraborty) match results filed under the
+    author's full first name (Shannon Chakraborty).
     """
     try:
         from rapidfuzz import fuzz
@@ -71,16 +79,24 @@ def _score_result(result_title: str, original_title: str, author: str = "") -> i
     main = _strip_subtitle(original_title).lower()
     t_score = fuzz.token_set_ratio(main, clean_result)
     if author:
-        a_score = fuzz.token_set_ratio(author.lower(), clean_result)
-        # Weight title more heavily
+        a_full = fuzz.token_set_ratio(author.lower(), clean_result)
+        # Surname-only fallback: "Chakraborty" matches whether filed as "S. A." or "Shannon"
+        surname = _author_surname(author).lower()
+        a_surname = fuzz.partial_ratio(surname, clean_result) if surname else 0
+        a_score = max(a_full, a_surname)
         return int(t_score * 0.7 + a_score * 0.3)
     return t_score
 
 
 def build_prowlarr_query(title: str, author: str = "") -> str:
-    """Build a Prowlarr search query, stripping subtitles indexers typically omit."""
+    """Build a Prowlarr search query, stripping subtitles indexers typically omit.
+
+    Uses only the author's surname so pen-name initials (S. A. Chakraborty)
+    don't prevent indexers from matching results filed under the full name.
+    """
     main = _strip_subtitle(title)
-    return f"{main} {author}".strip() if author else main
+    surname = _author_surname(author)
+    return f"{main} {surname}".strip() if surname else main
 
 
 async def prowlarr_search(settings: dict, query: str, book_type: str = "", title: str = "", author: str = "") -> list[dict]:

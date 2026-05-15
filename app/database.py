@@ -359,6 +359,10 @@ async def _run_migrations(db):
         await db.execute("ALTER TABLE series_downloads ADD COLUMN proposed_mappings TEXT")
         await db.execute("PRAGMA user_version = 12")
 
+    if current < 13:
+        await db.execute("ALTER TABLE books ADD COLUMN metadata_refreshed_at TEXT")
+        await db.execute("PRAGMA user_version = 13")
+
     await db.commit()
 
 
