@@ -320,6 +320,55 @@ async def delete_request(request_id: str, auth: dict = Depends(require_auth)):
     return {"ok": True}
 
 
+class ManualRequestBody(BaseModel):
+    title: str
+    author: str
+    type: str
+
+
+@router.post("/requests/manual")
+async def create_manual_request(body: ManualRequestBody, auth: dict = Depends(require_admin)):
+    if body.type not in ("audiobook", "ebook"):
+        raise HTTPException(status_code=400, detail="type must be audiobook or ebook")
+    title = body.title.strip()
+    author_name = body.author.strip()
+    if not title or not author_name:
+        raise HTTPException(status_code=400, detail="title and author are required")
+
+    now = _now()
+    async with get_db() as db:
+        author_row = await (
+            await db.execute("SELECT id FROM authors WHERE lower(name) = lower(?)", (author_name,))
+        ).fetchone()
+        if author_row:
+            author_id = author_row["id"]
+        else:
+            author_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO authors (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (author_id, author_name, now, now),
+            )
+
+        book_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO books (id, title, metadata_source, created_at, updated_at) VALUES (?, ?, 'manual', ?, ?)",
+            (book_id, title, now, now),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO book_authors (id, book_id, author_id, author_position, created_at) VALUES (?, ?, ?, 1, ?)",
+            (str(uuid.uuid4()), book_id, author_id, now),
+        )
+
+        req = await _create_request(db, book_id, body.type, user_id=auth["user_id"], role=auth["role"])
+        if req is None:
+            raise HTTPException(status_code=409, detail="Request already exists")
+
+        await db.commit()
+        detail = await _request_detail(db, req["id"])
+
+    return {"book_id": book_id, "request": detail}
+
+
 @router.post("/requests/sync-library")
 async def sync_library_requests():
     """Check ABS for active requests and fulfil any found there."""
@@ -477,6 +526,7 @@ async def search_all_requests():
         rows = await (
             await db.execute(
                 """SELECT r.id, r.type, r.narrator, b.title, b.release_date, b.release_date_fetched,
+                          b.metadata_source,
                           (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
                            WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
                    FROM requests r JOIN books b ON b.id = r.book_id
@@ -491,7 +541,7 @@ async def search_all_requests():
         if rd and rd >= today:
             skipped_unreleased += 1
             continue
-        if not rd and row["release_date_fetched"]:
+        if not rd and row["release_date_fetched"] and row["metadata_source"] != "manual":
             skipped_unreleased += 1
             continue
         to_search.append(row)

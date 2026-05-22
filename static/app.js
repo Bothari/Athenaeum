@@ -2535,6 +2535,76 @@ route('/library/book', async (params, qp) => {
   }
 });
 
+// ── Manual request dialog ─────────────────────────────────────────────────────
+
+function showManualRequestDialog() {
+  const overlay = document.createElement('div');
+  overlay.className = 'dialog-overlay';
+  overlay.innerHTML = `
+    <div class="dialog-card">
+      <div class="dialog-title">Manual Request</div>
+      <div class="form-group">
+        <label class="form-label">Title</label>
+        <input class="input" id="mr-title" type="text" placeholder="Book title" autocomplete="off" style="width:100%">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Author</label>
+        <input class="input" id="mr-author" type="text" placeholder="Author name" autocomplete="off" style="width:100%">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Format</label>
+        <select class="input" id="mr-type" style="width:100%">
+          <option value="audiobook">Audiobook</option>
+          <option value="ebook">Ebook</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="mr-submit">Request</button>
+        <button class="btn btn-ghost" id="mr-cancel">Cancel</button>
+        <span id="mr-error" class="form-feedback err"></span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#mr-title').focus();
+
+  const close = () => overlay.remove();
+  overlay.querySelector('#mr-cancel').onclick = close;
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+
+  overlay.querySelector('#mr-title').addEventListener('keydown', e => {
+    if (e.key === 'Enter') overlay.querySelector('#mr-author').focus();
+  });
+  overlay.querySelector('#mr-author').addEventListener('keydown', e => {
+    if (e.key === 'Enter') overlay.querySelector('#mr-submit').click();
+  });
+
+  overlay.querySelector('#mr-submit').onclick = async () => {
+    const title  = overlay.querySelector('#mr-title').value.trim();
+    const author = overlay.querySelector('#mr-author').value.trim();
+    const type   = overlay.querySelector('#mr-type').value;
+    const errEl  = overlay.querySelector('#mr-error');
+    const btn    = overlay.querySelector('#mr-submit');
+
+    if (!title || !author) { errEl.textContent = 'Title and author are required.'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Requesting…';
+    errEl.textContent = '';
+    try {
+      const result = await api('/requests/manual', { method: 'POST', body: { title, author, type } });
+      close();
+      toast('Request created.');
+      location.hash = `#/library/book?book_id=${result.book_id}`;
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Request';
+      errEl.textContent = e.message || 'Failed to create request.';
+    }
+  };
+}
+
 // Queue (Requests + Downloads tabs) — admins; plain Requests list — users
 route('/requests', async (params, qp) => {
   if (!isAdmin()) {
@@ -2555,6 +2625,7 @@ route('/requests', async (params, qp) => {
   app.innerHTML = `<div class="narrow-page">
     <div class="page-header">
       <span class="page-title">${ICON_REQUESTS} Queue</span>
+      <button class="btn btn-ghost btn-sm" id="manual-req-btn">+ Manual Request</button>
     </div>
     <div class="tabs">
       <button class="tab-btn${tab === 'requests' ? ' active' : ''}" data-tab="requests">Requests</button>
@@ -2564,6 +2635,8 @@ route('/requests', async (params, qp) => {
     </div>
     <div id="queue-content"></div>
   </div>`;
+
+  document.getElementById('manual-req-btn').onclick = () => showManualRequestDialog();
 
   app.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
     btn.onclick = () => {
@@ -2734,14 +2807,14 @@ function renderSearchAllTab(container) {
 
   api('/requests?status=requested&limit=200').then(data => {
     const eligible = (data.items || []).filter(r => {
-      if (!r.release_date) return false;
-      if (r.release_date > today) return false;
-      if (r.release_date.endsWith('-01-01') && r.release_date.substring(0, 4) >= String(new Date().getFullYear())) return false;
+      if (r.release_date_fetched && !r.release_date) return false;  // HC confirmed no date
+      if (r.release_date && r.release_date > today) return false;
+      if (r.release_date && r.release_date.endsWith('-01-01') && r.release_date.substring(0, 4) >= String(new Date().getFullYear())) return false;
       return true;
     });
 
     if (!eligible.length) {
-      container.innerHTML = `<div class="state-empty">No searchable requests — all items are unreleased or have no release date.</div>`;
+      container.innerHTML = `<div class="state-empty">No searchable requests — all items are unreleased.</div>`;
       return;
     }
 
