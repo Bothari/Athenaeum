@@ -1548,7 +1548,8 @@ route('/library/authors/:id', async ({ id }) => {
       try {
         const data = await api(`/authors/${id}/also-by`);
         if (data.error || !data.items || !data.items.length) {
-          sec.innerHTML = '';
+          sec.innerHTML = `<div class="section-heading mt-2">Also by this Author</div>
+            <div class="state-empty" style="font-size:0.9rem">You already have everything. True super fan status achieved.</div>`;
           return;
         }
         sec.innerHTML = `<div class="section-heading mt-2">Also by this Author (${data.items.length})</div>`;
@@ -1559,7 +1560,8 @@ route('/library/authors/:id', async ({ id }) => {
           sec.appendChild(card);
         });
       } catch {
-        sec.innerHTML = '';
+        sec.innerHTML = `<div class="section-heading mt-2">Also by this Author</div>
+          <div class="state-empty" style="font-size:0.9rem">Could not reach Hardcover to check for more books.</div>`;
       }
     }
 
@@ -1587,7 +1589,7 @@ route('/library/series', async (params, qp) => {
     headers: [
       { label: 'Name', key: 'name', sortable: true },
       { label: 'Books', key: 'library_count', sortable: true, style: 'width:80px' },
-      { label: 'Missing', style: 'width:90px' },
+      { label: 'Missing', key: 'missing', sortable: true, style: 'width:90px' },
     ],
     fetchFn: (p) => api('/series?' + new URLSearchParams(p).toString()),
     extraFetchParams: () => seriesUnlinked ? { unlinked: '1' } : {},

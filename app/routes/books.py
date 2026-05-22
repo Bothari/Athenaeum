@@ -386,13 +386,20 @@ async def list_series(
     offset: int = Query(default=0, ge=0),
     unlinked: bool = Query(default=False),
 ):
-    if sort not in {"name", "library_count"}:
+    if sort not in {"name", "library_count", "missing"}:
         sort = "name"
     if dir not in VALID_DIR:
         dir = "asc"
 
-    order_expr = "lower(s.name)" if sort == "name" else f"library_count {dir}, lower(s.name)"
-    order_clause = f"{order_expr} {dir}" if sort == "name" else order_expr
+    # missing sort: computed in Python after stats — fetch all rows, sort, paginate manually
+    sort_in_python = sort == "missing"
+
+    if sort == "name":
+        order_clause = f"lower(s.name) {dir}"
+    elif sort == "library_count":
+        order_clause = f"library_count {dir}, lower(s.name)"
+    else:
+        order_clause = "lower(s.name) ASC"
 
     joins = ""
     conditions = []
@@ -411,13 +418,7 @@ async def list_series(
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    async with get_db() as db:
-        count_row = await (
-            await db.execute(f"SELECT COUNT(*) FROM series s{joins} {where}", bind)
-        ).fetchone()
-        rows = await (
-            await db.execute(
-                f"""SELECT s.*,
+    series_sql = f"""SELECT s.*,
                     COUNT(DISTINCT CASE WHEN
                         (s.show_secondary_works = 1 OR bs.position IS NULL OR CAST(bs.position AS REAL) = CAST(CAST(bs.position AS INTEGER) AS REAL))
                         AND EXISTS (SELECT 1 FROM book_formats bf WHERE bf.book_id = bs.book_id)
@@ -432,11 +433,16 @@ async def list_series(
                     LEFT JOIN book_series bs ON bs.series_id = s.id
                     {where}
                     GROUP BY s.id
-                    ORDER BY {order_clause}
-                    LIMIT ? OFFSET ?""",
-                bind + [limit, offset],
-            )
-        ).fetchall()
+                    ORDER BY {order_clause}"""
+
+    async with get_db() as db:
+        count_row = await (
+            await db.execute(f"SELECT COUNT(*) FROM series s{joins} {where}", bind)
+        ).fetchone()
+        if sort_in_python:
+            rows = await (await db.execute(series_sql, bind)).fetchall()
+        else:
+            rows = await (await db.execute(series_sql + " LIMIT ? OFFSET ?", bind + [limit, offset])).fetchall()
 
         items = []
         for row in rows:
@@ -470,7 +476,6 @@ async def list_series(
         if hc_ids:
             now_iso = datetime.now(timezone.utc).isoformat()
             placeholders = ",".join("?" * len(hc_ids))
-            # Load cached HC book lists (populated by cache_refresh or series page visits)
             books_rows = await (
                 await db.execute(
                     f"SELECT query, results_json FROM metadata_cache WHERE query IN ({placeholders}) AND source = 'series_books_rich' AND expires_at > ?",
@@ -479,7 +484,6 @@ async def list_series(
             ).fetchall()
             books_by_hc_id = {r["query"]: json.loads(r["results_json"]) for r in books_rows}
 
-            # Batch-load owned HC IDs for all series in one query
             series_ids = [it["id"] for it in items]
             s_placeholders = ",".join("?" * len(series_ids))
             owned_rows = await (
@@ -510,6 +514,14 @@ async def list_series(
                 it["missing_all"] = stats["missing_all"]
                 it["upcoming_all"] = stats["upcoming_all"]
                 it["total_primary"] = stats["total_primary"]
+
+        if sort_in_python:
+            desc = (dir == "desc")
+            items.sort(key=lambda x: (
+                -(x["missing_primary"] or 0) if desc else (x["missing_primary"] or 0),
+                x["name"].lower()
+            ))
+            items = items[offset: offset + limit]
 
     return {"items": items, "total": count_row[0], "limit": limit, "offset": offset}
 
