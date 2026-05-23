@@ -974,8 +974,8 @@ body.home-page .home-title { display: block; }
 .task-card-header strong { font-size: 1rem; }
 .task-card-meta {
   display: flex;
-  gap: 1.5rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.2rem;
   margin-top: 0.5rem;
   font-size: 0.82rem;
   color: var(--text-dim);

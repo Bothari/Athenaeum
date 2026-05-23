@@ -947,6 +947,16 @@ function setupTabScrollHints(wrap) {
   update();
 }
 
+// ── Task result formatting ─────────────────────────────────────────────────────
+
+function _taskResultHtml(result, running) {
+  if (!result) return '';
+  if (running) return escapeHtml(result);
+  if (result.startsWith('error:')) return `<span class="text-red">${escapeHtml(result)}</span>`;
+  if (result === 'ok') return '<span class="text-green">ok</span>';
+  return escapeHtml(result) + '\n<span class="text-green">done</span>';
+}
+
 // ── First-run banner ───────────────────────────────────────────────────────────
 
 async function checkAbsBanner() {
@@ -3152,14 +3162,6 @@ route('/dashboard', async () => {
       { key: 'cache_refresh', label: 'Cache refresh', endpoint: '/sync/cache-refresh' },
     ];
 
-    function _taskResultHtml(result, running) {
-      if (!result) return '';
-      if (running) return escapeHtml(result);
-      if (result.startsWith('error:')) return `<span class="text-red">${escapeHtml(result)}</span>`;
-      if (result === 'ok') return '<span class="text-green">ok</span>';
-      return escapeHtml(result) + '\n<span class="text-green">done</span>';
-    }
-
     function renderDashTask(key, label, endpoint, t) {
       const disabled = !t.next_run && !t.running;
       return `
@@ -3341,6 +3343,10 @@ route('/settings', async (params, qp) => {
     });
 
     const DL_TYPE_LABELS = { qbittorrent: 'qBittorrent', sabnzbd: 'SABnzbd', deluge: 'Deluge' };
+    const TASK_DEFS = [
+      { key: 'library_sync',  label: 'Library sync',  default: '0 2 * * *',    endpoint: '/sync/library' },
+      { key: 'cache_refresh', label: 'Cache refresh', default: '0 3 * * *',    endpoint: '/sync/cache-refresh' },
+    ];
 
     showTab(initialTab, false);
 
@@ -3684,11 +3690,6 @@ route('/settings', async (params, qp) => {
       `;
     }
 
-    const TASK_DEFS = [
-      { key: 'library_sync',  label: 'Library sync',  default: '0 2 * * *',    endpoint: '/sync/library' },
-      { key: 'cache_refresh', label: 'Cache refresh', default: '0 3 * * *',    endpoint: '/sync/cache-refresh' },
-    ];
-
     function buildTasksTab(s) {
       const sch = s.schedule || {};
       const taskCards = TASK_DEFS.map(t => `
@@ -3709,6 +3710,7 @@ route('/settings', async (params, qp) => {
           <div class="task-card-meta">
             <span id="task-next-${t.key}">${sch[t.key] ? 'Next: —' : 'Disabled'}</span>
             <span id="task-last-${t.key}">Last: —</span>
+            <div id="task-result-${t.key}" style="white-space:pre-line;margin-top:0.1rem"></div>
           </div>
         </div>
       `).join('');
@@ -3802,23 +3804,18 @@ route('/settings', async (params, qp) => {
           if (nextEl) {
             const cronInput = content.querySelector(`[data-key="${task}"]`);
             const hasSchedule = cronInput && cronInput.value.trim();
-            nextEl.textContent = t.next_run ? 'Next: ' + formatDateTime(t.next_run) : (hasSchedule ? '—' : 'Disabled');
+            nextEl.textContent = t.next_run ? 'Next: ' + formatDateTime(t.next_run) : (hasSchedule ? 'Next: —' : 'Disabled');
           }
           if (lastEl) {
             if (t.running) {
-              lastEl.className = 'text-dim';
               lastEl.innerHTML = `${ICON_SPINNER} running`;
             } else if (t.last_run) {
-              const resultHtml = t.last_result
-                ? ` <span class="${t.last_result === 'ok' ? 'text-green' : 'text-red'}">${escapeHtml(t.last_result)}</span>`
-                : '';
-              lastEl.className = 'text-dim';
-              lastEl.style.fontSize = '0.82rem';
-              lastEl.style.paddingTop = '0.45rem';
-              lastEl.innerHTML = 'Last: ' + formatDateTime(t.last_run) + resultHtml;
+              lastEl.textContent = 'Last: ' + formatDateTime(t.last_run);
             } else {
               lastEl.textContent = 'Last: Never';
             }
+            const resultEl = document.getElementById(`task-result-${task}`);
+            if (resultEl) resultEl.innerHTML = _taskResultHtml(t.last_result || '', t.running);
           }
         }
       } catch { /* ignore */ }
@@ -4105,13 +4102,10 @@ route('/settings', async (params, qp) => {
           input.addEventListener('input', () => {
             clearTimeout(debounce);
             const expr = input.value.trim();
-            if (!expr) { nextEl.className = 'task-cell-next text-dim'; nextEl.style.fontSize = '0.82rem'; nextEl.style.paddingTop = '0.45rem'; nextEl.textContent = 'Disabled'; return; }
+            if (!expr) { nextEl.textContent = 'Disabled'; return; }
             debounce = setTimeout(async () => {
               try {
                 const r = await api(`/schedule/next-run?expr=${encodeURIComponent(expr)}`);
-                nextEl.className = 'text-dim';
-                nextEl.style.fontSize = '0.82rem';
-                nextEl.style.paddingTop = '0.45rem';
                 nextEl.textContent = 'Next: ' + (r.next_run ? formatDateTime(r.next_run) : '—');
               } catch {
                 nextEl.className = 'text-red';
