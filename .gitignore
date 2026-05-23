@@ -1,4 +1,5 @@
 data/
+CLAUDE.local.md
 *.pyc
 __pycache__/
 venv/
