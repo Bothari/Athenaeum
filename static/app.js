@@ -3150,7 +3150,6 @@ route('/dashboard', async () => {
     const DASH_TASKS = [
       { key: 'library_sync',  label: 'Library sync',  endpoint: '/sync/library'       },
       { key: 'cache_refresh', label: 'Cache refresh', endpoint: '/sync/cache-refresh' },
-      { key: 'auto_search',   label: 'Auto search',   endpoint: null                  },
     ];
 
     function _taskResultHtml(result, running) {
@@ -3672,7 +3671,6 @@ route('/settings', async (params, qp) => {
     const TASK_DEFS = [
       { key: 'library_sync',  label: 'Library sync',  default: '0 2 * * *',    endpoint: '/sync/library' },
       { key: 'cache_refresh', label: 'Cache refresh', default: '0 3 * * *',    endpoint: '/sync/cache-refresh' },
-      { key: 'auto_search',   label: 'Auto search',   default: '0 */6 * * *',  endpoint: null },
     ];
 
     function buildTasksTab(s) {
