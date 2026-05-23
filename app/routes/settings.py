@@ -179,6 +179,36 @@ async def test_downloader(body: dict = None):
         except Exception as e:
             raise HTTPException(status_code=502, detail=str(e))
 
+    elif dl_type == "deluge":
+        url = cfg.get("url", "").rstrip("/")
+        if not url:
+            raise HTTPException(status_code=400, detail="URL not configured")
+        password = cfg.get("password", "")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{url}/json",
+                    json={"method": "auth.login", "params": [password], "id": 1},
+                    headers={"Content-Type": "application/json"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if not data.get("result"):
+                    raise Exception("Login failed — check password")
+                version_resp = await client.post(
+                    f"{url}/json",
+                    json={"method": "daemon.get_version", "params": [], "id": 2},
+                    headers={"Content-Type": "application/json"},
+                    cookies=resp.cookies,
+                )
+                version_resp.raise_for_status()
+                vdata = version_resp.json()
+                if vdata.get("error"):
+                    return {"version": "", "status": "ok"}
+                return {"version": vdata.get("result", ""), "status": "ok"}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
     else:
         raise HTTPException(status_code=400, detail=f"Unknown downloader type: {dl_type!r}")
 

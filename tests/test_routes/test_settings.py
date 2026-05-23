@@ -155,19 +155,21 @@ class TestTestProwlarr:
 
 class TestTestSabnzbd:
     async def test_not_configured_returns_400(self, client):
-        resp = await client.post("/api/settings/test/sabnzbd")
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "sabnzbd", "id": "sab-1"},
+        )
         assert resp.status_code == 400
 
     async def test_success(self, client, httpx_mock: HTTPXMock):
-        await client.put(
-            "/api/settings",
-            json={"sabnzbd": {"url": "http://sabnzbd.local", "api_key": "sbkey"}},
-        )
         httpx_mock.add_response(
             url="http://sabnzbd.local/api?mode=version&output=json&apikey=sbkey",
             json={"version": "4.2.0"},
         )
-        resp = await client.post("/api/settings/test/sabnzbd")
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "sabnzbd", "id": "sab-1", "url": "http://sabnzbd.local", "api_key": "sbkey"},
+        )
         assert resp.status_code == 200
         assert resp.json()["version"] == "4.2.0"
 
@@ -204,6 +206,98 @@ class TestTestHardcover:
         assert resp.status_code == 502
 
 
+class TestTestQbittorrentDownloader:
+    async def test_not_configured_returns_400(self, client):
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "qbittorrent", "id": "q1"},
+        )
+        assert resp.status_code == 400
+
+    async def test_success(self, client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="http://qbit.local:8116/api/v2/auth/login",
+            text="Ok.",
+        )
+        httpx_mock.add_response(
+            url="http://qbit.local:8116/api/v2/app/version",
+            text="5.0.4",
+        )
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "qbittorrent", "id": "q1", "url": "http://qbit.local:8116"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["version"] == "5.0.4"
+
+    async def test_wrong_password_returns_502(self, client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="http://qbit.local:8116/api/v2/auth/login",
+            text="Fails.",
+        )
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "qbittorrent", "id": "q1", "url": "http://qbit.local:8116"},
+        )
+        assert resp.status_code == 502
+
+
+class TestTestDelugeDownloader:
+    async def test_not_configured_returns_400(self, client):
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "deluge", "id": "d1"},
+        )
+        assert resp.status_code == 400
+
+    async def test_success(self, client, httpx_mock: HTTPXMock):
+        # auth.login first, then daemon.get_version
+        httpx_mock.add_response(
+            url="http://deluge.local:8112/json",
+            json={"result": True, "error": None, "id": 1},
+        )
+        httpx_mock.add_response(
+            url="http://deluge.local:8112/json",
+            json={"result": "2.2.0", "error": None, "id": 2},
+        )
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "deluge", "id": "d1", "url": "http://deluge.local:8112", "password": "deluge"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["version"] == "2.2.0"
+
+    async def test_wrong_password_returns_502(self, client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="http://deluge.local:8112/json",
+            json={"result": False, "error": None, "id": 1},
+        )
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "deluge", "id": "d1", "url": "http://deluge.local:8112", "password": "wrong"},
+        )
+        assert resp.status_code == 502
+
+    async def test_connection_failure_returns_502(self, client, httpx_mock: HTTPXMock):
+        import httpx as _httpx
+        httpx_mock.add_exception(
+            _httpx.ConnectError("Connection refused"),
+            url="http://deluge.local:8112/json",
+        )
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "deluge", "id": "d1", "url": "http://deluge.local:8112", "password": "deluge"},
+        )
+        assert resp.status_code == 502
+
+    async def test_unknown_type_returns_400(self, client):
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "transmission", "id": "t1", "url": "http://t.local"},
+        )
+        assert resp.status_code == 400
+
+
 class TestTestWithUnsavedValues:
     """Test that body values are used without requiring a prior save."""
 
@@ -226,8 +320,8 @@ class TestTestWithUnsavedValues:
             json={"version": "5.0.0"},
         )
         resp = await client.post(
-            "/api/settings/test/sabnzbd",
-            json={"url": "http://sabnzbd.unsaved", "api_key": "newkey"},
+            "/api/settings/test/downloader",
+            json={"type": "sabnzbd", "url": "http://sabnzbd.unsaved", "api_key": "newkey"},
         )
         assert resp.status_code == 200
         assert resp.json()["version"] == "5.0.0"
