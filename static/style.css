@@ -1057,6 +1057,15 @@ body.home-page .home-title { display: block; }
   /* On home page: hide the nav bar entirely and show the inline title */
   body.home-page #nav { display: none; }
   body.home-page .home-title { display: block; }
+  body.home-page #theme-toggle-home { display: flex; }
+
+  #theme-toggle-home {
+    display: none;
+    position: fixed;
+    top: 0.75rem;
+    right: 0.75rem;
+    z-index: 200;
+  }
 
   /* Pad content above bottom nav */
   #main { padding: 1rem 0.75rem calc(56px + env(safe-area-inset-bottom) + 1rem); }

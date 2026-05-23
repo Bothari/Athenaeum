@@ -4157,8 +4157,11 @@ window.addEventListener('hashchange', () => {
 
 function applyTheme(theme) {
   document.documentElement.classList.toggle('light', theme === 'light');
+  const icon = theme === 'light' ? ICON_MOON : ICON_SUN;
   const btn = document.getElementById('theme-toggle');
-  if (btn) btn.innerHTML = theme === 'light' ? ICON_MOON : ICON_SUN;
+  if (btn) btn.innerHTML = icon;
+  const btnHome = document.getElementById('theme-toggle-home');
+  if (btnHome) btnHome.innerHTML = icon;
 }
 
 function toggleTheme() {
@@ -4172,6 +4175,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Apply saved theme before first render to avoid flash
   applyTheme(localStorage.getItem('theme') || 'light');
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+  document.getElementById('theme-toggle-home').addEventListener('click', toggleTheme);
 
   // Populate bottom nav icons
   document.getElementById('nb-search').innerHTML    = ICON_SEARCH;
