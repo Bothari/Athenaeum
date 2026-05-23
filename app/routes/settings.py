@@ -12,7 +12,7 @@ from ..settings import get_settings, save_settings
 router = APIRouter(prefix="/api")
 
 KNOWN_SECTIONS = frozenset([
-    "prowlarr", "qbittorrent", "sabnzbd", "audiobookshelf",
+    "prowlarr", "downloaders", "qbittorrent", "sabnzbd", "audiobookshelf",
     "hardcover", "notifications", "general", "schedule", "auth",
 ])
 
@@ -23,14 +23,17 @@ SENSITIVE_KEYS = frozenset([
 PATH_KEYS = frozenset(["output_dir", "download_dir"])
 
 
+def _mask_dl(dl: dict) -> dict:
+    return {k: ("********" if k in SENSITIVE_KEYS and v else v) for k, v in dl.items()}
+
+
 def _mask_sensitive(settings: dict) -> dict:
     result = {}
     for section, values in settings.items():
-        if isinstance(values, dict):
-            masked = {}
-            for k, v in values.items():
-                masked[k] = "********" if (k in SENSITIVE_KEYS and v) else v
-            result[section] = masked
+        if section == "downloaders" and isinstance(values, list):
+            result[section] = [_mask_dl(dl) for dl in values]
+        elif isinstance(values, dict):
+            result[section] = {k: ("********" if k in SENSITIVE_KEYS and v else v) for k, v in values.items()}
         else:
             result[section] = values
     return result
@@ -39,7 +42,9 @@ def _mask_sensitive(settings: dict) -> dict:
 def _strip_sentinels(partial: dict) -> dict:
     result = {}
     for section, values in partial.items():
-        if isinstance(values, dict):
+        if section == "downloaders" and isinstance(values, list):
+            result[section] = [{k: v for k, v in dl.items() if v != "********"} for dl in values]
+        elif isinstance(values, dict):
             result[section] = {k: v for k, v in values.items() if v != "********"}
         else:
             result[section] = values
@@ -62,7 +67,12 @@ async def put_settings_route(body: dict):
         )
 
     for section, values in body.items():
-        if isinstance(values, dict):
+        if section == "downloaders" and isinstance(values, list):
+            for dl in values:
+                for k, v in dl.items():
+                    if k in PATH_KEYS and v and not os.path.exists(v):
+                        raise HTTPException(status_code=400, detail=f"Path does not exist: {v}")
+        elif isinstance(values, dict):
             for k, v in values.items():
                 if k in PATH_KEYS and v and not os.path.exists(v):
                     raise HTTPException(status_code=400, detail=f"Path does not exist: {v}")
@@ -121,28 +131,56 @@ async def test_prowlarr(body: dict = None):
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@router.post("/settings/test/qbittorrent")
-async def test_qbittorrent(body: dict = None):
+@router.post("/settings/test/downloader")
+async def test_downloader(body: dict = None):
+    """Test a downloader by type. Merges form values with saved config for sentinel handling."""
+    body = body or {}
+    dl_type = body.get("type", "")
+    dl_id = body.get("id", "")
     settings = await get_settings()
-    cfg = _merge_with_saved(settings.get("qbittorrent", {}), body or {})
-    url = cfg.get("url", "").rstrip("/")
-    username = cfg.get("username", "")
-    password = cfg.get("password", "")
-    if not url:
-        raise HTTPException(status_code=400, detail="qBittorrent URL not configured")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            login_resp = await client.post(
-                f"{url}/api/v2/auth/login",
-                data={"username": username, "password": password},
-            )
-            if login_resp.text.strip().lower() != "ok.":
-                raise Exception("Login failed — check username and password")
-            version_resp = await client.get(f"{url}/api/v2/app/version")
-            version_resp.raise_for_status()
-            return {"version": version_resp.text.strip(), "status": "ok"}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+
+    existing = next(
+        (dl for dl in settings.get("downloaders", []) if dl.get("id") == dl_id),
+        {},
+    )
+    cfg = _merge_with_saved(existing, body)
+
+    if dl_type == "qbittorrent":
+        url = cfg.get("url", "").rstrip("/")
+        if not url:
+            raise HTTPException(status_code=400, detail="URL not configured")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                login_resp = await client.post(
+                    f"{url}/api/v2/auth/login",
+                    data={"username": cfg.get("username", ""), "password": cfg.get("password", "")},
+                )
+                if login_resp.text.strip().lower() != "ok.":
+                    raise Exception("Login failed — check username and password")
+                version_resp = await client.get(f"{url}/api/v2/app/version")
+                version_resp.raise_for_status()
+                return {"version": version_resp.text.strip(), "status": "ok"}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+    elif dl_type == "sabnzbd":
+        url = cfg.get("url", "").rstrip("/")
+        if not url:
+            raise HTTPException(status_code=400, detail="URL not configured")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{url}/api",
+                    params={"mode": "version", "output": "json", "apikey": cfg.get("api_key", "")},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return {"version": data.get("version", ""), "status": "ok"}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown downloader type: {dl_type!r}")
 
 
 @router.post("/settings/test/hardcover")
@@ -169,26 +207,6 @@ async def test_hardcover(body: dict = None):
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
-
-@router.post("/settings/test/sabnzbd")
-async def test_sabnzbd(body: dict = None):
-    settings = await get_settings()
-    cfg = _merge_with_saved(settings.get("sabnzbd", {}), body or {})
-    url = cfg.get("url", "").rstrip("/")
-    api_key = cfg.get("api_key", "")
-    if not url:
-        raise HTTPException(status_code=400, detail="SABnzbd URL not configured")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{url}/api",
-                params={"mode": "version", "output": "json", "apikey": api_key},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return {"version": data.get("version", ""), "status": "ok"}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.post("/settings/test/notifications")

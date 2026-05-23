@@ -979,20 +979,16 @@ async def trigger_series_pack_download(
 
     settings = await get_settings()
 
-    from ..services.download_clients import QBittorrentClient, SABnzbdClient
+    from ..services.download_clients import get_torrent_client, get_usenet_client
 
     if body.protocol == "torrent":
-        client_settings = settings.get("qbittorrent", {})
-        if not client_settings.get("url"):
-            raise HTTPException(status_code=400, detail="qBittorrent not configured")
-        client = QBittorrentClient(client_settings)
-        client_name = "qbittorrent"
+        client, client_name = get_torrent_client(settings)
+        if not client:
+            raise HTTPException(status_code=400, detail="No torrent downloader configured")
     elif body.protocol == "usenet":
-        client_settings = settings.get("sabnzbd", {})
-        if not client_settings.get("url"):
-            raise HTTPException(status_code=400, detail="SABnzbd not configured")
-        client = SABnzbdClient(client_settings)
-        client_name = "sabnzbd"
+        client, client_name = get_usenet_client(settings)
+        if not client:
+            raise HTTPException(status_code=400, detail="No usenet downloader configured")
     else:
         raise HTTPException(status_code=400, detail=f"Unknown protocol: {body.protocol}")
 

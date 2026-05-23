@@ -3292,7 +3292,7 @@ route('/settings', async (params, qp) => {
   try {
     const settings = await api('/settings');
 
-    const tabs = ['General', 'ABS', 'Prowlarr', 'qBittorrent', 'SABnzbd', 'Hardcover', 'Notifications', 'Tasks', 'Auth'];
+    const tabs = ['General', 'ABS', 'Prowlarr', 'Downloaders', 'Hardcover', 'Notifications', 'Tasks', 'Auth'];
     const initialTab = tabs.includes(qp.tab) ? qp.tab : tabs[0];
 
     app.innerHTML = `<div class="narrow-page">
@@ -3318,8 +3318,7 @@ route('/settings', async (params, qp) => {
         case 'General': return buildGeneralTab(settings);
         case 'ABS': return buildAbsTab(settings);
         case 'Prowlarr': return buildProwlarrTab(settings);
-        case 'qBittorrent': return buildQbtTab(settings);
-        case 'SABnzbd': return buildSabnzbdTab(settings);
+        case 'Downloaders': return '';
         case 'Hardcover': return buildHardcoverTab(settings);
         case 'Notifications': return buildNotificationsTab(settings);
         case 'Tasks': return buildTasksTab(settings);
@@ -3442,34 +3441,181 @@ route('/settings', async (params, qp) => {
       `;
     }
 
-    function buildQbtTab(s) {
-      const q = s.qbittorrent || {};
+    // ── Downloaders tab ──────────────────────────────────────────────────────────
+
+    function dlField(label, key, value, type = 'text') {
+      const inputType = type === 'password' ? 'password' : 'text';
       return `
-        ${field('URL', 'url', q.url)}
-        ${field('Username', 'username', q.username)}
-        ${field('Password', 'password', q.password, 'password')}
-        ${field('Download directory', 'download_dir', q.download_dir)}
-        <div class="form-actions">
-          ${testButton('qbittorrent')}
-          <button class="btn btn-primary" data-save="qbittorrent">Save</button>
-          <span class="form-feedback" id="feedback-qbittorrent"></span>
-        </div>
-        <div id="test-qbittorrent-result" class="mt-1"></div>
-      `;
+        <div class="form-group">
+          <label class="form-label">${escapeHtml(label)}</label>
+          <input type="${inputType}" class="form-input" data-dl-key="${key}" value="${escapeHtml(value || '')}">
+        </div>`;
     }
 
-    function buildSabnzbdTab(s) {
-      const sb = s.sabnzbd || {};
+    function dlTypeFields(type, dl) {
+      if (type === 'qbittorrent') return `
+        ${dlField('URL', 'url', dl.url)}
+        ${dlField('Username', 'username', dl.username)}
+        ${dlField('Password', 'password', dl.password, 'password')}
+        ${dlField('Download directory', 'download_dir', dl.download_dir)}`;
+      if (type === 'sabnzbd') return `
+        ${dlField('URL', 'url', dl.url)}
+        ${dlField('API Key', 'api_key', dl.api_key, 'password')}
+        ${dlField('Category', 'category', dl.category ?? 'Default', 'text')}
+        <div class="form-group" style="grid-column:1/-1">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+            <input type="checkbox" data-dl-key="remove_completed" ${dl.remove_completed ? 'checked' : ''}>
+            <span>Remove completed downloads from SABnzbd history</span>
+          </label>
+          <div class="form-hint">Files are kept — only the history entry is removed.</div>
+        </div>`;
+      return '';
+    }
+
+    const DL_TYPE_LABELS = { qbittorrent: 'qBittorrent', sabnzbd: 'SABnzbd' };
+
+    function renderDlCard(dl, i) {
+      const typeLabel = DL_TYPE_LABELS[dl.type] || dl.type;
       return `
-        ${field('URL', 'url', sb.url)}
-        ${field('API Key', 'api_key', sb.api_key, 'password')}
-        <div class="form-actions">
-          ${testButton('sabnzbd')}
-          <button class="btn btn-primary" data-save="sabnzbd">Save</button>
-          <span class="form-feedback" id="feedback-sabnzbd"></span>
-        </div>
-        <div id="test-sabnzbd-result" class="mt-1"></div>
-      `;
+        <div class="dl-card" data-dl-i="${i}">
+          <div class="dl-card-header">
+            <span class="dl-type-badge">${escapeHtml(typeLabel)}</span>
+            <input type="text" class="form-input" data-dl-key="name" value="${escapeHtml(dl.name || '')}" placeholder="Name" style="flex:1;min-width:0;max-width:200px">
+            <label style="display:flex;align-items:center;gap:0.4rem;white-space:nowrap;cursor:pointer">
+              <input type="checkbox" data-dl-key="enabled" ${dl.enabled !== false ? 'checked' : ''}> Enabled
+            </label>
+          </div>
+          <div class="dl-card-body">
+            ${dlTypeFields(dl.type, dl)}
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-secondary dl-test-btn">Test</button>
+            <button class="btn btn-primary dl-save-btn">Save</button>
+            <button class="btn btn-ghost dl-remove-btn" style="color:var(--danger)">Remove</button>
+            <span class="form-feedback dl-feedback"></span>
+          </div>
+          <div class="dl-test-result mt-1"></div>
+        </div>`;
+    }
+
+    function buildAndWireDownloadersTab(content) {
+      let dlState = (settings.downloaders || []).map(d => ({...d}));
+
+      function rerender() {
+        content.innerHTML = renderDlTabHtml();
+        wireAll();
+      }
+
+      function renderDlTabHtml() {
+        const cards = dlState.map((dl, i) => renderDlCard(dl, i)).join('');
+        return `
+          <div id="dl-list">${cards}</div>
+          <div style="margin-top:1.25rem">
+            <button class="btn btn-secondary" id="add-dl-btn">+ Add downloader</button>
+          </div>`;
+      }
+
+      function collectCard(card) {
+        const out = {};
+        card.querySelectorAll('[data-dl-key]').forEach(inp => {
+          out[inp.dataset.dlKey] = inp.type === 'checkbox' ? inp.checked : inp.value;
+        });
+        return out;
+      }
+
+      function wireCard(card) {
+        const i = parseInt(card.dataset.dlI, 10);
+        const feedback = card.querySelector('.dl-feedback');
+        const testResult = card.querySelector('.dl-test-result');
+
+        card.querySelector('.dl-save-btn').onclick = async (e) => {
+          const btn = e.currentTarget;
+          dlState[i] = {...dlState[i], ...collectCard(card)};
+          btn.disabled = true;
+          try {
+            await api('/settings', {method: 'PUT', body: {downloaders: dlState}});
+            renderFeedback(feedback, true, 'Saved');
+          } catch (err) {
+            renderFeedback(feedback, false, err.message);
+          } finally { btn.disabled = false; }
+        };
+
+        card.querySelector('.dl-test-btn').onclick = async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true; btn.textContent = 'Testing…';
+          testResult.innerHTML = '';
+          const cfg = {...dlState[i], ...collectCard(card)};
+          try {
+            const r = await api('/settings/test/downloader', {method: 'POST', body: cfg});
+            testResult.innerHTML = `<div class="text-green" style="font-size:0.85rem">&#10003; Connected: v${escapeHtml(String(r.version || ''))}</div>`;
+          } catch (err) {
+            testResult.innerHTML = `<div class="text-red" style="font-size:0.85rem">&#10007; ${escapeHtml(err.message)}</div>`;
+          } finally { btn.disabled = false; btn.textContent = 'Test'; }
+        };
+
+        card.querySelector('.dl-remove-btn').onclick = async () => {
+          dlState.splice(i, 1);
+          rerender();
+          try { await api('/settings', {method: 'PUT', body: {downloaders: dlState}}); }
+          catch (err) { toast('Save failed: ' + err.message, 'error'); }
+        };
+      }
+
+      function wireAll() {
+        content.querySelectorAll('.dl-card').forEach(wireCard);
+        const addBtn = document.getElementById('add-dl-btn');
+        if (addBtn) addBtn.onclick = showAddForm;
+      }
+
+      function showAddForm() {
+        document.getElementById('add-dl-btn').style.display = 'none';
+        const typeOpts = Object.entries(DL_TYPE_LABELS).map(([v, l]) =>
+          `<option value="${v}">${escapeHtml(l)}</option>`).join('');
+        const formHtml = `
+          <div class="dl-card" id="dl-add-card">
+            <div class="dl-card-header">
+              <select class="form-input" id="dl-add-type" style="width:auto">${typeOpts}</select>
+              <input type="text" class="form-input" id="dl-add-name" placeholder="Name" style="flex:1;min-width:0;max-width:200px">
+            </div>
+            <div id="dl-add-fields">${dlTypeFields('qbittorrent', {})}</div>
+            <div class="form-actions">
+              <button class="btn btn-primary" id="dl-add-confirm">Add</button>
+              <button class="btn btn-ghost" id="dl-add-cancel">Cancel</button>
+              <span class="form-feedback" id="dl-add-feedback"></span>
+            </div>
+          </div>`;
+        document.getElementById('dl-list').insertAdjacentHTML('beforeend', formHtml);
+
+        document.getElementById('dl-add-type').onchange = (e) => {
+          document.getElementById('dl-add-fields').innerHTML = dlTypeFields(e.target.value, {});
+        };
+
+        document.getElementById('dl-add-confirm').onclick = async () => {
+          const btn = document.getElementById('dl-add-confirm');
+          const type = document.getElementById('dl-add-type').value;
+          const name = document.getElementById('dl-add-name').value.trim();
+          const fields = {};
+          document.getElementById('dl-add-fields').querySelectorAll('[data-dl-key]').forEach(inp => {
+            fields[inp.dataset.dlKey] = inp.type === 'checkbox' ? inp.checked : inp.value;
+          });
+          const newDl = {id: Date.now().toString(36), type, name: name || DL_TYPE_LABELS[type] || type, enabled: true, ...fields};
+          dlState.push(newDl);
+          btn.disabled = true;
+          try {
+            await api('/settings', {method: 'PUT', body: {downloaders: dlState}});
+            rerender();
+          } catch (err) {
+            dlState.pop();
+            const fb = document.getElementById('dl-add-feedback');
+            if (fb) renderFeedback(fb, false, err.message);
+            btn.disabled = false;
+          }
+        };
+
+        document.getElementById('dl-add-cancel').onclick = rerender;
+      }
+
+      rerender();
     }
 
     function buildHardcoverTab(s) {
@@ -3663,6 +3809,11 @@ route('/settings', async (params, qp) => {
     }
 
     function wireTabEvents(tabName) {
+      if (tabName === 'Downloaders') {
+        buildAndWireDownloadersTab(content);
+        return;
+      }
+
       // Save buttons
       content.querySelectorAll('[data-save]').forEach(btn => {
         btn.onclick = async () => {
