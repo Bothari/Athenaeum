@@ -3113,10 +3113,6 @@ route('/dashboard', async () => {
           <div class="stat-label">Downloading</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value">${req.completed || 0}</div>
-          <div class="stat-label">Completed</div>
-        </div>
-        <div class="stat-card">
           <div class="stat-value${req.failed ? ' text-red' : ''}">${req.failed || 0}</div>
           <div class="stat-label">Failed</div>
         </div>
