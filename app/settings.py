@@ -43,6 +43,8 @@ DEFAULT_SETTINGS = {
         "ebook_prefix": "",
         "merge_multifile_audiobooks": False,
         "public_url": "",
+        "allowed_audiobook_formats": ["m4b", "mp3", "flac"],
+        "allowed_ebook_formats": ["epub", "pdf", "mobi", "azw3"],
     },
     "schedule": {
         "library_sync": "0 2 * * *",

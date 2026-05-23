@@ -2707,9 +2707,29 @@ function renderRequestsTab(content, qp) {
         <td class="td-dim col-hide-mobile">${escapeHtml(r.narrator || '—')}</td>
         <td class="td-dim col-hide-mobile">${formatDate(r.created_at)}</td>
         <td style="white-space:nowrap">
-          <button class="btn btn-ghost btn-sm" data-delete style="color:var(--danger)">Delete</button>
+          ${r.status === 'failed' ? `<button class="btn btn-ghost btn-sm" data-retry>Retry</button> ` : ''}
+          <button class="btn btn-ghost btn-sm" data-delete style="color:var(--red)">Delete</button>
         </td>
       `;
+      if (r.status === 'failed') {
+        tr.querySelector('[data-retry]').onclick = async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          btn.textContent = 'Retrying…';
+          try {
+            await api(`/requests/${r.id}/organize`, { method: 'POST' });
+            tr.dataset.reqStatus = 'snatched';
+            tr.querySelector('.badge').className = 'badge badge-snatched';
+            tr.querySelector('.badge').innerHTML = `${typeIcon(r.type)}<span class="col-hide-mobile"> snatched</span>`;
+            btn.remove();
+            toast('Retrying…');
+          } catch {
+            btn.disabled = false;
+            btn.textContent = 'Retry';
+            toast('Retry failed.');
+          }
+        };
+      }
       tr.querySelector('[data-delete]').onclick = () => confirmAction(
         tr.querySelector('[data-delete]'), 'Confirm?', async () => {
           await api(`/requests/${r.id}`, { method: 'DELETE' });
@@ -2735,7 +2755,54 @@ function renderRequestsTab(content, qp) {
       else delete hp.requests_type;
       location.hash = buildHash('/requests', hp).slice(1);
     });
+
+    // Show "Retry all failed" button if any failed requests are visible
+    const retryAllBtn = document.getElementById('retry-all-failed-btn');
+    if (retryAllBtn) {
+      retryAllBtn.onclick = async () => {
+        retryAllBtn.disabled = true;
+        retryAllBtn.textContent = 'Retrying…';
+        try {
+          const res = await api('/requests/retry-failed', { method: 'POST' });
+          toast(`Retrying ${res.count} failed request${res.count !== 1 ? 's' : ''}…`);
+          setTimeout(() => location.reload(), 1500);
+        } catch {
+          retryAllBtn.disabled = false;
+          retryAllBtn.textContent = 'Retry all failed';
+          toast('Failed to retry.');
+        }
+      };
+    }
   }, 0);
+
+  // Inject "Retry all failed" button if status filter is 'failed' or none
+  if (!statusFilter || statusFilter === 'failed') {
+    api('/requests?status=failed&limit=1').then(data => {
+      if ((data.total || 0) > 0) {
+        const controls = content.querySelector('.table-controls');
+        if (controls && !controls.querySelector('#retry-all-failed-btn')) {
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-ghost btn-sm';
+          btn.id = 'retry-all-failed-btn';
+          btn.textContent = `Retry all failed (${data.total})`;
+          controls.appendChild(btn);
+          btn.onclick = async () => {
+            btn.disabled = true;
+            btn.textContent = 'Retrying…';
+            try {
+              const res = await api('/requests/retry-failed', { method: 'POST' });
+              toast(`Retrying ${res.count} failed request${res.count !== 1 ? 's' : ''}…`);
+              setTimeout(() => location.reload(), 1500);
+            } catch {
+              btn.disabled = false;
+              btn.textContent = `Retry all failed (${data.total})`;
+              toast('Failed to retry.');
+            }
+          };
+        }
+      }
+    }).catch(() => {});
+  }
 }
 
 
@@ -3316,6 +3383,8 @@ route('/settings', async (params, qp) => {
     function buildGeneralTab(s) {
       const g = s.general || {};
       const sepDirs = !!g.separate_type_dirs;
+      const audioFmts = Array.isArray(g.allowed_audiobook_formats) ? g.allowed_audiobook_formats.join(', ') : (g.allowed_audiobook_formats || '');
+      const ebookFmts = Array.isArray(g.allowed_ebook_formats) ? g.allowed_ebook_formats.join(', ') : (g.allowed_ebook_formats || '');
       return `
         ${field('Output directory', 'output_dir', g.output_dir)}
         ${checkbox('Separate directories by type (audiobooks/ebooks)', 'separate_type_dirs', sepDirs)}
@@ -3327,6 +3396,8 @@ route('/settings', async (params, qp) => {
         ${checkbox('Group series in search results', 'group_series_in_search', g.group_series_in_search)}
         ${checkbox('Merge multi-file audiobooks into single M4B', 'merge_multifile_audiobooks', g.merge_multifile_audiobooks)}
         ${checkbox('Debug view', 'debug_view', g.debug_view)}
+        ${field('Allowed audiobook formats', 'allowed_audiobook_formats', audioFmts, 'text', 'Comma-separated — Prowlarr results with other recognised formats are hidden. e.g. m4b, mp3, flac')}
+        ${field('Allowed ebook formats', 'allowed_ebook_formats', ebookFmts, 'text', 'Comma-separated — e.g. epub, pdf, mobi, azw3')}
         ${saveButton('general')}
       `;
     }
@@ -3611,6 +3682,14 @@ route('/settings', async (params, qp) => {
             if (checks.length > 0) {
               partial.library_id = Array.from(checks).filter(c => c.checked).map(c => c.value);
             }
+          }
+          // Split comma-separated format fields into arrays
+          if (section === 'general') {
+            ['allowed_audiobook_formats', 'allowed_ebook_formats'].forEach(key => {
+              if (typeof partial[key] === 'string') {
+                partial[key] = partial[key].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+              }
+            });
           }
           btn.disabled = true;
           try {

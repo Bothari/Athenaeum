@@ -320,6 +320,48 @@ async def delete_request(request_id: str, auth: dict = Depends(require_auth)):
     return {"ok": True}
 
 
+@router.post("/requests/retry-failed")
+async def retry_failed_requests(auth: dict = Depends(require_admin)):
+    """Trigger an ABS library scan then re-run the organize pipeline for every failed request."""
+    import asyncio as _asyncio
+    from ..services.organizer import auto_organize
+
+    settings = await get_settings()
+    abs_settings = settings.get("audiobookshelf", {})
+
+    async with get_db() as db:
+        rows = await (
+            await db.execute("SELECT id FROM requests WHERE status = 'failed'")
+        ).fetchall()
+
+    if not rows:
+        return {"ok": True, "count": 0}
+
+    if abs_settings.get("url"):
+        from ..services.audiobookshelf import AudiobookshelfService
+        abs_svc = AudiobookshelfService(abs_settings)
+        library_ids = abs_settings.get("library_id") or []
+        if isinstance(library_ids, str):
+            library_ids = [lid.strip() for lid in library_ids.split(",") if lid.strip()]
+        for lib_id in library_ids:
+            try:
+                await abs_svc.scan_library(lib_id)
+            except Exception as e:
+                logger.warning("retry-failed: ABS scan_library(%s) failed: %s", lib_id, e)
+
+    now = _now()
+    count = 0
+    for row in rows:
+        req_id = row["id"]
+        async with get_db() as db:
+            await set_request_status(db, req_id, "snatched", now)
+            await db.commit()
+        _asyncio.create_task(auto_organize(req_id))
+        count += 1
+
+    return {"ok": True, "count": count}
+
+
 class ManualRequestBody(BaseModel):
     title: str
     author: str
@@ -475,12 +517,16 @@ async def search_indexers(request_id: str):
     from ..services.download_clients import prowlarr_search, build_prowlarr_query
 
     query = build_prowlarr_query(row["title"], row["author"] or "")
+    general = settings.get("general", {})
+    fmt_key = "allowed_audiobook_formats" if row["type"] == "audiobook" else "allowed_ebook_formats"
+    allowed_formats = general.get(fmt_key) or []
 
     try:
         raw_results = await prowlarr_search(
             prowlarr_settings, query,
             book_type=row["type"],
             title=row["title"], author=row["author"] or "",
+            allowed_formats=allowed_formats,
         )
     except Exception as e:
         logger.warning("Prowlarr search failed: %s", e)
@@ -521,6 +567,7 @@ async def search_all_requests():
     from ..services.download_clients import prowlarr_search, build_prowlarr_query
 
     today = date.today().isoformat()
+    general = settings.get("general", {})
 
     async with get_db() as db:
         rows = await (
@@ -548,11 +595,14 @@ async def search_all_requests():
 
     async def _search_one(row):
         query = build_prowlarr_query(row["title"], row["author"] or "")
+        fmt_key = "allowed_audiobook_formats" if row["type"] == "audiobook" else "allowed_ebook_formats"
+        allowed_formats = general.get(fmt_key) or []
         try:
             raw = await prowlarr_search(
                 prowlarr_settings, query,
                 book_type=row["type"],
                 title=row["title"], author=row["author"] or "",
+                allowed_formats=allowed_formats,
             )
         except Exception as e:
             return {"request_id": row["id"], "book_title": row["title"],
