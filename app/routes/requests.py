@@ -146,6 +146,9 @@ async def create_request(body: CreateRequestBody, auth: dict = Depends(require_a
             "author": detail["author"] or "",
             "type": detail["type"],
         }))
+    if detail and detail.get("status") == "requested":
+        from ..services.auto_search import auto_search_request
+        asyncio.create_task(auto_search_request(detail["id"]))
     return detail
 
 
@@ -408,6 +411,9 @@ async def create_manual_request(body: ManualRequestBody, auth: dict = Depends(re
         await db.commit()
         detail = await _request_detail(db, req["id"])
 
+    if detail and detail.get("status") == "requested":
+        from ..services.auto_search import auto_search_request
+        asyncio.create_task(auto_search_request(detail["id"]))
     return {"book_id": book_id, "request": detail}
 
 
@@ -810,6 +816,8 @@ async def approve_request(request_id: str, auth: dict = Depends(require_admin)):
         now = _now()
         await set_request_status(db, request_id, "requested", now)
         await db.commit()
+    from ..services.auto_search import auto_search_request
+    asyncio.create_task(auto_search_request(request_id))
     return {"ok": True, "status": "requested"}
 
 

@@ -85,79 +85,9 @@ async def _library_sync_task():
 
 
 async def _auto_search_task():
-    """Search Prowlarr for all requested items and snatch the first result."""
-    from .services.download_clients import prowlarr_search, build_prowlarr_query, get_torrent_client, get_usenet_client
-
-    settings = await get_settings()
-    prowlarr_settings = settings.get("prowlarr", {})
-    if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
-        return
-
-    general = settings.get("general", {})
-
-    async with get_db() as db:
-        rows = await (
-            await db.execute(
-                """SELECT r.id, r.type, r.narrator, b.title,
-                          (SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id = a.id
-                           WHERE ba.book_id = r.book_id ORDER BY ba.author_position LIMIT 1) as author
-                   FROM requests r JOIN books b ON b.id = r.book_id
-                   WHERE r.status = 'requested'"""
-            )
-        ).fetchall()
-
-    for row in rows:
-        try:
-            query = build_prowlarr_query(row["title"], row["author"] or "")
-            fmt_key = "allowed_audiobook_formats" if row["type"] == "audiobook" else "allowed_ebook_formats"
-            results = await prowlarr_search(
-                prowlarr_settings, query,
-                book_type=row["type"],
-                title=row["title"], author=row["author"] or "",
-                allowed_formats=general.get(fmt_key) or [],
-            )
-            if not results:
-                continue
-
-            best = results[0]
-            protocol = best.get("protocol")
-            download_url = best.get("downloadUrl") or ""
-            if not download_url:
-                continue
-
-            if protocol == "torrent":
-                client, client_name = get_torrent_client(settings)
-                if not client:
-                    continue
-            elif protocol == "usenet":
-                client, client_name = get_usenet_client(settings)
-                if not client:
-                    continue
-            else:
-                continue
-
-            download_id = await client.add(download_url)
-            now = datetime.utcnow().isoformat()
-            import uuid as _uuid
-            dl_id = str(_uuid.uuid4())
-            async with get_db() as db:
-                await db.execute(
-                    """INSERT INTO downloads
-                       (id, request_id, title, indexer, guid, info_url, protocol,
-                        size, download_client, download_id, status, grabbed_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?)""",
-                    (dl_id, row["id"], best.get("title"), best.get("indexer"),
-                     best.get("guid"), best.get("infoUrl"), protocol,
-                     best.get("size"), client_name, download_id, now),
-                )
-                await db.execute(
-                    "UPDATE requests SET status='snatched', updated_at=? WHERE id=?",
-                    (now, row["id"]),
-                )
-                await db.commit()
-
-        except Exception as e:
-            logger.warning("auto_search: failed for request %s: %s", row["id"], e)
+    """Run auto-search for all pending requested items."""
+    from .services.auto_search import run_auto_search_all
+    await run_auto_search_all()
 
 
 async def _download_monitor_tick():

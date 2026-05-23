@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api")
 
 KNOWN_SECTIONS = frozenset([
     "prowlarr", "downloaders", "qbittorrent", "sabnzbd", "audiobookshelf",
-    "hardcover", "notifications", "general", "schedule", "auth",
+    "hardcover", "notifications", "general", "schedule", "auth", "auto_search",
 ])
 
 SENSITIVE_KEYS = frozenset([

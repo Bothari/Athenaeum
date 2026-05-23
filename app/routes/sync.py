@@ -25,6 +25,12 @@ async def trigger_cache_refresh():
     return {"ok": True}
 
 
+@router.post("/sync/auto-search")
+async def trigger_auto_search():
+    asyncio.create_task(_run_auto_search())
+    return {"ok": True}
+
+
 async def _run_sync():
     try:
         result = await sync_library()
@@ -46,6 +52,14 @@ async def _run_cache_refresh():
         await cache_refresh()
     except Exception as e:
         logger.error(f"Manual cache refresh failed: {e}", exc_info=True)
+
+
+async def _run_auto_search():
+    from ..services.auto_search import run_auto_search_all
+    try:
+        await run_auto_search_all()
+    except Exception as e:
+        logger.error(f"Manual auto-search failed: {e}", exc_info=True)
 
 
 @router.post("/sync/try-link/book/{book_id}")

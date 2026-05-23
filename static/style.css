@@ -981,6 +981,27 @@ body.home-page .home-title { display: block; }
   color: var(--text-dim);
 }
 
+/* ── Auto-search ranking stack ── */
+.ranking-stack { display: flex; flex-direction: column; gap: 0.5rem; }
+.ranking-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: default;
+  transition: opacity 0.15s;
+}
+.ranking-item.dragging { opacity: 0.35; }
+.ranking-item.drag-over-top { border-top: 2px solid var(--accent); }
+.ranking-item.drag-over-bottom { border-bottom: 2px solid var(--accent); }
+.drag-handle { color: var(--text-dim); cursor: grab; flex-shrink: 0; display: flex; align-items: center; }
+.drag-handle:active { cursor: grabbing; }
+.ranking-item-body { flex: 1; min-width: 0; }
+.ranking-item-label { font-weight: 600; font-size: 0.88rem; }
+
 /* ── Misc utilities ── */
 .mt-1 { margin-top: 0.5rem; }
 .mt-2 { margin-top: 1rem; }

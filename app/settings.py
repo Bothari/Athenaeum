@@ -41,6 +41,18 @@ DEFAULT_SETTINGS = {
         "cache_refresh": "0 3 * * *",
         "auto_search": "0 */6 * * *",
     },
+    "auto_search": {
+        "enabled": False,
+        "search_on_request": True,
+        "min_seeders": 1,
+        "max_attempts": 10,
+        "ranking": [
+            {"criterion": "format",  "enabled": True},
+            {"criterion": "seeders", "enabled": True},
+            {"criterion": "size",    "enabled": True,  "prefer": "larger"},
+            {"criterion": "age",     "enabled": False, "prefer": "newer"},
+        ],
+    },
     "auth": {
         "form_enabled": False,
         "oidc_enabled": False,

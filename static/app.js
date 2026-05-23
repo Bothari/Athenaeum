@@ -3289,7 +3289,7 @@ route('/settings', async (params, qp) => {
   try {
     const settings = await api('/settings');
 
-    const tabs = ['General', 'ABS', 'Prowlarr', 'Downloaders', 'Hardcover', 'Notifications', 'Tasks', 'Auth'];
+    const tabs = ['General', 'ABS', 'Prowlarr', 'Downloads', 'Hardcover', 'Notifications', 'Tasks', 'Auth'];
     const initialTab = tabs.includes(qp.tab) ? qp.tab : tabs[0];
 
     app.innerHTML = `<div class="narrow-page">
@@ -3315,7 +3315,8 @@ route('/settings', async (params, qp) => {
         case 'General': return buildGeneralTab(settings);
         case 'ABS': return buildAbsTab(settings);
         case 'Prowlarr': return buildProwlarrTab(settings);
-        case 'Downloaders': return '';
+
+        case 'Downloads': return '';
         case 'Hardcover': return buildHardcoverTab(settings);
         case 'Notifications': return buildNotificationsTab(settings);
         case 'Tasks': return buildTasksTab(settings);
@@ -3342,6 +3343,7 @@ route('/settings', async (params, qp) => {
     const TASK_DEFS = [
       { key: 'library_sync',  label: 'Library sync',  default: '0 2 * * *',    endpoint: '/sync/library' },
       { key: 'cache_refresh', label: 'Cache refresh', default: '0 3 * * *',    endpoint: '/sync/cache-refresh' },
+      { key: 'auto_search',   label: 'Auto-search',   default: '0 */6 * * *',  endpoint: '/sync/auto-search' },
     ];
 
     showTab(initialTab, false);
@@ -3505,8 +3507,15 @@ route('/settings', async (params, qp) => {
     function buildAndWireDownloadersTab(content) {
       let dlState = (settings.downloaders || []).map(d => ({...d}));
 
+      content.innerHTML = `
+        <div class="section-heading">Download clients</div>
+        <div id="dl-section"></div>
+        <div class="section-heading" style="margin-top:2rem">Auto-search</div>
+        ${buildAutoSearchTab(settings)}
+      `;
+
       function rerender() {
-        content.innerHTML = renderDlTabHtml();
+        document.getElementById('dl-section').innerHTML = renderDlTabHtml();
         wireAll();
       }
 
@@ -3639,6 +3648,82 @@ route('/settings', async (params, qp) => {
       }
 
       rerender();
+
+      // Wire auto-search save
+      const asBtn = content.querySelector('[data-save="auto_search"]');
+      if (asBtn) {
+        asBtn.onclick = async () => {
+          const feedback = document.getElementById('feedback-auto_search');
+          const inputs = content.querySelectorAll('[data-key]');
+          const partial = {};
+          inputs.forEach(inp => {
+            const key = inp.dataset.key;
+            partial[key] = inp.type === 'checkbox' ? inp.checked : inp.value;
+          });
+          const stack = content.querySelector('#ranking-stack');
+          if (stack) {
+            partial.ranking = [...stack.querySelectorAll('.ranking-item')].map(item => {
+              const c = item.dataset.criterion;
+              const entry = { criterion: c, enabled: !!item.querySelector('[data-criterion-enabled]')?.checked };
+              const preferSel = item.querySelector('[data-criterion-prefer]');
+              if (preferSel) entry.prefer = preferSel.value;
+              return entry;
+            });
+          }
+          if (partial.min_seeders !== undefined) partial.min_seeders = parseInt(partial.min_seeders) || 0;
+          if (partial.max_attempts !== undefined) partial.max_attempts = parseInt(partial.max_attempts) || 10;
+          asBtn.disabled = true;
+          try {
+            await api('/settings', { method: 'PUT', body: { auto_search: partial } });
+            renderFeedback(feedback, true, 'Saved');
+          } catch (err) {
+            renderFeedback(feedback, false, err.message);
+          } finally {
+            asBtn.disabled = false;
+          }
+        };
+      }
+
+      // Wire drag-and-drop for ranking stack
+      const rankStack = content.querySelector('#ranking-stack');
+      if (rankStack) {
+        let dragSrc = null;
+        rankStack.addEventListener('dragstart', e => {
+          dragSrc = e.target.closest('.ranking-item');
+          if (!dragSrc) return;
+          dragSrc.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        rankStack.addEventListener('dragover', e => {
+          e.preventDefault();
+          const target = e.target.closest('.ranking-item');
+          if (!target || target === dragSrc) return;
+          rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
+          const rect = target.getBoundingClientRect();
+          target.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drag-over-top' : 'drag-over-bottom');
+          e.dataTransfer.dropEffect = 'move';
+        });
+        rankStack.addEventListener('dragleave', e => {
+          const target = e.target.closest('.ranking-item');
+          if (target) target.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+        rankStack.addEventListener('drop', e => {
+          e.preventDefault();
+          const target = e.target.closest('.ranking-item');
+          if (!target || target === dragSrc) {
+            rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
+            return;
+          }
+          const rect = target.getBoundingClientRect();
+          const isTop = e.clientY < rect.top + rect.height / 2;
+          rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
+          rankStack.insertBefore(dragSrc, isTop ? target : target.nextSibling);
+        });
+        rankStack.addEventListener('dragend', () => {
+          rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom'));
+          dragSrc = null;
+        });
+      }
     }
 
     function buildHardcoverTab(s) {
@@ -3684,6 +3769,80 @@ route('/settings', async (params, qp) => {
         </div>
         <div id="test-notifications-result" class="mt-1"></div>
       `;
+    }
+
+    function buildAutoSearchTab(s) {
+      const a = s.auto_search || {};
+      const ranking = a.ranking || [
+        { criterion: 'format',  enabled: true },
+        { criterion: 'seeders', enabled: true },
+        { criterion: 'size',    enabled: true,  prefer: 'larger' },
+        { criterion: 'age',     enabled: false, prefer: 'newer' },
+      ];
+
+      const CRITERION_META = {
+        format:  { label: 'Format',  desc: 'Prefers results matching your allowed formats order — first listed is most preferred' },
+        seeders: { label: 'Seeders', desc: 'Prefers results with more seeders (torrent only; NZB results are unaffected)' },
+        size:    { label: 'Size',    desc: 'Prefer larger or smaller files', prefer: ['larger', 'smaller'] },
+        age:     { label: 'Age',     desc: 'Prefer newer or older indexed releases', prefer: ['newer', 'older'] },
+      };
+
+      const rankingItems = ranking.map(item => {
+        const meta = CRITERION_META[item.criterion] || { label: item.criterion, desc: '' };
+        const preferHtml = meta.prefer ? `
+          <select class="form-input" data-criterion-prefer style="width:auto;padding:0.2rem 0.5rem;font-size:0.82rem">
+            ${meta.prefer.map(p => `<option value="${p}"${item.prefer === p ? ' selected' : ''}>Prefer ${p}</option>`).join('')}
+          </select>` : '';
+        return `
+          <div class="ranking-item" draggable="true" data-criterion="${item.criterion}">
+            <div class="drag-handle" title="Drag to reorder">
+              <svg width="14" height="20" viewBox="0 0 14 20" fill="currentColor"><circle cx="4" cy="4" r="1.5"/><circle cx="10" cy="4" r="1.5"/><circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="4" cy="16" r="1.5"/><circle cx="10" cy="16" r="1.5"/></svg>
+            </div>
+            <div class="ranking-item-body">
+              <div class="ranking-item-label">${meta.label}</div>
+              <div class="text-dim" style="font-size:0.8rem">${meta.desc}</div>
+            </div>
+            ${preferHtml}
+            <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.82rem;white-space:nowrap;flex-shrink:0;cursor:pointer">
+              <input type="checkbox" data-criterion-enabled ${item.enabled !== false ? 'checked' : ''}>Active
+            </label>
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+            <input type="checkbox" data-key="enabled" ${a.enabled ? 'checked' : ''}>
+            <span class="form-label" style="margin:0">Enable auto-search</span>
+          </label>
+          <div class="form-hint">Automatically search Prowlarr and send the best result to your download client when a request is created or approved.</div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+            <input type="checkbox" data-key="search_on_request" ${a.search_on_request !== false ? 'checked' : ''}>
+            <span class="form-label" style="margin:0">Search immediately on request</span>
+          </label>
+          <div class="form-hint">Trigger a search as soon as a request is created or approved, rather than waiting for the scheduled task.</div>
+        </div>
+        <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
+          <div class="form-group">
+            <label class="form-label">Minimum seeders</label>
+            <input type="number" class="form-input" data-key="min_seeders" value="${a.min_seeders ?? 1}" min="0" style="width:80px">
+            <div class="form-hint">Torrent results below this are excluded. Set to 0 to disable.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Max search attempts</label>
+            <input type="number" class="form-input" data-key="max_attempts" value="${a.max_attempts ?? 10}" min="1" style="width:80px">
+            <div class="form-hint">Stop retrying a request after this many failed searches.</div>
+          </div>
+        </div>
+        <div class="section-heading" style="margin-top:0.5rem">Result ranking</div>
+        <div class="form-hint" style="margin-bottom:0.75rem">Drag to reorder. Results are filtered then sorted top to bottom. Inactive criteria are ignored.</div>
+        <div class="ranking-stack" id="ranking-stack">${rankingItems}</div>
+        <div class="form-actions" style="margin-top:1rem">
+          <button class="btn btn-primary" data-save="auto_search">Save</button>
+          <span class="form-feedback" id="feedback-auto_search"></span>
+        </div>`;
     }
 
     function buildTasksTab(s) {
@@ -3819,7 +3978,7 @@ route('/settings', async (params, qp) => {
     }
 
     function wireTabEvents(tabName) {
-      if (tabName === 'Downloaders') {
+      if (tabName === 'Downloads') {
         buildAndWireDownloadersTab(content);
         return;
       }
@@ -3851,6 +4010,21 @@ route('/settings', async (params, qp) => {
                 partial[key] = partial[key].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
               }
             });
+          }
+          // Collect ranking stack and coerce numeric fields
+          if (section === 'auto_search') {
+            const stack = content.querySelector('#ranking-stack');
+            if (stack) {
+              partial.ranking = [...stack.querySelectorAll('.ranking-item')].map(item => {
+                const c = item.dataset.criterion;
+                const entry = { criterion: c, enabled: !!item.querySelector('[data-criterion-enabled]')?.checked };
+                const preferSel = item.querySelector('[data-criterion-prefer]');
+                if (preferSel) entry.prefer = preferSel.value;
+                return entry;
+              });
+            }
+            if (partial.min_seeders !== undefined) partial.min_seeders = parseInt(partial.min_seeders) || 0;
+            if (partial.max_attempts !== undefined) partial.max_attempts = parseInt(partial.max_attempts) || 10;
           }
           btn.disabled = true;
           try {
