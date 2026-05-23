@@ -1,12 +1,18 @@
 services:
   athenaeum:
-    container_name: athenaeum
     image: ghcr.io/bothari/athenaeum:latest
+    container_name: athenaeum
     ports:
       - "8741:8741"
     volumes:
+      # Database and settings — back this up
       - ./data:/data
-      - /path/to/media/books:/output
+
+      # Where organised books land. Point at the root of your ABS library.
+      - /path/to/your/library:/output
+
+      # Where Athenaeum reads completed downloads from.
+      # This must be the same filesystem location your download client writes to.
+      # If your download client is in another container, mount the same host path there too.
       - /path/to/downloads:/downloads
-    environment:
-      - DATA_DIR=/data
+    restart: unless-stopped
