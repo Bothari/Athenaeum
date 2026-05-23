@@ -1009,7 +1009,7 @@ async def auto_organize_series_pack(series_dl_id: str):
                     await db.execute(
                         """SELECT id, narrator FROM requests
                            WHERE book_id = ? AND type = ?
-                           AND status NOT IN ('failed', 'completed', 'rejected', 'in_library')""",
+                           AND status NOT IN ('completed', 'rejected', 'in_library')""",
                         (book_id, pack_type),
                     )
                 ).fetchone()
