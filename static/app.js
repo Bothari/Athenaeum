@@ -3481,8 +3481,7 @@ route('/settings', async (params, qp) => {
       return `
         <div class="card dl-card" data-dl-i="${i}">
           <div class="settings-card-header dl-card-header">
-            <span class="dl-type-badge">${escapeHtml(typeLabel)}</span>
-            <input type="text" class="form-input" data-dl-key="name" value="${escapeHtml(dl.name || '')}" placeholder="Name" style="flex:1;min-width:0;max-width:200px" onclick="event.stopPropagation()">
+            <span style="font-weight:600;font-size:1rem;flex:1">${escapeHtml(typeLabel)}</span>
             <label style="display:flex;align-items:center;gap:0.4rem;white-space:nowrap;cursor:pointer" onclick="event.stopPropagation()">
               <input type="checkbox" data-dl-key="enabled" ${dl.enabled !== false ? 'checked' : ''}> Enabled
             </label>
@@ -3511,15 +3510,17 @@ route('/settings', async (params, qp) => {
 
       function renderDlTabHtml() {
         const cards = dlState.map((dl, i) => renderDlCard(dl, i)).join('');
+        const usedTypes = new Set(dlState.map(d => d.type));
+        const availableTypes = Object.keys(DL_TYPE_LABELS).filter(t => !usedTypes.has(t));
         const torrentClients = dlState.filter(d => d.enabled !== false && (d.type === 'qbittorrent' || d.type === 'deluge'));
         const dupWarning = torrentClients.length > 1
-          ? `<div class="badge-warn" style="display:block;padding:0.5rem 0.75rem;border-radius:6px;margin-bottom:1rem;font-size:0.85rem">&#9888; Multiple torrent clients are enabled. Only <strong>${escapeHtml(torrentClients[0].name || torrentClients[0].type)}</strong> will be used; the others are ignored.</div>`
+          ? `<div class="badge-warn" style="display:block;padding:0.5rem 0.75rem;border-radius:6px;margin-bottom:1rem;font-size:0.85rem">&#9888; Multiple torrent clients are enabled. Only <strong>${escapeHtml(DL_TYPE_LABELS[torrentClients[0].type] || torrentClients[0].type)}</strong> will be used; the others are ignored.</div>`
           : '';
         return `
           ${dupWarning}
           <div id="dl-list" class="settings-cards">${cards}</div>
           <div style="margin-top:1.25rem">
-            <button class="btn btn-secondary" id="add-dl-btn">+ Add downloader</button>
+            ${availableTypes.length ? `<button class="btn btn-secondary" id="add-dl-btn">+ Add downloader</button>` : ''}
           </div>`;
       }
 
@@ -3545,7 +3546,7 @@ route('/settings', async (params, qp) => {
 
         card.querySelector('.dl-save-btn').onclick = async (e) => {
           const btn = e.currentTarget;
-          dlState[i] = {...dlState[i], ...collectCard(card)};
+          dlState[i] = {...dlState[i], ...collectCard(card), name: DL_TYPE_LABELS[dlState[i].type] || dlState[i].type};
           btn.disabled = true;
           try {
             await api('/settings', {method: 'PUT', body: {downloaders: dlState}});
@@ -3584,15 +3585,18 @@ route('/settings', async (params, qp) => {
 
       function showAddForm() {
         document.getElementById('add-dl-btn').style.display = 'none';
-        const typeOpts = Object.entries(DL_TYPE_LABELS).map(([v, l]) =>
-          `<option value="${v}">${escapeHtml(l)}</option>`).join('');
+        const usedTypes = new Set(dlState.map(d => d.type));
+        const availableTypes = Object.entries(DL_TYPE_LABELS).filter(([v]) => !usedTypes.has(v));
+        const firstType = availableTypes[0]?.[0] || 'qbittorrent';
+        const typeOpts = availableTypes.map(([v, l]) => `<option value="${v}">${escapeHtml(l)}</option>`).join('');
         const formHtml = `
           <div class="card dl-card" id="dl-add-card">
             <div class="dl-card-header" style="margin-bottom:1rem">
-              <select class="form-input" id="dl-add-type" style="width:auto">${typeOpts}</select>
-              <input type="text" class="form-input" id="dl-add-name" placeholder="Name" style="flex:1;min-width:0;max-width:200px">
+              ${availableTypes.length > 1
+                ? `<select class="form-input" id="dl-add-type" style="width:auto">${typeOpts}</select>`
+                : `<strong style="font-size:1rem">${escapeHtml(availableTypes[0]?.[1] || '')}</strong><input type="hidden" id="dl-add-type" value="${escapeHtml(firstType)}">`}
             </div>
-            <div id="dl-add-fields">${dlTypeFields('qbittorrent', {})}</div>
+            <div id="dl-add-fields">${dlTypeFields(firstType, {})}</div>
             <div class="form-actions" style="margin-top:1rem">
               <button class="btn btn-primary" id="dl-add-confirm">Add</button>
               <button class="btn btn-ghost" id="dl-add-cancel">Cancel</button>
@@ -3601,19 +3605,21 @@ route('/settings', async (params, qp) => {
           </div>`;
         document.getElementById('dl-list').insertAdjacentHTML('beforeend', formHtml);
 
-        document.getElementById('dl-add-type').onchange = (e) => {
-          document.getElementById('dl-add-fields').innerHTML = dlTypeFields(e.target.value, {});
-        };
+        const typeEl = document.getElementById('dl-add-type');
+        if (typeEl.tagName === 'SELECT') {
+          typeEl.onchange = (e) => {
+            document.getElementById('dl-add-fields').innerHTML = dlTypeFields(e.target.value, {});
+          };
+        }
 
         document.getElementById('dl-add-confirm').onclick = async () => {
           const btn = document.getElementById('dl-add-confirm');
           const type = document.getElementById('dl-add-type').value;
-          const name = document.getElementById('dl-add-name').value.trim();
           const fields = {};
           document.getElementById('dl-add-fields').querySelectorAll('[data-dl-key]').forEach(inp => {
             fields[inp.dataset.dlKey] = inp.type === 'checkbox' ? inp.checked : inp.value;
           });
-          const newDl = {id: Date.now().toString(36), type, name: name || DL_TYPE_LABELS[type] || type, enabled: true, ...fields};
+          const newDl = {id: Date.now().toString(36), type, name: DL_TYPE_LABELS[type] || type, enabled: true, ...fields};
           dlState.push(newDl);
           btn.disabled = true;
           try {
