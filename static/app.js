@@ -3479,24 +3479,25 @@ route('/settings', async (params, qp) => {
     function renderDlCard(dl, i) {
       const typeLabel = DL_TYPE_LABELS[dl.type] || dl.type;
       return `
-        <div class="dl-card" data-dl-i="${i}">
-          <div class="dl-card-header">
+        <div class="card dl-card" data-dl-i="${i}">
+          <div class="settings-card-header dl-card-header">
             <span class="dl-type-badge">${escapeHtml(typeLabel)}</span>
-            <input type="text" class="form-input" data-dl-key="name" value="${escapeHtml(dl.name || '')}" placeholder="Name" style="flex:1;min-width:0;max-width:200px">
-            <label style="display:flex;align-items:center;gap:0.4rem;white-space:nowrap;cursor:pointer">
+            <input type="text" class="form-input" data-dl-key="name" value="${escapeHtml(dl.name || '')}" placeholder="Name" style="flex:1;min-width:0;max-width:200px" onclick="event.stopPropagation()">
+            <label style="display:flex;align-items:center;gap:0.4rem;white-space:nowrap;cursor:pointer" onclick="event.stopPropagation()">
               <input type="checkbox" data-dl-key="enabled" ${dl.enabled !== false ? 'checked' : ''}> Enabled
             </label>
+            <span class="settings-card-toggle">${ICON_CHEVRON_DOWN}</span>
           </div>
-          <div class="dl-card-body">
-            ${dlTypeFields(dl.type, dl)}
+          <div class="settings-card-body hidden">
+            <div class="dl-card-body">${dlTypeFields(dl.type, dl)}</div>
+            <div class="form-actions" style="margin-top:1rem">
+              <button class="btn btn-secondary dl-test-btn">Test Connection</button>
+              <button class="btn btn-primary dl-save-btn">Save</button>
+              <button class="btn btn-ghost dl-remove-btn" style="color:var(--danger)">Remove</button>
+              <span class="form-feedback dl-feedback"></span>
+            </div>
+            <div class="dl-test-result mt-1"></div>
           </div>
-          <div class="form-actions">
-            <button class="btn btn-secondary dl-test-btn">Test</button>
-            <button class="btn btn-primary dl-save-btn">Save</button>
-            <button class="btn btn-ghost dl-remove-btn" style="color:var(--danger)">Remove</button>
-            <span class="form-feedback dl-feedback"></span>
-          </div>
-          <div class="dl-test-result mt-1"></div>
         </div>`;
     }
 
@@ -3516,7 +3517,7 @@ route('/settings', async (params, qp) => {
           : '';
         return `
           ${dupWarning}
-          <div id="dl-list">${cards}</div>
+          <div id="dl-list" class="settings-cards">${cards}</div>
           <div style="margin-top:1.25rem">
             <button class="btn btn-secondary" id="add-dl-btn">+ Add downloader</button>
           </div>`;
@@ -3534,6 +3535,13 @@ route('/settings', async (params, qp) => {
         const i = parseInt(card.dataset.dlI, 10);
         const feedback = card.querySelector('.dl-feedback');
         const testResult = card.querySelector('.dl-test-result');
+        const header = card.querySelector('.settings-card-header');
+        const body = card.querySelector('.settings-card-body');
+        const toggle = card.querySelector('.settings-card-toggle');
+        header.addEventListener('click', () => {
+          const collapsed = body.classList.toggle('hidden');
+          toggle.classList.toggle('open', !collapsed);
+        });
 
         card.querySelector('.dl-save-btn').onclick = async (e) => {
           const btn = e.currentTarget;
@@ -3557,7 +3565,7 @@ route('/settings', async (params, qp) => {
             testResult.innerHTML = `<div class="text-green" style="font-size:0.85rem">&#10003; Connected: v${escapeHtml(String(r.version || ''))}</div>`;
           } catch (err) {
             testResult.innerHTML = `<div class="text-red" style="font-size:0.85rem">&#10007; ${escapeHtml(err.message)}</div>`;
-          } finally { btn.disabled = false; btn.textContent = 'Test'; }
+          } finally { btn.disabled = false; btn.textContent = 'Test Connection'; }
         };
 
         card.querySelector('.dl-remove-btn').onclick = async () => {
@@ -3579,13 +3587,13 @@ route('/settings', async (params, qp) => {
         const typeOpts = Object.entries(DL_TYPE_LABELS).map(([v, l]) =>
           `<option value="${v}">${escapeHtml(l)}</option>`).join('');
         const formHtml = `
-          <div class="dl-card" id="dl-add-card">
-            <div class="dl-card-header">
+          <div class="card dl-card" id="dl-add-card">
+            <div class="dl-card-header" style="margin-bottom:1rem">
               <select class="form-input" id="dl-add-type" style="width:auto">${typeOpts}</select>
               <input type="text" class="form-input" id="dl-add-name" placeholder="Name" style="flex:1;min-width:0;max-width:200px">
             </div>
             <div id="dl-add-fields">${dlTypeFields('qbittorrent', {})}</div>
-            <div class="form-actions">
+            <div class="form-actions" style="margin-top:1rem">
               <button class="btn btn-primary" id="dl-add-confirm">Add</button>
               <button class="btn btn-ghost" id="dl-add-cancel">Cancel</button>
               <span class="form-feedback" id="dl-add-feedback"></span>
@@ -3677,36 +3685,30 @@ route('/settings', async (params, qp) => {
 
     function buildTasksTab(s) {
       const sch = s.schedule || {};
-      const taskRows = TASK_DEFS.map(t => `
-        <div class="task-row">
-          <div class="task-cell-name">
-            <div class="task-cell-name-top">
-              <span style="font-weight:500">${t.label}</span>
-              ${t.endpoint
-                ? `<button class="btn btn-ghost btn-sm" data-run="${t.endpoint}" title="Run now" style="font-size:0.78rem;padding:0.15rem 0.4rem;white-space:nowrap">${ICON_PLAY} Run</button>`
-                : ''
-              }
-            </div>
-            <div class="text-dim" style="font-size:0.75rem">default: ${t.default}</div>
+      const taskCards = TASK_DEFS.map(t => `
+        <div class="card">
+          <div class="task-card-header">
+            <strong>${t.label}</strong>
+            ${t.endpoint
+              ? `<button class="btn btn-ghost btn-sm" data-run="${t.endpoint}" title="Run now" style="font-size:0.78rem;padding:0.15rem 0.5rem;white-space:nowrap">${ICON_PLAY} Run now</button>`
+              : ''}
           </div>
-          <input type="text" class="form-input task-cell-cron" data-key="${t.key}"
-            value="${escapeHtml(sch[t.key] || '')}"
-            style="font-family:var(--font-mono,monospace);font-size:0.85rem">
-          <div id="task-next-${t.key}" class="task-cell-next text-dim" style="font-size:0.82rem;padding-top:0.45rem">${sch[t.key] ? 'Next: —' : 'Disabled'}</div>
-          <div id="task-last-${t.key}" class="task-cell-last text-dim" style="font-size:0.82rem;padding-top:0.45rem">Last: —</div>
+          <div class="form-group" style="margin-bottom:0.5rem">
+            <label class="form-label">Cron schedule <span class="text-dim" style="font-weight:400;font-size:0.78rem">default: ${t.default}</span></label>
+            <input type="text" class="form-input" data-key="${t.key}"
+              value="${escapeHtml(sch[t.key] || '')}"
+              placeholder="disabled"
+              style="font-family:var(--font-mono,monospace);font-size:0.85rem">
+          </div>
+          <div class="task-card-meta">
+            <span id="task-next-${t.key}">${sch[t.key] ? 'Next: —' : 'Disabled'}</span>
+            <span id="task-last-${t.key}">Last: —</span>
+          </div>
         </div>
       `).join('');
 
       return `
-        <div class="tasks-grid">
-          <div class="tasks-header-row">
-            <div class="form-label">Task</div>
-            <div class="form-label">Schedule</div>
-            <div class="form-label">Next run</div>
-            <div class="form-label">Last run</div>
-          </div>
-          ${taskRows}
-        </div>
+        <div class="task-cards">${taskCards}</div>
         <div class="form-actions" style="margin-top:1rem">
           <button class="btn btn-primary" data-save="schedule">Save</button>
           <span class="form-feedback" id="feedback-schedule"></span>
@@ -3925,24 +3927,38 @@ route('/settings', async (params, qp) => {
             if (!users.length) { listEl.innerHTML = '<div class="text-dim">No users yet.</div>'; return; }
             listEl.innerHTML = `<div class="user-cards">${users.map(u => `
               <div class="card user-card">
-                <div class="user-card-name">${escapeHtml(u.username)}${u.force_password_change ? ' <span class="badge badge-warn">PW change</span>' : ''}${u.oidc_linked ? ' <span class="badge badge-sso">SSO</span>' : ''}</div>
-                <div class="form-group" style="margin-bottom:0.5rem">
-                  <label class="form-label">Email</label>
-                  <input type="email" class="form-input" data-user-email="${u.id}" value="${escapeHtml(u.email || '')}" placeholder="—">
+                <div class="settings-card-header user-card-name">
+                  <span>${escapeHtml(u.username)}${u.force_password_change ? ' <span class="badge badge-warn">PW change</span>' : ''}${u.oidc_linked ? ' <span class="badge badge-sso">SSO</span>' : ''}</span>
+                  <span class="settings-card-toggle">${ICON_CHEVRON_DOWN}</span>
                 </div>
-                <div class="form-group" style="margin-bottom:0.75rem">
-                  <label class="form-label">Role</label>
-                  <select class="form-input" data-user-role="${u.id}">
-                    <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
-                    <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
-                  </select>
-                </div>
-                <div style="display:flex;gap:0.5rem">
-                  <button class="btn btn-sm btn-secondary" data-reset-pw="${u.id}">Reset PW</button>
-                  <button class="btn btn-sm btn-danger" data-delete-user="${u.id}">Delete</button>
+                <div class="settings-card-body hidden">
+                  <div class="form-group" style="margin-bottom:0.5rem">
+                    <label class="form-label">Email</label>
+                    <input type="email" class="form-input" data-user-email="${u.id}" value="${escapeHtml(u.email || '')}" placeholder="—">
+                  </div>
+                  <div class="form-group" style="margin-bottom:0.75rem">
+                    <label class="form-label">Role</label>
+                    <select class="form-input" data-user-role="${u.id}">
+                      <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+                      <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+                    </select>
+                  </div>
+                  <div style="display:flex;gap:0.5rem">
+                    <button class="btn btn-sm btn-secondary" data-reset-pw="${u.id}">Reset PW</button>
+                    <button class="btn btn-sm btn-danger" data-delete-user="${u.id}">Delete</button>
+                  </div>
                 </div>
               </div>`).join('')}
             </div>`;
+
+            listEl.querySelectorAll('.settings-card-header').forEach(header => {
+              header.addEventListener('click', () => {
+                const body = header.nextElementSibling;
+                const toggle = header.querySelector('.settings-card-toggle');
+                const collapsed = body.classList.toggle('hidden');
+                toggle.classList.toggle('open', !collapsed);
+              });
+            });
 
             listEl.querySelectorAll('[data-user-email]').forEach(input => {
               const save = async () => {
