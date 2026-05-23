@@ -3393,7 +3393,6 @@ route('/settings', async (params, qp) => {
           ${field('Ebook directory prefix', 'ebook_prefix', g.ebook_prefix)}
         </div>
         ${field('Public URL', 'public_url', g.public_url || '', 'text', 'Externally reachable URL for this app, e.g. https://athenaeum.example.com — required for OIDC')}
-        ${checkbox('Group series in search results', 'group_series_in_search', g.group_series_in_search)}
         ${checkbox('Merge multi-file audiobooks into single M4B', 'merge_multifile_audiobooks', g.merge_multifile_audiobooks)}
         ${checkbox('Debug view', 'debug_view', g.debug_view)}
         ${field('Allowed audiobook formats', 'allowed_audiobook_formats', audioFmts, 'text', 'Comma-separated — Prowlarr results with other recognised formats are hidden. e.g. m4b, mp3, flac')}

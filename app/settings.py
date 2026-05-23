@@ -27,7 +27,6 @@ DEFAULT_SETTINGS = {
         "batch_window": 60,
     },
     "general": {
-        "group_series_in_search": True,
         "output_dir": "/output",
         "separate_type_dirs": True,
         "audiobook_prefix": "",

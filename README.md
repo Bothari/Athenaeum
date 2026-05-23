@@ -154,7 +154,6 @@ Add one or more clients from the **Downloaders** tab. Each client has:
 | Audiobook prefix | Subdirectory name for audiobooks, e.g. `Audiobooks` |
 | Ebook prefix | Subdirectory name for ebooks, e.g. `Ebooks` |
 | Merge multi-file audiobooks | Combine split-chapter MP3 downloads into a single M4B |
-| Group series in search | Collapse multiple series entries in search results |
 | Allowed audiobook formats | Comma-separated list — Prowlarr results not matching are filtered out. Default: `m4b, mp3, flac` |
 | Allowed ebook formats | Same for ebooks. Default: `epub, pdf, mobi, azw3` |
 
