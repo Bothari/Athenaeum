@@ -14,7 +14,7 @@ A self-hosted book manager that bridges [AudiobookShelf](https://www.audiobooksh
 - **Library sync** — mirrors your AudiobookShelf library and links every book to Hardcover metadata (cover, release date, series position, slug)
 - **Search and request** — search Hardcover by title, author, or series; request audiobook or ebook formats in one tap
 - **Series tracking** — shows what you own, what is requested, and what is missing for each series, compared against Hardcover series data
-- **Automated downloads** — searches Prowlarr indexers on a schedule and sends matched releases to your download client; filters by allowed file formats
+- **Downloads** — searches Prowlarr indexers and sends matched releases to your download client; filters by allowed file formats
 - **Download clients** — qBittorrent, SABnzbd, and Deluge supported; multiple clients of the same type can coexist
 - **Series pack downloads** — grab a whole series torrent and map files to individual books with a review UI before organising
 - **Auto-organise** — moves completed downloads into `Author/Title` directories, writes OPF sidecar metadata, and triggers an ABS library scan
@@ -166,7 +166,6 @@ Tasks run on [cron expressions](https://crontab.guru). Leave a field blank to di
 |---|---|---|
 | Library sync | `0 2 * * *` (2 AM daily) | Pulls all items from ABS and upserts the local database |
 | Cache refresh | `0 3 * * *` (3 AM daily) | Links local books/authors/series to Hardcover metadata |
-| Auto search | `0 */6 * * *` (every 6 hours) | Searches Prowlarr for all requested items and snatches the best result |
 
 Tasks can also be triggered manually from the **Dashboard**.
 
