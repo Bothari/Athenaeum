@@ -166,6 +166,62 @@ async def prowlarr_search(settings: dict, query: str, book_type: str = "", title
     return results
 
 
+# ── Downloader lookup helpers ──────────────────────────────────────────────────
+
+def _make_client(dl: dict):
+    """Instantiate the appropriate client class for a downloader entry."""
+    t = dl.get("type", "")
+    if t == "qbittorrent":
+        return QBittorrentClient(dl)
+    if t == "sabnzbd":
+        return SABnzbdClient(dl)
+    return None
+
+
+def get_torrent_client(settings: dict) -> tuple:
+    """Return (QBittorrentClient, client_ref) for the first enabled torrent downloader."""
+    for dl in settings.get("downloaders", []):
+        if dl.get("type") == "qbittorrent" and dl.get("enabled", True) and dl.get("url"):
+            return QBittorrentClient(dl), dl.get("id", "qbittorrent")
+    cfg = settings.get("qbittorrent", {})
+    if isinstance(cfg, dict) and cfg.get("url"):
+        return QBittorrentClient(cfg), "qbittorrent"
+    return None, None
+
+
+def get_usenet_client(settings: dict) -> tuple:
+    """Return (SABnzbdClient, client_ref) for the first enabled usenet downloader."""
+    for dl in settings.get("downloaders", []):
+        if dl.get("type") == "sabnzbd" and dl.get("enabled", True) and dl.get("url"):
+            return SABnzbdClient(dl), dl.get("id", "sabnzbd")
+    cfg = settings.get("sabnzbd", {})
+    if isinstance(cfg, dict) and cfg.get("url"):
+        return SABnzbdClient(cfg), "sabnzbd"
+    return None, None
+
+
+def get_client_for_download(settings: dict, client_ref: str) -> tuple:
+    """Return (client, type_str) for a download_client reference stored in the DB.
+
+    Handles both new downloader IDs and legacy type-name strings.
+    """
+    for dl in settings.get("downloaders", []):
+        if dl.get("id") == client_ref:
+            return _make_client(dl), dl.get("type", "")
+    for dl in settings.get("downloaders", []):
+        if dl.get("type") == client_ref and dl.get("enabled", True):
+            return _make_client(dl), dl.get("type", "")
+    if client_ref == "qbittorrent":
+        cfg = settings.get("qbittorrent", {})
+        if isinstance(cfg, dict) and cfg.get("url"):
+            return QBittorrentClient(cfg), "qbittorrent"
+    elif client_ref == "sabnzbd":
+        cfg = settings.get("sabnzbd", {})
+        if isinstance(cfg, dict) and cfg.get("url"):
+            return SABnzbdClient(cfg), "sabnzbd"
+    return None, None
+
+
 # ── qBittorrent ────────────────────────────────────────────────────────────────
 
 class QBittorrentClient:
@@ -306,6 +362,8 @@ class SABnzbdClient:
     def __init__(self, settings: dict):
         self._url = (settings.get("url") or "").rstrip("/")
         self._api_key = settings.get("api_key") or ""
+        self._category = settings.get("category") or "Default"
+        self.remove_completed = bool(settings.get("remove_completed", False))
 
     async def add(self, download_url: str) -> str:
         """Add NZB URL. Returns the SABnzbd job ID."""
@@ -317,7 +375,7 @@ class SABnzbdClient:
                     "name": download_url,
                     "apikey": self._api_key,
                     "output": "json",
-                    "cat": "athenaeum",
+                    "cat": self._category,
                 },
             )
             resp.raise_for_status()
@@ -379,3 +437,19 @@ class SABnzbdClient:
                     return {"status": "failed", "progress": 0, "path": "", "eta": "", "speed": 0, "size": 0}
 
         return {"status": "unknown"}
+
+    async def remove(self, job_id: str) -> None:
+        """Remove a completed job from SABnzbd history, keeping the downloaded files."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{self._url}/api",
+                params={
+                    "mode": "history",
+                    "name": "delete",
+                    "value": job_id,
+                    "del_files": "0",
+                    "apikey": self._api_key,
+                    "output": "json",
+                },
+            )
+            resp.raise_for_status()

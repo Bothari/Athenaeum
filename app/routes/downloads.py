@@ -36,14 +36,11 @@ async def list_downloads():
         return {"items": [], "client_unreachable": False}
 
     settings = await get_settings()
-    qbit_settings = settings.get("qbittorrent", {})
-    sab_settings = settings.get("sabnzbd", {})
 
-    from ..services.download_clients import QBittorrentClient, SABnzbdClient
+    from ..services.download_clients import get_client_for_download
 
-    # Build one client per protocol (reused across rows)
-    qbit = QBittorrentClient(qbit_settings) if qbit_settings.get("url") else None
-    sab = SABnzbdClient(sab_settings) if sab_settings.get("url") else None
+    # Cache clients by client_ref so we don't re-instantiate per row
+    _client_cache: dict = {}
 
     client_unreachable = False
     items = []
@@ -70,12 +67,14 @@ async def list_downloads():
         if not row["download_id"]:
             return base
         try:
-            if row["download_client"] == "qbittorrent" and qbit:
-                info = await asyncio.wait_for(qbit.check(row["download_id"]), timeout=5.0)
-            elif row["download_client"] == "sabnzbd" and sab:
-                info = await asyncio.wait_for(sab.check(row["download_id"]), timeout=5.0)
-            else:
+            client_ref = row["download_client"]
+            if client_ref not in _client_cache:
+                client, _ = get_client_for_download(settings, client_ref)
+                _client_cache[client_ref] = client
+            client = _client_cache.get(client_ref)
+            if not client:
                 return base
+            info = await asyncio.wait_for(client.check(row["download_id"]), timeout=5.0)
             base.update({
                 "progress": round(info.get("progress", 0) * 100, 1),
                 "eta": info.get("eta"),

@@ -12,16 +12,7 @@ DEFAULT_SETTINGS = {
         "api_key": "",
         "tags": [],
     },
-    "qbittorrent": {
-        "url": "",
-        "username": "",
-        "password": "",
-        "download_dir": "",
-    },
-    "sabnzbd": {
-        "url": "",
-        "api_key": "",
-    },
+    "downloaders": [],
     "audiobookshelf": {
         "url": "",
         "api_key": "",
@@ -64,6 +55,7 @@ DEFAULT_SETTINGS = {
 }
 
 _settings_lock = asyncio.Lock()
+
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

@@ -86,7 +86,7 @@ async def _library_sync_task():
 
 async def _auto_search_task():
     """Search Prowlarr for all requested items and snatch the first result."""
-    from .services.download_clients import prowlarr_search, build_prowlarr_query, QBittorrentClient, SABnzbdClient
+    from .services.download_clients import prowlarr_search, build_prowlarr_query, get_torrent_client, get_usenet_client
 
     settings = await get_settings()
     prowlarr_settings = settings.get("prowlarr", {})
@@ -126,17 +126,13 @@ async def _auto_search_task():
                 continue
 
             if protocol == "torrent":
-                client_settings = settings.get("qbittorrent", {})
-                if not client_settings.get("url"):
+                client, client_name = get_torrent_client(settings)
+                if not client:
                     continue
-                client = QBittorrentClient(client_settings)
-                client_name = "qbittorrent"
             elif protocol == "usenet":
-                client_settings = settings.get("sabnzbd", {})
-                if not client_settings.get("url"):
+                client, client_name = get_usenet_client(settings)
+                if not client:
                     continue
-                client = SABnzbdClient(client_settings)
-                client_name = "sabnzbd"
             else:
                 continue
 
@@ -165,12 +161,10 @@ async def _auto_search_task():
 
 
 async def _download_monitor_tick():
-    from .services.download_clients import QBittorrentClient, SABnzbdClient
+    from .services.download_clients import get_client_for_download
     from .services.organizer import auto_organize, auto_organize_series_pack, compute_series_pack_mappings
 
     settings = await get_settings()
-    qbit_settings = settings.get("qbittorrent", {})
-    sab_settings = settings.get("sabnzbd", {})
 
     async with get_db() as db:
         rows = await (
@@ -186,15 +180,8 @@ async def _download_monitor_tick():
 
     for row in rows:
         try:
-            if row["download_client"] == "qbittorrent":
-                if not qbit_settings.get("url"):
-                    continue
-                client = QBittorrentClient(qbit_settings)
-            elif row["download_client"] == "sabnzbd":
-                if not sab_settings.get("url"):
-                    continue
-                client = SABnzbdClient(sab_settings)
-            else:
+            client, _ = get_client_for_download(settings, row["download_client"])
+            if not client:
                 continue
 
             info = await client.check(row["download_id"])
@@ -223,6 +210,12 @@ async def _download_monitor_tick():
                     )
                     await db.commit()
                     asyncio.create_task(auto_organize(row["request_id"]))
+                    from .services.download_clients import SABnzbdClient
+                    if isinstance(client, SABnzbdClient) and client.remove_completed:
+                        try:
+                            await client.remove(row["download_id"])
+                        except Exception as rm_err:
+                            logger.warning("SABnzbd remove completed failed for %s: %s", row["download_id"], rm_err)
                 elif status == "failed":
                     await db.execute(
                         "UPDATE downloads SET status='failed' WHERE id=?", (row["dl_id"],)
@@ -250,15 +243,8 @@ async def _download_monitor_tick():
 
     for row in sd_rows:
         try:
-            if row["download_client"] == "qbittorrent":
-                if not qbit_settings.get("url"):
-                    continue
-                client = QBittorrentClient(qbit_settings)
-            elif row["download_client"] == "sabnzbd":
-                if not sab_settings.get("url"):
-                    continue
-                client = SABnzbdClient(sab_settings)
-            else:
+            client, _ = get_client_for_download(settings, row["download_client"])
+            if not client:
                 continue
 
             info = await client.check(row["download_id"])
@@ -280,6 +266,12 @@ async def _download_monitor_tick():
                     )
                     await db.commit()
                     asyncio.create_task(compute_series_pack_mappings(row["id"]))
+                    from .services.download_clients import SABnzbdClient
+                    if isinstance(client, SABnzbdClient) and client.remove_completed:
+                        try:
+                            await client.remove(row["download_id"])
+                        except Exception as rm_err:
+                            logger.warning("SABnzbd remove completed failed for %s: %s", row["download_id"], rm_err)
                 elif status == "failed":
                     await db.execute(
                         "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
