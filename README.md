@@ -10,10 +10,6 @@ A self-hosted book manager that bridges [AudiobookShelf](https://www.audiobooksh
 
 ---
 
-Request a book → Prowlarr searches indexers → download client fetches it → files organised into your library.
-
----
-
 ## Features
 
 - **Library sync** — mirrors your AudiobookShelf library and enriches every book with Hardcover metadata
@@ -65,11 +61,20 @@ See [volume mapping](docs/volume-mapping.md) if downloads are not being detected
 
 ---
 
+## Roadmap
+
+- **Auto search and download** — automatically find and download missing books on a schedule, without manual requests. This is partially implemented but held back until the quality bar is high enough to be reliable.
+- **More download clients** — Transmission, NZBGet, and others
+- **More library clients** — Calibre content server support alongside AudiobookShelf
+
+---
+
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
 - [Authentication and SSO](docs/authentication.md)
 - [Volume mapping](docs/volume-mapping.md)
+- [Hardcover linking and manual requests](docs/hardcover-linking.md)
 - [Development](docs/development.md)
 
 ---
