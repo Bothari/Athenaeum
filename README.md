@@ -246,6 +246,12 @@ Back up this directory. The database can be copied safely while the container is
 
 ---
 
+## License
+
+[GNU Affero General Public License v3.0](LICENSE)
+
+---
+
 ## Built with
 
 Developed with [Claude Code](https://claude.ai/code) (Claude Sonnet 4.6). Spec, architecture, and adversarial review process documented in `docs/`.
