@@ -1,5 +1,7 @@
 # Athenaeum
 
+*From the Greek — a temple of Athena, and later any institution devoted to learning. A place where knowledge is gathered, catalogued, and kept.*
+
 A self-hosted book manager that bridges [AudiobookShelf](https://www.audiobookshelf.org/) and [Hardcover](https://hardcover.app/). Search for books, request audiobook and ebook formats, and have them automatically downloaded, organised, and added to your library.
 
 [![Tests](https://github.com/Bothari/Athenaeum/actions/workflows/test.yml/badge.svg)](https://github.com/Bothari/Athenaeum/actions/workflows/test.yml)
