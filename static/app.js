@@ -3341,6 +3341,8 @@ route('/settings', async (params, qp) => {
       btn.onclick = () => showTab(btn.dataset.tab);
     });
 
+    const DL_TYPE_LABELS = { qbittorrent: 'qBittorrent', sabnzbd: 'SABnzbd', deluge: 'Deluge' };
+
     showTab(initialTab, false);
 
     function field(label, key, value, type = 'text', hint = '') {
@@ -3475,8 +3477,6 @@ route('/settings', async (params, qp) => {
         ${dlField('Download directory', 'download_dir', dl.download_dir)}`;
       return '';
     }
-
-    const DL_TYPE_LABELS = { qbittorrent: 'qBittorrent', sabnzbd: 'SABnzbd', deluge: 'Deluge' };
 
     function renderDlCard(dl, i) {
       const typeLabel = DL_TYPE_LABELS[dl.type] || dl.type;
