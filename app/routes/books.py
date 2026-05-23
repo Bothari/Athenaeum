@@ -924,11 +924,13 @@ async def search_series_pack(series_id: str, auth: dict = Depends(require_admin)
     from ..services.download_clients import prowlarr_search
 
     series_name = row["name"]
+    allowed_formats = (settings.get("general") or {}).get("allowed_ebook_formats") or []
     try:
         raw_results = await prowlarr_search(
             prowlarr_settings, series_name,
             book_type="ebook",
             title=series_name, author="",
+            allowed_formats=allowed_formats,
         )
     except Exception as e:
         logger.warning("Prowlarr series pack search failed for %s: %s", series_id, e)

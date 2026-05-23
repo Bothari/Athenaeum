@@ -93,6 +93,8 @@ async def _auto_search_task():
     if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
         return
 
+    general = settings.get("general", {})
+
     async with get_db() as db:
         rows = await (
             await db.execute(
@@ -107,10 +109,12 @@ async def _auto_search_task():
     for row in rows:
         try:
             query = build_prowlarr_query(row["title"], row["author"] or "")
+            fmt_key = "allowed_audiobook_formats" if row["type"] == "audiobook" else "allowed_ebook_formats"
             results = await prowlarr_search(
                 prowlarr_settings, query,
                 book_type=row["type"],
                 title=row["title"], author=row["author"] or "",
+                allowed_formats=general.get(fmt_key) or [],
             )
             if not results:
                 continue

@@ -88,6 +88,18 @@ def _score_result(result_title: str, original_title: str, author: str = "") -> i
     return t_score
 
 
+_FORMAT_RE = re.compile(
+    r'\b(m4b|mp3|flac|opus|ogg|aac|wav|epub|pdf|mobi|azw3|lit|cbz|cbr)\b',
+    re.IGNORECASE,
+)
+
+
+def _detect_format(title: str) -> str | None:
+    """Return the first recognised format token found in a result title, or None."""
+    m = _FORMAT_RE.search(title)
+    return m.group(1).lower() if m else None
+
+
 def build_prowlarr_query(title: str, author: str = "") -> str:
     """Build a Prowlarr search query, stripping subtitles indexers typically omit.
 
@@ -99,11 +111,12 @@ def build_prowlarr_query(title: str, author: str = "") -> str:
     return f"{main} {surname}".strip() if surname else main
 
 
-async def prowlarr_search(settings: dict, query: str, book_type: str = "", title: str = "", author: str = "") -> list[dict]:
+async def prowlarr_search(settings: dict, query: str, book_type: str = "", title: str = "", author: str = "", allowed_formats: list | None = None) -> list[dict]:
     """Search Prowlarr indexers. Filtered to configured tag if set.
 
     Pass `title` and `author` to enable relevance scoring — results are sorted
-    by score descending so the best match surfaces first.
+    by score descending so the best match surfaces first.  Pass `allowed_formats`
+    to filter out results whose format tag is recognised but not in the list.
     """
     url = (settings.get("url") or "").rstrip("/")
     api_key = settings.get("api_key") or ""
@@ -144,6 +157,12 @@ async def prowlarr_search(settings: dict, query: str, book_type: str = "", title
             key=lambda r: _score_result(r.get("title", ""), title, author),
             reverse=True,
         )
+    if allowed_formats:
+        allowed_lower = {f.lower() for f in allowed_formats}
+        results = [
+            r for r in results
+            if (fmt := _detect_format(r.get("title", ""))) is None or fmt in allowed_lower
+        ]
     return results
 
 
