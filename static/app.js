@@ -3661,9 +3661,12 @@ route('/settings', async (params, qp) => {
             Notifications within this window are grouped into a single message.
           </div>
         </div>
-        ${saveButton('notifications')}
-        <button class="btn btn-ghost btn-sm" id="test-notifications-btn" style="margin-top:0.5rem">Send test notification</button>
-        <span id="test-notifications-result" class="text-dim" style="font-size:0.82rem;margin-left:0.5rem"></span>
+        <div class="form-actions">
+          ${testButton('notifications')}
+          <button class="btn btn-primary" data-save="notifications">Save</button>
+          <span class="form-feedback" id="feedback-notifications"></span>
+        </div>
+        <div id="test-notifications-result" class="mt-1"></div>
       `;
     }
 
@@ -3894,6 +3897,8 @@ route('/settings', async (params, qp) => {
                 }
               }
               if (resultEl) resultEl.innerHTML = `<div class="text-green" style="font-size:0.85rem">&#10003; Connected — ${libs.length} librar${libs.length !== 1 ? 'ies' : 'y'} found</div>`;
+            } else if (svc === 'notifications') {
+              if (resultEl) resultEl.innerHTML = `<div class="text-green" style="font-size:0.85rem">&#10003; Test notification sent</div>`;
             } else if (resultEl) {
               resultEl.innerHTML = `<div class="text-green" style="font-size:0.85rem">&#10003; Connected: ${escapeHtml(JSON.stringify(r))}</div>`;
             }
@@ -3907,27 +3912,6 @@ route('/settings', async (params, qp) => {
           }
         };
       });
-
-      // Notifications test button
-      const testNotifBtn = document.getElementById('test-notifications-btn');
-      if (testNotifBtn) {
-        testNotifBtn.onclick = async () => {
-          const resultEl = document.getElementById('test-notifications-result');
-          testNotifBtn.disabled = true;
-          testNotifBtn.textContent = 'Sending…';
-          const urlsEl = content.querySelector('[data-key="urls"]');
-          const urls = urlsEl ? urlsEl.value : '';
-          try {
-            await api('/settings/test/notifications', { method: 'POST', body: { urls } });
-            if (resultEl) resultEl.textContent = 'Test sent successfully';
-          } catch (err) {
-            if (resultEl) resultEl.textContent = err.message;
-          } finally {
-            testNotifBtn.disabled = false;
-            testNotifBtn.textContent = 'Send test notification';
-          }
-        };
-      }
 
       // Auth tab
       if (tabName === 'Auth') {
