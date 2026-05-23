@@ -1,7 +1,9 @@
-"""Prowlarr, qBittorrent, and SABnzbd client wrappers."""
+"""Prowlarr, qBittorrent, SABnzbd, and Deluge client wrappers."""
 import asyncio
+import base64
 import hashlib
 import logging
+import os
 import re
 import struct
 
@@ -175,14 +177,16 @@ def _make_client(dl: dict):
         return QBittorrentClient(dl)
     if t == "sabnzbd":
         return SABnzbdClient(dl)
+    if t == "deluge":
+        return DelugeClient(dl)
     return None
 
 
 def get_torrent_client(settings: dict) -> tuple:
-    """Return (QBittorrentClient, client_ref) for the first enabled torrent downloader."""
+    """Return (client, client_ref) for the first enabled torrent downloader."""
     for dl in settings.get("downloaders", []):
-        if dl.get("type") == "qbittorrent" and dl.get("enabled", True) and dl.get("url"):
-            return QBittorrentClient(dl), dl.get("id", "qbittorrent")
+        if dl.get("type") in ("qbittorrent", "deluge") and dl.get("enabled", True) and dl.get("url"):
+            return _make_client(dl), dl.get("id", dl["type"])
     cfg = settings.get("qbittorrent", {})
     if isinstance(cfg, dict) and cfg.get("url"):
         return QBittorrentClient(cfg), "qbittorrent"
@@ -453,3 +457,94 @@ class SABnzbdClient:
                 },
             )
             resp.raise_for_status()
+
+
+# ── Deluge ─────────────────────────────────────────────────────────────────────
+
+class DelugeClient:
+    """Client for the Deluge Web UI JSON-RPC API."""
+
+    def __init__(self, settings: dict):
+        self._url = (settings.get("url") or "").rstrip("/")
+        self._password = settings.get("password") or ""
+        self._download_dir = settings.get("download_dir") or ""
+        self._cookies: dict = {}
+        self._rpc_id = 0
+
+    def _next_id(self) -> int:
+        self._rpc_id += 1
+        return self._rpc_id
+
+    async def _call(self, client: httpx.AsyncClient, method: str, params: list):
+        resp = await client.post(
+            f"{self._url}/json",
+            json={"method": method, "params": params, "id": self._next_id()},
+            cookies=self._cookies,
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        self._cookies.update(dict(resp.cookies))
+        data = resp.json()
+        if data.get("error"):
+            raise ValueError(f"Deluge error in {method}: {data['error'].get('message', data['error'])}")
+        return data.get("result")
+
+    async def _login(self, client: httpx.AsyncClient) -> None:
+        ok = await self._call(client, "auth.login", [self._password])
+        if not ok:
+            raise ValueError("Deluge login failed — check password")
+        connected = await self._call(client, "web.connected", [])
+        if not connected:
+            hosts = await self._call(client, "web.get_hosts", []) or []
+            if not hosts:
+                raise ValueError("Deluge: no daemon hosts configured in the web UI")
+            await self._call(client, "web.connect", [hosts[0][0]])
+
+    async def add(self, download_url: str) -> str:
+        """Add a torrent/magnet. Returns the torrent hash."""
+        options: dict = {}
+        if self._download_dir:
+            options["download_location"] = self._download_dir
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await self._login(client)
+            if download_url.lower().startswith("magnet:"):
+                torrent_hash = await self._call(client, "core.add_torrent_magnet", [download_url, options])
+            else:
+                dl = await client.get(download_url)
+                dl.raise_for_status()
+                filename = (download_url.split("/")[-1].split("?")[0] or "download.torrent")
+                if not filename.lower().endswith(".torrent"):
+                    filename = "download.torrent"
+                torrent_b64 = base64.b64encode(dl.content).decode()
+                torrent_hash = await self._call(client, "core.add_torrent_file", [filename, torrent_b64, options])
+
+        if not torrent_hash:
+            raise ValueError("Deluge did not return a torrent hash")
+        return torrent_hash.lower()
+
+    async def check(self, torrent_hash: str) -> dict:
+        """Returns {'status': normalised_str, 'progress': 0-1, 'eta': int, 'speed': int, 'path': str}."""
+        fields = ["state", "progress", "save_path", "name", "eta", "download_payload_rate", "total_size"]
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await self._login(client)
+            info = await self._call(client, "core.get_torrent_status", [torrent_hash, fields])
+
+        if not info:
+            return {"status": "unknown"}
+
+        state = (info.get("state") or "").lower()
+        progress = float(info.get("progress", 0)) / 100.0
+        save_path = info.get("save_path") or ""
+        name = info.get("name") or ""
+        full_path = os.path.join(save_path, name) if save_path and name else save_path
+
+        if state in ("seeding", "moving") or (state == "paused" and progress >= 1.0):
+            return {"status": "completed", "progress": 1.0, "path": full_path,
+                    "eta": 0, "speed": 0, "size": info.get("total_size", 0)}
+        if state == "error":
+            return {"status": "failed", "progress": 0, "path": "", "eta": 0, "speed": 0, "size": 0}
+
+        return {"status": "downloading", "progress": progress, "path": "",
+                "eta": info.get("eta", -1), "speed": info.get("download_payload_rate", 0),
+                "size": info.get("total_size", 0)}

@@ -3469,10 +3469,14 @@ route('/settings', async (params, qp) => {
           </label>
           <div class="form-hint">Files are kept — only the history entry is removed.</div>
         </div>`;
+      if (type === 'deluge') return `
+        ${dlField('URL', 'url', dl.url)}
+        ${dlField('Password', 'password', dl.password, 'password')}
+        ${dlField('Download directory', 'download_dir', dl.download_dir)}`;
       return '';
     }
 
-    const DL_TYPE_LABELS = { qbittorrent: 'qBittorrent', sabnzbd: 'SABnzbd' };
+    const DL_TYPE_LABELS = { qbittorrent: 'qBittorrent', sabnzbd: 'SABnzbd', deluge: 'Deluge' };
 
     function renderDlCard(dl, i) {
       const typeLabel = DL_TYPE_LABELS[dl.type] || dl.type;
@@ -3508,7 +3512,12 @@ route('/settings', async (params, qp) => {
 
       function renderDlTabHtml() {
         const cards = dlState.map((dl, i) => renderDlCard(dl, i)).join('');
+        const torrentClients = dlState.filter(d => d.enabled !== false && (d.type === 'qbittorrent' || d.type === 'deluge'));
+        const dupWarning = torrentClients.length > 1
+          ? `<div class="badge-warn" style="display:block;padding:0.5rem 0.75rem;border-radius:6px;margin-bottom:1rem;font-size:0.85rem">&#9888; Multiple torrent clients are enabled. Only <strong>${escapeHtml(torrentClients[0].name || torrentClients[0].type)}</strong> will be used; the others are ignored.</div>`
+          : '';
         return `
+          ${dupWarning}
           <div id="dl-list">${cards}</div>
           <div style="margin-top:1.25rem">
             <button class="btn btn-secondary" id="add-dl-btn">+ Add downloader</button>
