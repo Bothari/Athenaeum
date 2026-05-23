@@ -23,14 +23,6 @@ A self-hosted book manager that bridges [AudiobookShelf](https://www.audiobooksh
 
 ---
 
-## Screenshots
-
-| Queue — search results | Request — torrent and NZB results |
-|---|---|
-| ![Queue](IMG_1833.png) | ![Results](IMG_1834.png) |
-
----
-
 ## Requirements
 
 | Service | Purpose | Required |
