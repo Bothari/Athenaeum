@@ -42,15 +42,15 @@ DEFAULT_SETTINGS = {
         "auto_search": "0 */6 * * *",
     },
     "auto_search": {
-        "enabled": False,
-        "search_on_request": True,
+        "search_on_request": False,
         "min_seeders": 1,
         "max_attempts": 10,
         "ranking": [
             {"criterion": "format",  "enabled": True},
             {"criterion": "seeders", "enabled": True},
             {"criterion": "size",    "enabled": True,  "prefer": "larger"},
-            {"criterion": "age",     "enabled": False, "prefer": "newer"},
+            {"criterion": "age",              "enabled": False, "prefer": "newer"},
+            {"criterion": "indexer_priority", "enabled": False},
         ],
     },
     "auth": {

@@ -2312,14 +2312,17 @@ function renderProwlarrResults(container, results, reqId, onSuccess) {
     return;
   }
   container.innerHTML = '';
-  const sorted = [...results].sort((a, b) => (a.age ?? Infinity) - (b.age ?? Infinity));
-  sorted.forEach(res => {
+  results.forEach(res => {
     const fmtMatch = (res.title || '').match(/\b(mp3|m4b|m4a|flac|opus|ogg|aac|epub|mobi|azw3?|pdf)\b/i);
     const fmt = fmtMatch ? fmtMatch[1].toUpperCase() : '';
     const age = formatAge(res.age);
     const titleHtml = res.info_url
       ? `<a href="${escapeHtml(res.info_url)}" target="_blank" class="prowlarr-result-title">${escapeHtml(res.title || '—')}</a>`
       : `<div class="prowlarr-result-title">${escapeHtml(res.title || '—')}</div>`;
+    const score = res.score != null ? res.score : null;
+    const scoreColor = score == null ? '' : score >= 60 ? 'var(--green)' : score >= 40 ? 'var(--yellow,#b8860b)' : 'var(--red)';
+    const scoreTitle = score == null ? '' : score >= 60 ? 'Would auto-download' : 'Would NOT auto-download';
+    const scoreHtml = score != null ? `<span title="${scoreTitle}" style="color:${scoreColor};font-size:0.78rem;font-weight:600">${score}%</span>` : '';
     const row = document.createElement('div');
     row.className = 'prowlarr-result-row';
     row.innerHTML = `
@@ -2332,6 +2335,7 @@ function renderProwlarrResults(container, results, reqId, onSuccess) {
           ${res.seeders != null ? `<span>${res.seeders}S</span>` : ''}
           ${age != null ? `<span class="td-dim">${age}</span>` : ''}
           <span>${escapeHtml(res.indexer || '—')}</span>
+          ${scoreHtml}
         </div>
         ${isAdmin() ? `<button class="btn btn-primary btn-sm prowlarr-dl-btn" style="flex-shrink:0">${ICON_DOWNLOAD}<span class="prowlarr-dl-label"> Download</span></button>` : ''}
       </div>
@@ -3154,8 +3158,9 @@ route('/dashboard', async () => {
     </div>`;
 
     const DASH_TASKS = [
-      { key: 'library_sync',  label: 'Library sync',  endpoint: '/sync/library'       },
-      { key: 'cache_refresh', label: 'Cache refresh', endpoint: '/sync/cache-refresh' },
+      { key: 'library_sync',  label: 'Library sync',  endpoint: '/sync/library'        },
+      { key: 'cache_refresh', label: 'Cache refresh', endpoint: '/sync/cache-refresh'  },
+      { key: 'auto_search',   label: 'Auto-search',   endpoint: '/sync/auto-search'    },
     ];
 
     function renderDashTask(key, label, endpoint, t) {
@@ -3684,9 +3689,25 @@ route('/settings', async (params, qp) => {
         };
       }
 
-      // Wire drag-and-drop for ranking stack
+      // Wire drag-and-drop for ranking stack (mouse + touch)
       const rankStack = content.querySelector('#ranking-stack');
       if (rankStack) {
+        function _rankClearMarkers() {
+          rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
+        }
+        function _rankMarkTarget(target, clientY) {
+          _rankClearMarkers();
+          const rect = target.getBoundingClientRect();
+          target.classList.add(clientY < rect.top + rect.height / 2 ? 'drag-over-top' : 'drag-over-bottom');
+        }
+        function _rankDrop(dragSrc, target, clientY) {
+          _rankClearMarkers();
+          if (!target || target === dragSrc) return;
+          const rect = target.getBoundingClientRect();
+          rankStack.insertBefore(dragSrc, clientY < rect.top + rect.height / 2 ? target : target.nextSibling);
+        }
+
+        // Mouse drag
         let dragSrc = null;
         rankStack.addEventListener('dragstart', e => {
           dragSrc = e.target.closest('.ranking-item');
@@ -3698,9 +3719,7 @@ route('/settings', async (params, qp) => {
           e.preventDefault();
           const target = e.target.closest('.ranking-item');
           if (!target || target === dragSrc) return;
-          rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
-          const rect = target.getBoundingClientRect();
-          target.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drag-over-top' : 'drag-over-bottom');
+          _rankMarkTarget(target, e.clientY);
           e.dataTransfer.dropEffect = 'move';
         });
         rankStack.addEventListener('dragleave', e => {
@@ -3709,19 +3728,41 @@ route('/settings', async (params, qp) => {
         });
         rankStack.addEventListener('drop', e => {
           e.preventDefault();
-          const target = e.target.closest('.ranking-item');
-          if (!target || target === dragSrc) {
-            rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
-            return;
-          }
-          const rect = target.getBoundingClientRect();
-          const isTop = e.clientY < rect.top + rect.height / 2;
-          rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
-          rankStack.insertBefore(dragSrc, isTop ? target : target.nextSibling);
+          _rankDrop(dragSrc, e.target.closest('.ranking-item'), e.clientY);
         });
         rankStack.addEventListener('dragend', () => {
           rankStack.querySelectorAll('.ranking-item').forEach(el => el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom'));
           dragSrc = null;
+        });
+
+        // Touch drag
+        let touchSrc = null;
+        rankStack.addEventListener('touchstart', e => {
+          const item = e.target.closest('.ranking-item');
+          if (!item) return;
+          touchSrc = item;
+          touchSrc.classList.add('dragging');
+        }, { passive: true });
+        rankStack.addEventListener('touchmove', e => {
+          if (!touchSrc) return;
+          e.preventDefault();
+          const touch = e.touches[0];
+          touchSrc.style.visibility = 'hidden';
+          const el = document.elementFromPoint(touch.clientX, touch.clientY);
+          touchSrc.style.visibility = '';
+          const target = el?.closest('.ranking-item');
+          if (target && target !== touchSrc) _rankMarkTarget(target, touch.clientY);
+          else _rankClearMarkers();
+        }, { passive: false });
+        rankStack.addEventListener('touchend', e => {
+          if (!touchSrc) return;
+          const touch = e.changedTouches[0];
+          touchSrc.style.visibility = 'hidden';
+          const el = document.elementFromPoint(touch.clientX, touch.clientY);
+          touchSrc.style.visibility = '';
+          touchSrc.classList.remove('dragging');
+          _rankDrop(touchSrc, el?.closest('.ranking-item'), touch.clientY);
+          touchSrc = null;
         });
       }
     }
@@ -3774,17 +3815,19 @@ route('/settings', async (params, qp) => {
     function buildAutoSearchTab(s) {
       const a = s.auto_search || {};
       const ranking = a.ranking || [
-        { criterion: 'format',  enabled: true },
-        { criterion: 'seeders', enabled: true },
-        { criterion: 'size',    enabled: true,  prefer: 'larger' },
-        { criterion: 'age',     enabled: false, prefer: 'newer' },
+        { criterion: 'format',           enabled: true },
+        { criterion: 'seeders',          enabled: true },
+        { criterion: 'size',             enabled: true,  prefer: 'larger' },
+        { criterion: 'age',              enabled: false, prefer: 'newer' },
+        { criterion: 'indexer_priority', enabled: false },
       ];
 
       const CRITERION_META = {
-        format:  { label: 'Format',  desc: 'Prefers results matching your allowed formats order — first listed is most preferred' },
-        seeders: { label: 'Seeders', desc: 'Prefers results with more seeders (torrent only; NZB results are unaffected)' },
-        size:    { label: 'Size',    desc: 'Prefer larger or smaller files', prefer: ['larger', 'smaller'] },
-        age:     { label: 'Age',     desc: 'Prefer newer or older indexed releases', prefer: ['newer', 'older'] },
+        format:           { label: 'Format',           desc: 'Prefers results matching your allowed formats order — first listed is most preferred' },
+        seeders:          { label: 'Seeders',          desc: 'Prefers results with more seeders (torrent only; NZB results are unaffected)' },
+        size:             { label: 'Size',             desc: 'Prefer larger or smaller files', prefer: ['larger', 'smaller'] },
+        age:              { label: 'Age',              desc: 'Prefer newer or older indexed releases', prefer: ['newer', 'older'] },
+        indexer_priority: { label: 'Indexer priority', desc: 'Prefer results from higher-priority indexers (as configured in Prowlarr)' },
       };
 
       const rankingItems = ranking.map(item => {
@@ -3812,17 +3855,10 @@ route('/settings', async (params, qp) => {
       return `
         <div class="form-group">
           <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-            <input type="checkbox" data-key="enabled" ${a.enabled ? 'checked' : ''}>
-            <span class="form-label" style="margin:0">Enable auto-search</span>
-          </label>
-          <div class="form-hint">Automatically search Prowlarr and send the best result to your download client when a request is created or approved.</div>
-        </div>
-        <div class="form-group">
-          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-            <input type="checkbox" data-key="search_on_request" ${a.search_on_request !== false ? 'checked' : ''}>
+            <input type="checkbox" data-key="search_on_request" ${a.search_on_request ? 'checked' : ''}>
             <span class="form-label" style="margin:0">Search immediately on request</span>
           </label>
-          <div class="form-hint">Trigger a search as soon as a request is created or approved, rather than waiting for the scheduled task.</div>
+          <div class="form-hint">Trigger a search as soon as a request is created or approved. The scheduled task (configured in Tasks) controls periodic bulk searches.</div>
         </div>
         <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
           <div class="form-group">

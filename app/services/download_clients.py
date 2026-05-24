@@ -77,9 +77,24 @@ def _score_result(result_title: str, original_title: str, author: str = "") -> i
     except ImportError:
         return 50
     clean_result = result_title.lower()
-    # Score against main title (no subtitle) — that's what indexers use
+    full = original_title.lower()
     main = _strip_subtitle(original_title).lower()
-    t_score = fuzz.token_set_ratio(main, clean_result)
+
+    if main != full:
+        # Title has a subtitle. The subtitle is the only thing distinguishing
+        # books in the same series by the same author (e.g. "Exodus: The Helium
+        # Sea" vs "Exodus: The Archimedes Engine"). Use partial_ratio so the
+        # subtitle must actually appear in the result title.
+        subtitle = full[len(main):].lstrip(': ').strip()
+        subtitle_score = fuzz.partial_ratio(subtitle, clean_result) if subtitle else 100
+        if subtitle_score < 60:
+            # Subtitle absent or poor match — cap score low regardless of author match
+            t_score = int(subtitle_score * 0.5)
+        else:
+            t_score = int(fuzz.token_set_ratio(full, clean_result) * 0.6 + subtitle_score * 0.4)
+    else:
+        t_score = fuzz.token_set_ratio(full, clean_result)
+
     if author:
         a_full = fuzz.token_set_ratio(author.lower(), clean_result)
         # Surname-only fallback: "Chakraborty" matches whether filed as "S. A." or "Shannon"

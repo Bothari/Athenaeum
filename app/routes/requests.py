@@ -148,7 +148,10 @@ async def create_request(body: CreateRequestBody, auth: dict = Depends(require_a
         }))
     if detail and detail.get("status") == "requested":
         from ..services.auto_search import auto_search_request
-        asyncio.create_task(auto_search_request(detail["id"]))
+        from ..settings import get_settings as _gs
+        _s = await _gs()
+        if _s.get("auto_search", {}).get("search_on_request", False):
+            asyncio.create_task(auto_search_request(detail["id"]))
     return detail
 
 
@@ -413,7 +416,10 @@ async def create_manual_request(body: ManualRequestBody, auth: dict = Depends(re
 
     if detail and detail.get("status") == "requested":
         from ..services.auto_search import auto_search_request
-        asyncio.create_task(auto_search_request(detail["id"]))
+        from ..settings import get_settings as _gs
+        _s = await _gs()
+        if _s.get("auto_search", {}).get("search_on_request", False):
+            asyncio.create_task(auto_search_request(detail["id"]))
     return {"book_id": book_id, "request": detail}
 
 
@@ -520,12 +526,15 @@ async def search_indexers(request_id: str):
     if not prowlarr_settings.get("url") or not prowlarr_settings.get("api_key"):
         return {"results": [], "error": "Prowlarr not configured"}
 
-    from ..services.download_clients import prowlarr_search, build_prowlarr_query
+    from ..services.download_clients import prowlarr_search, build_prowlarr_query, _score_result
+    from ..services.auto_search import rank_results
 
     query = build_prowlarr_query(row["title"], row["author"] or "")
     general = settings.get("general", {})
     fmt_key = "allowed_audiobook_formats" if row["type"] == "audiobook" else "allowed_ebook_formats"
     allowed_formats = general.get(fmt_key) or []
+    auto_cfg = settings.get("auto_search", {})
+    ranking = auto_cfg.get("ranking") or []
 
     try:
         raw_results = await prowlarr_search(
@@ -537,6 +546,9 @@ async def search_indexers(request_id: str):
     except Exception as e:
         logger.warning("Prowlarr search failed: %s", e)
         return {"results": [], "error": str(e)}
+
+    # Apply ranking for sort order only — no hard filters (user picks manually)
+    ranked = rank_results(raw_results, ranking, allowed_formats, min_seeders=0, filter_series_packs=False)
 
     results = [
         {
@@ -550,8 +562,9 @@ async def search_indexers(request_id: str):
             "seeders": r.get("seeders"),
             "leechers": r.get("leechers"),
             "age": r.get("age"),
+            "score": _score_result(r.get("title", ""), row["title"], row["author"] or ""),
         }
-        for r in raw_results
+        for r in ranked
     ]
     async with get_db() as db:
         await log_request_event(db, request_id, "searched", {"query": query, "results": len(results)})
@@ -817,7 +830,10 @@ async def approve_request(request_id: str, auth: dict = Depends(require_admin)):
         await set_request_status(db, request_id, "requested", now)
         await db.commit()
     from ..services.auto_search import auto_search_request
-    asyncio.create_task(auto_search_request(request_id))
+    from ..settings import get_settings as _gs
+    _s = await _gs()
+    if _s.get("auto_search", {}).get("search_on_request", False):
+        asyncio.create_task(auto_search_request(request_id))
     return {"ok": True, "status": "requested"}
 
 

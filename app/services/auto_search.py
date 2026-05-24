@@ -2,13 +2,13 @@
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from ..database import get_db
 from ..settings import get_settings
 from ..services.download_clients import (
     prowlarr_search, build_prowlarr_query,
-    get_torrent_client, get_usenet_client, _detect_format,
+    get_torrent_client, get_usenet_client, _detect_format, _score_result,
 )
 from ..services.request_events import log_request_event, set_request_status
 
@@ -47,12 +47,13 @@ def rank_results(
     ranking: list[dict],
     allowed_formats: list[str],
     min_seeders: int,
+    filter_series_packs: bool = True,
 ) -> list[dict]:
     """Filter results by hard constraints then sort by user-configured ranking stack.
 
     Hard filters (applied before ranking):
     - Format not in allowed_formats (if format is detectable)
-    - Looks like a series pack
+    - Looks like a series pack (skipped when filter_series_packs=False)
     - Below minimum seeder count (torrent only)
     """
     allowed_lower = {f.lower() for f in allowed_formats}
@@ -61,7 +62,7 @@ def rank_results(
         fmt = _detect_format(r.get("title", ""))
         if fmt is not None and fmt not in allowed_lower:
             return False
-        if is_series_pack(r.get("title", "")):
+        if filter_series_packs and is_series_pack(r.get("title", "")):
             return False
         if r.get("protocol") == "torrent" and min_seeders > 0:
             if (r.get("seeders") or 0) < min_seeders:
@@ -92,6 +93,8 @@ def rank_results(
             elif c == "age":
                 age = r.get("age") or 0
                 key.append(age if criterion.get("prefer", "newer") == "newer" else -age)
+            elif c == "indexer_priority":
+                key.append(r.get("indexerPriority") or 999)
         return key
 
     return sorted(filtered, key=sort_key)
@@ -126,13 +129,10 @@ async def auto_search_request(request_id: str) -> bool:
     """Search Prowlarr for the given request and snatch the best result.
 
     Returns True if a result was snatched, False otherwise.
-    Checks enabled/search_on_request flags from settings before doing anything.
+    Does not check search_on_request — callers are responsible for that gate.
     """
     settings = await get_settings()
     auto_cfg = settings.get("auto_search", {})
-    if not auto_cfg.get("enabled", False):
-        return False
-
     prowlarr_cfg = settings.get("prowlarr", {})
     if not prowlarr_cfg.get("url") or not prowlarr_cfg.get("api_key"):
         return False
@@ -141,6 +141,7 @@ async def auto_search_request(request_id: str) -> bool:
         row = await (
             await db.execute(
                 """SELECT r.id, r.type, r.narrator, r.search_count, r.book_id, b.title,
+                          b.release_date,
                           (SELECT a.name FROM authors a
                            JOIN book_authors ba ON ba.author_id = a.id
                            WHERE ba.book_id = r.book_id
@@ -152,6 +153,11 @@ async def auto_search_request(request_id: str) -> bool:
         ).fetchone()
 
     if not row:
+        return False
+
+    release_date = row["release_date"] or ""
+    if release_date and release_date > date.today().isoformat():
+        logger.info("auto_search: skipping %s — not yet released (%s)", request_id, release_date)
         return False
 
     max_attempts = int(auto_cfg.get("max_attempts", 10))
@@ -202,6 +208,21 @@ async def auto_search_request(request_id: str) -> bool:
         return False
 
     best = ranked[0]
+
+    best_score = _score_result(best.get("title", ""), row["title"], row["author"] or "")
+    if best_score < 60:
+        logger.info(
+            "auto_search: skipping %s — best result score too low (%d): %r",
+            request_id, best_score, best.get("title"),
+        )
+        async with get_db() as db:
+            await log_request_event(db, request_id, "auto_search_no_results",
+                                    {"query": query, "total_results": len(results),
+                                     "filtered": len(ranked), "best_score": best_score,
+                                     "best_title": best.get("title")}, book_id=book_id)
+            await db.commit()
+        return False
+
     protocol = best.get("protocol")
     download_url = best.get("downloadUrl") or ""
     if not download_url:
@@ -261,16 +282,16 @@ async def run_auto_search_all():
     """Search all pending requests. Called by the task loop and the manual /sync/auto-search endpoint."""
     settings = await get_settings()
     auto_cfg = settings.get("auto_search", {})
-    if not auto_cfg.get("enabled", False):
-        return
-
     max_attempts = int(auto_cfg.get("max_attempts", 10))
 
+    today = date.today().isoformat()
     async with get_db() as db:
         rows = await (
             await db.execute(
-                "SELECT id FROM requests WHERE status = 'requested' AND search_count < ?",
-                (max_attempts,),
+                """SELECT r.id FROM requests r JOIN books b ON b.id = r.book_id
+                   WHERE r.status = 'requested' AND r.search_count < ?
+                   AND (b.release_date IS NULL OR b.release_date = '' OR b.release_date <= ?)""",
+                (max_attempts, today),
             )
         ).fetchall()
 
