@@ -623,9 +623,10 @@ async def auto_organize(request_id: str):
             except Exception as e:
                 logger.warning("ABS scan_folder(%s) failed: %s", lib_id, e)
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
 
-        # Poll for match by filename — 12 attempts × 5s = 60s.
+        # Poll for match by filename — 30 attempts × 10s = 300s (5 min).
+        # Large audiobooks (e.g. multi-part LOTR) can take ABS several minutes to scan.
         # Check the already-linked abs_id first (file may have been added to an existing item),
         # then fall back to a library search.
         matched_abs_id = None
@@ -635,7 +636,7 @@ async def auto_organize(request_id: str):
             ).fetchone()
         existing_abs_id = link_row["abs_id"] if link_row else None
 
-        for attempt in range(12):
+        for attempt in range(30):
             try:
                 if existing_abs_id:
                     matched_abs_id = await abs_svc.find_item_by_filename(
@@ -649,7 +650,7 @@ async def auto_organize(request_id: str):
                 logger.warning("ABS find_item_by_filename attempt %d failed: %s", attempt + 1, e)
             if matched_abs_id:
                 break
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
         # Push authoritative metadata to ABS now that we have the item ID.
         # This overwrites whatever ABS parsed from audio tags with our HC/DB data.
@@ -1061,7 +1062,7 @@ async def auto_organize_series_pack(series_dl_id: str):
                 except Exception as e:
                     logger.warning("auto_organize_series_pack: scan_library(%s) failed: %s", lib_id, e)
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
             for (dest_dir, book_id, req_row, filenames, narrator) in placed:
                 async with get_db() as db:
@@ -1071,7 +1072,7 @@ async def auto_organize_series_pack(series_dl_id: str):
                 existing_abs_id = link_row["abs_id"] if link_row else None
 
                 matched_abs_id = None
-                for attempt in range(8):
+                for attempt in range(20):
                     try:
                         if existing_abs_id:
                             matched_abs_id = await abs_svc.find_item_by_filename(
@@ -1086,7 +1087,7 @@ async def auto_organize_series_pack(series_dl_id: str):
                         logger.warning("auto_organize_series_pack: ABS poll %d: %s", attempt + 1, e)
                     if matched_abs_id:
                         break
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(10)
 
                 now = _now()
                 fulfilled_req_id = req_row["id"] if req_row else None
