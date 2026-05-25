@@ -364,9 +364,16 @@ async def _merge_to_m4b(source_dir: Path, output_path: Path, title: str, author:
             total_dur = sum(durations)
             avg_bitrate = 128  # kbps default
 
-        # Use double-quoted paths so apostrophes in filenames (e.g. "King's Blood") don't break parsing.
-        # Escape any literal double quotes just in case.
-        lines = [f'file "{str(f).replace(chr(34), chr(92) + chr(34))}"\n' for f in files]
+        # Symlink each file into the temp dir with a sanitized numeric name so the
+        # filelist paths contain no special characters (apostrophes break concat parsing).
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        safe_files = []
+        for i, f in enumerate(files):
+            link = input_dir / f"{i:04d}{f.suffix.lower()}"
+            link.symlink_to(f.resolve())
+            safe_files.append(link)
+        lines = [f"file '{lf}'\n" for lf in safe_files]
         filelist.write_text("".join(lines))
 
         # Write ffmetadata chapter file
