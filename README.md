@@ -63,7 +63,6 @@ See [volume mapping](docs/volume-mapping.md) if downloads are not being detected
 
 ## Roadmap
 
-- **Auto search and download** — automatically find and download missing books on a schedule, without manual requests. This is partially implemented but held back until the quality bar is high enough to be reliable.
 - **More download clients** — Transmission, NZBGet, and others
 - **More library clients** — Calibre content server support alongside AudiobookShelf
 
@@ -76,17 +75,6 @@ See [volume mapping](docs/volume-mapping.md) if downloads are not being detected
 - [Volume mapping](docs/volume-mapping.md)
 - [Hardcover linking and manual requests](docs/hardcover-linking.md)
 - [Development](docs/development.md)
-
----
-
-## Upgrading
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-Migrations run automatically on startup.
 
 ---
 
