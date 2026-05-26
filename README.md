@@ -8,6 +8,11 @@ A self-hosted book manager that bridges [AudiobookShelf](https://www.audiobooksh
 [![Docker](https://github.com/Bothari/Athenaeum/actions/workflows/docker.yml/badge.svg)](https://github.com/Bothari/Athenaeum/actions/workflows/docker.yml)
 [![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
+<p align="center">
+  <img src="docs/screenshot-search.jpeg" width="45%" alt="Search results">
+  <img src="docs/screenshot-series.jpeg" width="45%" alt="Series detail">
+</p>
+
 ---
 
 ## Features
