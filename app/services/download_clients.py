@@ -289,7 +289,7 @@ class QBittorrentClient:
                 torrent_hash = m.group(1).lower()
             else:
                 # Download .torrent file and extract hash
-                dl = await client.get(download_url)
+                dl = await client.get(download_url, follow_redirects=True)
                 dl.raise_for_status()
                 torrent_hash = _bencode_info_hash(dl.content)
 
@@ -526,7 +526,7 @@ class DelugeClient:
             if download_url.lower().startswith("magnet:"):
                 torrent_hash = await self._call(client, "core.add_torrent_magnet", [download_url, options])
             else:
-                dl = await client.get(download_url)
+                dl = await client.get(download_url, follow_redirects=True)
                 dl.raise_for_status()
                 filename = (download_url.split("/")[-1].split("?")[0] or "download.torrent")
                 if not filename.lower().endswith(".torrent"):
