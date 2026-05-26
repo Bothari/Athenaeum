@@ -273,6 +273,22 @@ _Completed 2026-05-08_
 
 ---
 
+## Auto-Search and Auto-Download [complete]
+_Completed 2026-05-25_
+
+- [x] `app/services/auto_search.py` — rank_results (format/seeders/size/age/indexer_priority), auto_search_request (score threshold, release date guard, subtitle gating), run_auto_search_all (bulk scheduled run)
+- [x] `app/services/download_clients.py` — `_score_result` subtitle gating: subtitle must score ≥60 via partial_ratio to prevent wrong-book grabs in same series
+- [x] Settings → Auto-Search tab merged into Downloaders tab — ranking stack with drag-to-reorder (mouse + touch), min seeders, max attempts, search-on-request toggle
+- [x] `indexer_priority` ranking criterion (uses Prowlarr `indexerPriority` field)
+- [x] Manual Prowlarr search applies same ranking; shows confidence score badge (green/amber/red) so users can verify threshold before auto-download fires
+- [x] Release date guard — unreleased books skipped in both per-request and bulk auto-search
+- [x] `search_on_request` flag gates only the immediate trigger; scheduled bulk run always fires regardless
+- [x] Auto-search task card on Dashboard alongside library sync and cache refresh
+- [x] Fix FFmpeg concat filelist failing on apostrophes in download paths — symlink input files to sanitized numeric names in temp dir
+- [x] Extend ABS poll window from 60s to 5 min (30×10s) for large multi-part audiobooks
+
+---
+
 ## Future Work / Backlog
 
 - **Author deduplication on HC conflict**: when two local authors match the same HC author ID, merge the duplicate — re-point all `book_authors` rows, delete the duplicate author and `author_links` row.

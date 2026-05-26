@@ -98,6 +98,36 @@ Use **Send test notification** to verify delivery.
 
 ---
 
+## Auto-Search
+
+Athenaeum can automatically search Prowlarr and send the best result to your download client whenever a request is pending. Configure it in **Settings → Downloaders → Auto-Search**.
+
+| Field | Description |
+|---|---|
+| Search immediately on request | Trigger a search as soon as a request is created or approved. If disabled, only the scheduled task runs searches. |
+| Min seeders | Torrent results with fewer seeders than this are rejected. Set to 0 to disable the check. |
+| Max attempts | Stop searching after this many failed attempts per request (default 10). |
+
+### Result ranking
+
+Results are first filtered by hard constraints (format not in allowed list, below min seeders, series packs), then sorted by a configurable priority stack. Drag items in the **Ranking** list to reorder; toggle the checkbox to enable or disable each criterion.
+
+| Criterion | Notes |
+|---|---|
+| Format | Prefers results matching your allowed formats list — the order of the list is the order of preference |
+| Seeders | Prefers more seeders (torrent only; NZB results are unaffected) |
+| Size | Prefer larger or smaller files |
+| Age | Prefer newer or older indexed releases |
+| Indexer priority | Prefer results from higher-priority indexers as configured in Prowlarr |
+
+### Confidence scoring
+
+Auto-search uses fuzzy matching to score each result against the book title and author. Results scoring below 60% are rejected even if they pass all hard filters. The manual search view in a request's detail page shows each result's score as a colour-coded badge (green = would auto-download, amber/red = would not).
+
+Titles with subtitles (e.g. "Exodus: The Helium Sea") apply stricter matching: the subtitle must appear in the result title, preventing wrong-book grabs within the same series by the same author.
+
+---
+
 ## Scheduled Tasks
 
 Tasks run on [cron expressions](https://crontab.guru). Leave a field blank to disable.
@@ -106,5 +136,6 @@ Tasks run on [cron expressions](https://crontab.guru). Leave a field blank to di
 |---|---|---|
 | Library sync | `0 2 * * *` | Pulls all items from ABS and upserts the local database |
 | Cache refresh | `0 3 * * *` | Links local books/authors/series to Hardcover metadata |
+| Auto-search | `0 */6 * * *` | Searches Prowlarr for all pending requests |
 
 Tasks can also be triggered manually from the **Dashboard**.
