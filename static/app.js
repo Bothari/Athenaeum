@@ -718,9 +718,11 @@ function buildFormatRows(card, result, onRequestSuccess) {
   const state = {};
   for (const type of ['audiobook', 'ebook']) {
     const lib = (result.library_formats || []).find(f => f.type === type);
-    const req = (result.existing_requests || []).find(r => r.type === type && r.status !== 'failed');
+    const activeReq = (result.existing_requests || []).find(r => r.type === type && r.status !== 'failed');
+    const failedReq = !activeReq ? (result.existing_requests || []).find(r => r.type === type && r.status === 'failed') : null;
+    const req = activeReq || failedReq;
     state[type] = {
-      mode: lib ? 'in-library' : req ? 'requested' : 'unmonitored',
+      mode: lib ? 'in-library' : activeReq ? 'requested' : failedReq ? 'failed' : 'unmonitored',
       reqStatus: req ? (req.status || 'requested') : null,
       narrator: req ? (req.narrator || '') : '',
       reqId: req ? (req.id || null) : null,
@@ -737,8 +739,8 @@ function buildFormatRows(card, result, onRequestSuccess) {
       const s = state[type];
       const typeName = type === 'audiobook' ? 'Audiobook' : 'Ebook';
       const canCancel = s.mode !== 'requested' || isAdmin() || !_authUser || !s.reqOwnerId || s.reqOwnerId === _authUser.user_id;
-      const tips = { 'in-library': `${typeName} — in library`, 'requested': canCancel ? `${typeName} — click to cancel` : `${typeName} — requested by another user`, 'unmonitored': `${typeName} — click to request` };
-      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'requested' ? (s.reqStatus === 'pending' ? 'badge-pending' : s.reqStatus === 'completed' ? 'badge-completed' : 'badge-requested') : 'badge-neutral';
+      const tips = { 'in-library': `${typeName} — in library`, 'requested': canCancel ? `${typeName} — click to cancel` : `${typeName} — requested by another user`, 'failed': `${typeName} — failed, click to retry`, 'unmonitored': `${typeName} — click to request` };
+      const badgeClass = s.mode === 'in-library' ? 'badge-in_library' : s.mode === 'failed' ? 'badge-failed' : s.mode === 'requested' ? `badge-${s.reqStatus || 'requested'}` : 'badge-neutral';
       const isDisabled = s.mode === 'in-library' || (s.mode === 'requested' && !canCancel);
       return `<button class="badge ${badgeClass} fmt-pill" data-type="${type}" title="${tips[s.mode]}"${isDisabled ? ' disabled' : ''}>${typeIcon(type)}</button>`;
     }
@@ -777,7 +779,7 @@ function buildFormatRows(card, result, onRequestSuccess) {
     const dot = container.querySelector(`.fmt-pill[data-type="${type}"]`);
     dot.disabled = true;
 
-    if (s.mode === 'unmonitored') {
+    if (s.mode === 'unmonitored' || s.mode === 'failed') {
       try {
         const narratorVal = type === 'audiobook' ? (s.narrator.trim() || null) : null;
         let bookId = result.book_id;
@@ -1677,11 +1679,16 @@ route('/library/series/:id', async ({ id }) => {
         const tbody = document.createElement('tbody');
         booksData.forEach(b => {
           const fmtBadges = (b.formats || []).map(f => `<span class="badge badge-in_library" title="${f.type}${f.narrator ? ' — ' + f.narrator : ''}">${typeIcon(f.type)}</span>`).join(' ');
+          const reqBadges = (b.requests || [])
+            .filter(r => !(b.formats || []).some(f => f.type === r.type))
+            .map(r => `<span class="badge badge-${r.status}" title="${r.type} — ${r.status}">${typeIcon(r.type)}</span>`)
+            .join(' ');
+          const allBadges = fmtBadges + (reqBadges ? ' ' + reqBadges : '');
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td class="td-dim">${b.series_position != null ? b.series_position : '—'}</td>
             <td><a href="#/library/book?book_id=${b.id}">${escapeHtml(b.title)}</a></td>
-            <td>${fmtBadges || '<span class="td-dim">—</span>'}</td>
+            <td>${allBadges || '<span class="td-dim">—</span>'}</td>
           `;
           tbody.appendChild(tr);
         });
@@ -2367,14 +2374,50 @@ function renderDetailFormatContent(container, row, bookId, onRefresh) {
   const refresh = onRefresh || (() => {});
   if (row.status === 'in_library') {
     const fmt = row.fmt;
+    const isAudio = row.type === 'audiobook';
     container.innerHTML = `
       <div class="detail-fmt-detail">
         ${fmt.abs_url ? `<div class="detail-fmt-kv"><a href="${escapeHtml(fmt.abs_url)}" target="_blank" class="detail-fmt-link">Open in AudioBookShelf</a></div>` : ''}
         ${fmt.abs_id ? `<div class="detail-fmt-kv"><span class="td-dim">ABS item</span> <span class="td-mono">${escapeHtml(fmt.abs_id)}</span></div>` : ''}
         ${fmt.fulfilled_by_request_id ? `<div class="detail-fmt-kv"><span class="td-dim">Download request</span> <span class="td-mono">${escapeHtml(fmt.fulfilled_by_request_id)}</span></div>` : ''}
         ${!fmt.abs_id && !fmt.fulfilled_by_request_id ? `<div class="detail-fmt-kv td-dim">Added from AudioBookShelf library</div>` : ''}
+        ${isAdmin() ? `
+          <div class="detail-fmt-actions mt-1">
+            ${isAudio ? `<input type="text" class="input detail-fmt-narrator-input" placeholder="Narrator (optional)">` : ''}
+            <button class="btn btn-secondary btn-sm detail-fmt-replace-search">${ICON_SEARCH} Search Prowlarr</button>
+          </div>
+          <div class="detail-fmt-search-results mt-1"></div>
+        ` : ''}
       </div>
     `;
+    if (isAdmin()) {
+      container.querySelector('.detail-fmt-replace-search').onclick = async (e) => {
+        const btn = e.currentTarget;
+        const resultsEl = container.querySelector('.detail-fmt-search-results');
+        const narrator = isAudio ? (container.querySelector('.detail-fmt-narrator-input')?.value.trim() || null) : null;
+        btn.disabled = true;
+        btn.innerHTML = ICON_SPINNER + ' Searching…';
+        resultsEl.innerHTML = '';
+        try {
+          const reqResult = await api('/requests', { method: 'POST', body: { book_id: bookId, type: row.type, narrator, replace: true } });
+          if (reqResult.skipped) {
+            resultsEl.innerHTML = `<div class="text-dim">Could not create replacement request.</div>`;
+            return;
+          }
+          const data = await api(`/requests/${reqResult.id}/search-indexers`, { method: 'POST' });
+          if (data.error) {
+            resultsEl.innerHTML = `<div class="text-dim">${escapeHtml(data.error)}</div>`;
+          } else {
+            renderProwlarrResults(resultsEl, data.results || [], reqResult.id, refresh);
+          }
+        } catch (err) {
+          resultsEl.innerHTML = `<div class="text-dim">Search failed: ${escapeHtml(err.message)}</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = ICON_SEARCH + ' Search Prowlarr';
+        }
+      };
+    }
   } else if (row.status !== 'missing') {
     const req = row.request;
     const canSearch = isAdmin() && ['requested', 'failed', 'completed'].includes(req.status);

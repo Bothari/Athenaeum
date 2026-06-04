@@ -552,7 +552,7 @@ async def auto_organize(request_id: str):
                 fname = f"{stem}{item.suffix.lower()}"
                 organized_filenames.add(fname)
                 dst = dest_dir / fname
-                if dst.exists() or dst == item:
+                if dst == item:
                     continue
                 if download_client == "qbittorrent":
                     await asyncio.to_thread(shutil.copy2, str(item), str(dst))
@@ -565,17 +565,28 @@ async def auto_organize(request_id: str):
                         await asyncio.to_thread(shutil.copy2, str(cover_file), str(dst))
                     else:
                         await asyncio.to_thread(shutil.move, str(cover_file), str(dst))
+            # Remove stale files with the same extension as newly placed files.
+            # Different extensions are left alone (e.g. a pdf alongside an epub).
+            placed_exts = {Path(f).suffix.lower() for f in organized_filenames}
+            for old in dest_dir.iterdir():
+                if old.is_file() and old.suffix.lower() in placed_exts and old.name not in organized_filenames:
+                    await asyncio.to_thread(old.unlink)
+                    logger.info("auto_organize: removed replaced file %s", old)
         elif src.is_file():
-            ext = src.suffix
+            ext = src.suffix.lower()
             fname = f"{safe_title} - {safe_author}{ext}"
             organized_filenames.add(fname)
             dest_file = dest_dir / fname
-            if dest_file.exists() or dest_file == src:
-                pass  # already in place
-            elif download_client == "qbittorrent":
-                await asyncio.to_thread(shutil.copy2, str(src), str(dest_file))
-            else:
-                await asyncio.to_thread(shutil.move, str(src), str(dest_file))
+            if dest_file != src:
+                if download_client == "qbittorrent":
+                    await asyncio.to_thread(shutil.copy2, str(src), str(dest_file))
+                else:
+                    await asyncio.to_thread(shutil.move, str(src), str(dest_file))
+            # Remove stale files with the same extension.
+            for old in dest_dir.iterdir():
+                if old.is_file() and old.suffix.lower() == ext and old.name != fname:
+                    await asyncio.to_thread(old.unlink)
+                    logger.info("auto_organize: removed replaced file %s", old)
         else:
             # Source is gone — check if a previous organize attempt already moved files to dest.
             # This happens when the move succeeded but the ABS poll timed out and marked failed.
@@ -627,16 +638,15 @@ async def auto_organize(request_id: str):
 
         for lib_id in library_ids:
             try:
-                await abs_svc.scan_folder(lib_id, str(dest_dir))
+                await abs_svc.scan_library(lib_id)
             except Exception as e:
-                logger.warning("ABS scan_folder(%s) failed: %s", lib_id, e)
+                logger.warning("ABS scan_library(%s) failed: %s", lib_id, e)
 
         await asyncio.sleep(10)
 
-        # Poll for match by filename — 30 attempts × 10s = 300s (5 min).
-        # Large audiobooks (e.g. multi-part LOTR) can take ABS several minutes to scan.
-        # Check the already-linked abs_id first (file may have been added to an existing item),
-        # then fall back to a library search.
+        # Poll for match by filename — 12 attempts × 10s = 120s (2 min).
+        # Most books appear in ABS within a minute. If not, we mark completed and
+        # the nightly library sync picks it up — so poll timeout is not a failure.
         matched_abs_id = None
         async with get_db() as db:
             link_row = await (
@@ -644,20 +654,20 @@ async def auto_organize(request_id: str):
             ).fetchone()
         existing_abs_id = link_row["abs_id"] if link_row else None
 
-        for attempt in range(30):
+        logger.info("ABS poll starting: dest_dir=%s filenames=%s existing_abs_id=%s", dest_dir, organized_filenames, existing_abs_id)
+        for attempt in range(12):
+            logger.info("ABS poll attempt %d/12", attempt + 1)
             try:
-                if existing_abs_id:
-                    matched_abs_id = await abs_svc.find_item_by_filename(
-                        organized_filenames, book_type, abs_id=existing_abs_id
-                    )
-                if not matched_abs_id:
-                    matched_abs_id = await abs_svc.find_item_by_filename(
-                        organized_filenames, book_type, title=title
-                    )
+                matched_abs_id = await abs_svc.find_item_by_path(
+                    str(dest_dir), organized_filenames, book_type,
+                    title=title, abs_id=existing_abs_id or ""
+                )
             except Exception as e:
-                logger.warning("ABS find_item_by_filename attempt %d failed: %s", attempt + 1, e)
+                logger.warning("ABS find_item_by_path attempt %d failed: %s", attempt + 1, e)
             if matched_abs_id:
+                logger.info("ABS poll found item %s on attempt %d", matched_abs_id, attempt + 1)
                 break
+            logger.info("ABS poll attempt %d: no match, sleeping 10s", attempt + 1)
             await asyncio.sleep(10)
 
         # Push authoritative metadata to ABS now that we have the item ID.
@@ -700,9 +710,12 @@ async def auto_organize(request_id: str):
                 await db.execute("DELETE FROM merge_jobs WHERE request_id=?", (request_id,))
                 logger.info("Request %s organised and in library (abs_id=%s)", request_id, matched_abs_id)
             else:
-                await set_request_status(db, request_id, "failed", now, book_id=book_id, extra={"reason": "ABS poll exhausted"})
-                logger.warning(
-                    "Request %s: ABS poll exhausted without finding item — marked failed",
+                # Files are on disk. ABS hasn't indexed them yet (large books scan slowly).
+                # Mark completed so the nightly library sync can pick up the ABS item
+                # and transition the book to in_library. This is not a failure.
+                await set_request_status(db, request_id, "completed", now, book_id=book_id, extra={"reason": "ABS not yet indexed; library sync will link"})
+                logger.info(
+                    "Request %s: ABS poll window elapsed, files on disk — marked completed for library sync",
                     request_id,
                 )
             await db.commit()
@@ -1080,17 +1093,17 @@ async def auto_organize_series_pack(series_dl_id: str):
                 existing_abs_id = link_row["abs_id"] if link_row else None
 
                 matched_abs_id = None
-                for attempt in range(20):
+                async with get_db() as db:
+                    book_row_title = await (
+                        await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+                    ).fetchone()
+                title_hint = book_row_title["title"] if book_row_title else ""
+                for attempt in range(12):
                     try:
-                        if existing_abs_id:
-                            matched_abs_id = await abs_svc.find_item_by_filename(
-                                filenames, pack_type, abs_id=existing_abs_id
-                            )
-                        if not matched_abs_id:
-                            title_hint = next(iter(filenames), "").rsplit(" - ", 1)[0]
-                            matched_abs_id = await abs_svc.find_item_by_filename(
-                                filenames, pack_type, title=title_hint
-                            )
+                        matched_abs_id = await abs_svc.find_item_by_path(
+                            str(dest_dir), filenames, pack_type,
+                            title=title_hint, abs_id=existing_abs_id or ""
+                        )
                     except Exception as e:
                         logger.warning("auto_organize_series_pack: ABS poll %d: %s", attempt + 1, e)
                     if matched_abs_id:

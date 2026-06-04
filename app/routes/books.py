@@ -924,11 +924,23 @@ async def search_series_pack(series_id: str, auth: dict = Depends(require_admin)
     from ..services.download_clients import prowlarr_search
 
     series_name = row["name"]
-    allowed_formats = (settings.get("general") or {}).get("allowed_ebook_formats") or []
+    general = settings.get("general") or {}
+    # Combine ebook and audiobook formats — series packs can be either type.
+    # No category filter (book_type="") so indexers like MAM that don't report
+    # standard newznab categories aren't excluded.
+    allowed_formats = list({
+        *((general.get("allowed_ebook_formats") or [])),
+        *((general.get("allowed_audiobook_formats") or [])),
+    })
+    # Strip leading articles so "The Acts of Caine" searches as "Acts of Caine",
+    # matching how indexers typically title series packs. Keep the full name for
+    # scoring (title param) so confidence matching still uses the real name.
+    import re as _re
+    search_query = _re.sub(r'^(the|a|an)\s+', '', series_name, flags=_re.IGNORECASE).strip()
     try:
         raw_results = await prowlarr_search(
-            prowlarr_settings, series_name,
-            book_type="ebook",
+            prowlarr_settings, search_query,
+            book_type="",
             title=series_name, author="",
             allowed_formats=allowed_formats,
         )

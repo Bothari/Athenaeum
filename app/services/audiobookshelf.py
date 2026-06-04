@@ -116,48 +116,85 @@ class AudiobookshelfService:
                 ],
             }
 
-    async def find_item_by_filename(
-        self, filenames: set, book_type: str, title: str = "", abs_id: str = ""
+    async def find_item_by_path(
+        self, dest_dir: str, filenames: set, book_type: str, title: str = "", abs_id: str = ""
     ) -> str | None:
-        """Find an ABS item containing a library file matching any of the given filenames.
+        """Find the ABS item containing our organized files.
 
-        If abs_id is given, checks that specific item directly (fast path).
-        Otherwise searches by title and checks libraryFiles on results.
+        Matches on <author_dir>/<title_dir>/<filename> — the last two directory
+        components of dest_dir plus the filename — so the check is mount-point-agnostic.
+        ABS and Athenaeum live in separate containers with different prefixes; the
+        relative Author/Title/file.ext suffix is what they share.
+
+        Fast-checks abs_id first (item may have been updated in-place), then falls
+        through to a title search so a newly-created ABS item is also found.
         """
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        from pathlib import Path as _Path
+
+        dest_parts = _Path(dest_dir).parts
+        rel_base = "/".join(dest_parts[-2:]) if len(dest_parts) >= 2 else dest_parts[-1]
+        suffixes = {f"{rel_base}/{fname}" for fname in filenames}
+
+        _log.info("find_item_by_path: dest_dir=%s book_type=%s abs_id=%s", dest_dir, book_type, abs_id)
+        _log.info("find_item_by_path: suffixes=%s", suffixes)
+
+        def _matches(item: dict) -> bool:
+            item_id = item.get("id", "?")
+            lib_files = item.get("libraryFiles", [])
+            _log.info("find_item_by_path: checking item %s — %d libraryFiles", item_id, len(lib_files))
+            for lf in lib_files:
+                lf_path = lf.get("metadata", {}).get("path", "").replace("\\", "/")
+                matched_suffix = next((s for s in suffixes if lf_path.endswith(s)), None)
+                if matched_suffix:
+                    normalized = self._normalize_item(item)
+                    fmt_types = [f["type"] for f in normalized["formats"]]
+                    type_ok = book_type in fmt_types
+                    _log.info("find_item_by_path: suffix match on %s — formats=%s type_ok=%s", lf_path, fmt_types, type_ok)
+                    return type_ok
+                else:
+                    _log.info("find_item_by_path: no suffix match for lf_path=%s", lf_path)
+            return False
+
         async with httpx.AsyncClient(headers=self._headers(), timeout=15.0) as client:
+            # Fast path: the book was already in ABS — check if our files are now in it.
             if abs_id:
+                _log.info("find_item_by_path: fast path — fetching existing abs_id %s", abs_id)
                 resp = await client.get(f"{self.base_url}/api/items/{abs_id}")
+                _log.info("find_item_by_path: fast path response status=%s", resp.status_code)
                 if resp.status_code == 200:
                     item = resp.json()
-                    for lf in item.get("libraryFiles", []):
-                        if lf.get("metadata", {}).get("filename") in filenames:
-                            normalized = self._normalize_item(item)
-                            if any(f["type"] == book_type for f in normalized["formats"]):
-                                return normalized["abs_id"]
-                return None
+                    if _matches(item):
+                        _log.info("find_item_by_path: fast path matched — returning %s", abs_id)
+                        return self._normalize_item(item)["abs_id"]
+                    _log.info("find_item_by_path: fast path no match — falling through to search")
+                # Fall through — ABS may have created a new item for our organized files.
 
-            query = title or next(iter(filenames), "").rsplit(".", 1)[0]
+            # Search by title, fetch libraryFiles for each result, match on suffix.
+            query = title or rel_base.rsplit("/", 1)[-1]
+            _log.info("find_item_by_path: searching lib %s q=%r", self.library_ids, query)
             for lib_id in self.library_ids:
                 resp = await client.get(
                     f"{self.base_url}/api/libraries/{lib_id}/search",
-                    params={"q": query, "limit": 10},
+                    params={"q": query, "limit": 20},
                 )
+                _log.info("find_item_by_path: search status=%s results=%d", resp.status_code, len(resp.json().get("book", [])) if resp.status_code == 200 else -1)
                 if resp.status_code != 200:
                     continue
                 for entry in resp.json().get("book", []):
                     item = entry.get("libraryItem", entry)
-                    item_id = item.get("id", "")
-                    library_files = item.get("libraryFiles", [])
-                    if not library_files and item_id:
-                        full = await client.get(f"{self.base_url}/api/items/{item_id}")
+                    if not item.get("libraryFiles") and item.get("id"):
+                        _log.info("find_item_by_path: search result %s has no libraryFiles, fetching full item", item.get("id"))
+                        full = await client.get(f"{self.base_url}/api/items/{item['id']}")
                         if full.status_code == 200:
                             item = full.json()
-                            library_files = item.get("libraryFiles", [])
-                    for lf in library_files:
-                        if lf.get("metadata", {}).get("filename") in filenames:
-                            normalized = self._normalize_item(item)
-                            if any(f["type"] == book_type for f in normalized["formats"]):
-                                return normalized["abs_id"]
+                    if _matches(item):
+                        found_id = self._normalize_item(item)["abs_id"]
+                        _log.info("find_item_by_path: search matched — returning %s", found_id)
+                        return found_id
+            _log.info("find_item_by_path: no match found")
         return None
 
     async def check_library(self, title: str, author: str) -> list[dict]:

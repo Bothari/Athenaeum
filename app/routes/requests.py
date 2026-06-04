@@ -26,36 +26,54 @@ def _now() -> str:
 
 async def _create_request(
     db, book_id: str, req_type: str, narrator: str = None,
-    user_id: str = None, role: str = "admin",
+    user_id: str = None, role: str = "admin", replace: bool = False,
 ) -> dict | None:
     """Create a request row, returning None (skipped) if a dedup rule blocks it.
 
     Dedup rules:
     - An active (non-failed, non-completed, non-rejected) request for same book + type already exists.
-    - A book_formats row for same book + type + same narrator (case-insensitive) exists.
+    - A book_formats row for same book + type + same narrator (case-insensitive) exists,
+      unless replace=True (admin-only replacement flow that bypasses the in-library check).
 
     Requests from users with role='user' land as 'pending'; admins go straight to 'requested'.
     """
-    active = await (
+    if replace:
+        # Block only if something is actively mid-download — can't safely replace that.
+        downloading = await (
+            await db.execute(
+                """SELECT id FROM requests WHERE book_id=? AND type=?
+                   AND status IN ('snatched','downloading','downloaded','merging')""",
+                (book_id, req_type),
+            )
+        ).fetchone()
+        if downloading:
+            return None
+        # Clear any stuck requests so we can create a fresh one.
         await db.execute(
-            """SELECT id FROM requests
-               WHERE book_id = ? AND type = ? AND status NOT IN ('failed', 'completed', 'rejected')""",
+            "DELETE FROM requests WHERE book_id=? AND type=? AND status NOT IN ('failed','completed','rejected','pending')",
             (book_id, req_type),
         )
-    ).fetchone()
-    if active:
-        return None
+    else:
+        active = await (
+            await db.execute(
+                """SELECT id FROM requests
+                   WHERE book_id = ? AND type = ? AND status NOT IN ('failed', 'completed', 'rejected')""",
+                (book_id, req_type),
+            )
+        ).fetchone()
+        if active:
+            return None
 
-    narrator_norm = narrator or ''
-    in_lib = await (
-        await db.execute(
-            """SELECT id FROM book_formats
-               WHERE book_id = ? AND type = ? AND lower(narrator) = lower(?)""",
-            (book_id, req_type, narrator_norm),
-        )
-    ).fetchone()
-    if in_lib:
-        return None
+        narrator_norm = narrator or ''
+        in_lib = await (
+            await db.execute(
+                """SELECT id FROM book_formats
+                   WHERE book_id = ? AND type = ? AND lower(narrator) = lower(?)""",
+                (book_id, req_type, narrator_norm),
+            )
+        ).fetchone()
+        if in_lib:
+            return None
 
     req_id = str(uuid.uuid4())
     now = _now()
@@ -120,12 +138,15 @@ class CreateRequestBody(BaseModel):
     book_id: str
     type: str
     narrator: Optional[str] = None
+    replace: bool = False
 
 
 @router.post("/requests")
 async def create_request(body: CreateRequestBody, auth: dict = Depends(require_auth)):
     if body.type not in ("audiobook", "ebook"):
         raise HTTPException(status_code=400, detail="type must be audiobook or ebook")
+    # replace=True is admin-only: allows re-downloading a format already in library
+    replace = body.replace and auth["role"] == "admin"
     async with get_db() as db:
         book = await (
             await db.execute("SELECT id FROM books WHERE id = ?", (body.book_id,))
@@ -134,7 +155,7 @@ async def create_request(body: CreateRequestBody, auth: dict = Depends(require_a
             raise HTTPException(status_code=404, detail="Book not found")
         req = await _create_request(
             db, body.book_id, body.type, body.narrator or '',
-            user_id=auth["user_id"], role=auth["role"],
+            user_id=auth["user_id"], role=auth["role"], replace=replace,
         )
         if req is None:
             return {"skipped": True}
@@ -146,7 +167,7 @@ async def create_request(body: CreateRequestBody, auth: dict = Depends(require_a
             "author": detail["author"] or "",
             "type": detail["type"],
         }))
-    if detail and detail.get("status") == "requested":
+    if detail and detail.get("status") == "requested" and not replace:
         from ..services.auto_search import auto_search_request
         from ..settings import get_settings as _gs
         _s = await _gs()

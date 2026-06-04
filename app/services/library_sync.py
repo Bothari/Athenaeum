@@ -11,6 +11,7 @@ from rapidfuzz import fuzz
 
 from ..database import get_db
 from ..settings import get_settings
+from .request_events import set_request_status
 
 logger = logging.getLogger(__name__)
 
@@ -1789,9 +1790,19 @@ async def _sync_item(item: dict) -> str:
                     (str(uuid.uuid4()), book_id, fmt_type, narrator,
                      abs_id, item.get("abs_url"), now, now),
                 )
-                # Drop any non-pending requests for this type — format is now in library
+                # Resolve any failed requests — format is now in library
+                failed_rows = await (
+                    await db.execute(
+                        "SELECT id FROM requests WHERE book_id=? AND type=? AND status='failed'",
+                        (book_id, fmt_type),
+                    )
+                ).fetchall()
+                for row in failed_rows:
+                    await set_request_status(db, row["id"], "in_library", now, book_id=book_id)
+                # Drop orphaned requests for this type — keep anything actively downloading
+                # (snatched/downloading/downloaded/merging/organizing), the organizer cleans those up.
                 await db.execute(
-                    "DELETE FROM requests WHERE book_id=? AND type=? AND status NOT IN ('pending','failed','rejected')",
+                    "DELETE FROM requests WHERE book_id=? AND type=? AND status IN ('requested','completed','in_library')",
                     (book_id, fmt_type),
                 )
             await db.commit()
@@ -1872,9 +1883,19 @@ async def _sync_item(item: dict) -> str:
                 )
                 if r.rowcount:
                     changed = True
-                # Drop any non-pending requests for this type — format is now in library
+                # Resolve any failed requests — format is now in library
+                failed_rows = await (
+                    await db.execute(
+                        "SELECT id FROM requests WHERE book_id=? AND type=? AND status='failed'",
+                        (book_id, fmt_type),
+                    )
+                ).fetchall()
+                for row in failed_rows:
+                    await set_request_status(db, row["id"], "in_library", now, book_id=book_id)
+                # Drop orphaned requests for this type — keep anything actively downloading
+                # (snatched/downloading/downloaded/merging/organizing), the organizer cleans those up.
                 await db.execute(
-                    "DELETE FROM requests WHERE book_id=? AND type=? AND status NOT IN ('pending','failed','rejected')",
+                    "DELETE FROM requests WHERE book_id=? AND type=? AND status IN ('requested','completed','in_library')",
                     (book_id, fmt_type),
                 )
 
