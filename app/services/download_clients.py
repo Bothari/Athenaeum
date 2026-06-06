@@ -46,6 +46,19 @@ PROWLARR_CATEGORIES = {
 }
 
 
+# Words that are noise when detecting whether a result title has a meaningful
+# prefix that changes book identity (e.g. "Call of the" in "Call of the Bone Ships").
+_SCORE_STOP = frozenset({
+    "a", "an", "the", "of", "by", "and", "in", "to", "for", "&", "or", "with",
+    "from", "at", "on", "its",
+})
+_SCORE_FORMAT_NOISE = frozenset({
+    "mp3", "m4b", "m4a", "flac", "epub", "mobi", "pdf", "azw3", "lit", "ogg",
+    "opus", "aac", "wav", "cbz", "cbr", "audiobook", "ebook", "unabridged",
+    "abridged", "eng", "english",
+})
+
+
 def _strip_subtitle(title: str) -> str:
     """Return the title with any subtitle after ': ' removed.
 
@@ -71,6 +84,11 @@ def _score_result(result_title: str, original_title: str, author: str = "") -> i
     name) don't hurt the score.  Author matching also checks the surname alone
     so pen-name initials (S. A. Chakraborty) match results filed under the
     author's full first name (Shannon Chakraborty).
+
+    Extra penalty: if meaningful (non-noise) words appear in the result BEFORE
+    the query's keywords, that strongly signals a different book (e.g. "Call of
+    the Bone Ships" when searching for "The Bone Ships").  Score is capped low
+    in that case so auto-search does not grab the wrong book.
     """
     try:
         from rapidfuzz import fuzz
@@ -81,14 +99,11 @@ def _score_result(result_title: str, original_title: str, author: str = "") -> i
     main = _strip_subtitle(original_title).lower()
 
     if main != full:
-        # Title has a subtitle. The subtitle is the only thing distinguishing
-        # books in the same series by the same author (e.g. "Exodus: The Helium
-        # Sea" vs "Exodus: The Archimedes Engine"). Use partial_ratio so the
-        # subtitle must actually appear in the result title.
+        # Title has a subtitle — it's the only thing distinguishing books in the
+        # same series.  Subtitle must appear in the result or the score is capped.
         subtitle = full[len(main):].lstrip(': ').strip()
         subtitle_score = fuzz.partial_ratio(subtitle, clean_result) if subtitle else 100
         if subtitle_score < 60:
-            # Subtitle absent or poor match — cap score low regardless of author match
             t_score = int(subtitle_score * 0.5)
         else:
             t_score = int(fuzz.token_set_ratio(full, clean_result) * 0.6 + subtitle_score * 0.4)
@@ -97,12 +112,74 @@ def _score_result(result_title: str, original_title: str, author: str = "") -> i
 
     if author:
         a_full = fuzz.token_set_ratio(author.lower(), clean_result)
-        # Surname-only fallback: "Chakraborty" matches whether filed as "S. A." or "Shannon"
         surname = _author_surname(author).lower()
         a_surname = fuzz.partial_ratio(surname, clean_result) if surname else 0
         a_score = max(a_full, a_surname)
-        return int(t_score * 0.7 + a_score * 0.3)
-    return t_score
+        score = int(t_score * 0.7 + a_score * 0.3)
+    else:
+        score = t_score
+
+    # Prefix-word penalty: if meaningful words appear in the result *before* any
+    # keyword from the query title, they almost certainly mean this is a different
+    # book (e.g. "Call of the" preceding "Bone Ships").  Cap the score so
+    # auto-search won't grab it automatically; the user can still pick it manually.
+    score = _apply_prefix_penalty(score, clean_result, full, author)
+
+    return score
+
+
+def _apply_prefix_penalty(score: int, clean_result: str, full_title: str, author: str = "") -> int:
+    """Cap score for two signals that a result is the wrong book:
+
+    1. Missing keywords — query words that don't appear (even fuzzily) in the
+       result (e.g. searching "Call of the Bone Ships" but result is "The Bone
+       Ships").  If ≥33 % of meaningful query words are absent, cap the score.
+
+    2. Prefix extra words — meaningful words in the result that appear *before*
+       the query's first keyword (e.g. "Call of the" before "Bone Ships" when
+       searching for "The Bone Ships").  Those words almost certainly mean it is
+       a different book.
+    """
+    try:
+        from rapidfuzz import fuzz as _fuzz
+    except ImportError:
+        return score
+
+    noise = _SCORE_STOP | _SCORE_FORMAT_NOISE
+    if author:
+        noise = noise | set(re.sub(r'[^\w\s]', ' ', author.lower()).split())
+
+    result_tokens = re.sub(r'[^\w\s]', ' ', clean_result).split()
+    query_keywords = [
+        t for t in re.sub(r'[^\w\s]', ' ', full_title).split()
+        if t not in _SCORE_STOP and len(t) > 1
+    ]
+    if not query_keywords:
+        return score
+
+    # 1. Missing keyword penalty
+    missing = [kw for kw in query_keywords if _fuzz.partial_ratio(kw, clean_result) < 80]
+    if missing:
+        missing_ratio = len(missing) / len(query_keywords)
+        if missing_ratio >= 0.33:
+            cap = 40 if missing_ratio >= 0.5 else 55
+            score = min(score, cap)
+
+    # 2. Prefix extra word penalty
+    query_kw_set = set(query_keywords)
+    first_match = next(
+        (i for i, t in enumerate(result_tokens) if t in query_kw_set),
+        len(result_tokens),
+    )
+    prefix_extra = [
+        t for t in result_tokens[:first_match]
+        if t not in noise and len(t) > 1
+    ]
+    if prefix_extra:
+        cap = 55 if len(prefix_extra) == 1 else 40
+        score = min(score, cap)
+
+    return score
 
 
 _FORMAT_RE = re.compile(
