@@ -2718,6 +2718,15 @@ route('/requests', async (params, qp) => {
 function renderRequestsTab(content, qp) {
   const statusFilter = qp.requests_status || '';
   const typeFilter = qp.requests_type || '';
+  let hideUnreleased = qp.hide_unreleased === '1';
+
+  const today = new Date().toISOString().slice(0, 10);
+  function isUnreleasedRequest(r) {
+    if (r.release_date_fetched && !r.release_date) return true;
+    if (r.release_date && r.release_date > today) return true;
+    if (r.release_date && r.release_date.endsWith('-01-01') && r.release_date.substring(0, 4) >= today.substring(0, 4)) return true;
+    return false;
+  }
 
   const statusOptions = ['', 'requested', 'snatched', 'downloading', 'downloaded', 'merging', 'organizing', 'in_library', 'completed', 'failed'];
   const statusSelect = `
@@ -2732,6 +2741,7 @@ function renderRequestsTab(content, qp) {
       <option value="ebook" ${typeFilter === 'ebook' ? 'selected' : ''}>Ebook</option>
     </select>
   `;
+  const unreleasedToggle = `<label class="filter-toggle"><input type="checkbox" id="hide-unreleased-toggle"${hideUnreleased ? ' checked' : ''}> Hide unreleased</label>`;
 
   function fetchRequests(p) {
     const qs = new URLSearchParams(p);
@@ -2752,9 +2762,10 @@ function renderRequestsTab(content, qp) {
       { label: '', key: '_actions', sortable: false, style: 'width:100px' },
     ],
     fetchFn: fetchRequests,
-    extraControls: statusSelect + typeSelect,
+    extraControls: statusSelect + typeSelect + unreleasedToggle,
     renderRow: (r, tr) => {
       tr.dataset.requestId = r.id;
+      if (isUnreleasedRequest(r)) tr.dataset.unreleased = '1';
       tr.dataset.reqStatus = r.status;
       tr.dataset.releaseDate = r.release_date || '';
       tr.innerHTML = `
@@ -2812,6 +2823,18 @@ function renderRequestsTab(content, qp) {
       else delete hp.requests_type;
       location.hash = buildHash('/requests', hp).slice(1);
     });
+    const unreleasedChk = document.getElementById('hide-unreleased-toggle');
+    if (unreleasedChk) {
+      const tbody = content.querySelector('tbody');
+      if (hideUnreleased && tbody) tbody.classList.add('hide-unreleased');
+      unreleasedChk.addEventListener('change', () => {
+        hideUnreleased = unreleasedChk.checked;
+        const hp = getHashParams();
+        if (hideUnreleased) hp.hide_unreleased = '1'; else delete hp.hide_unreleased;
+        history.replaceState(null, '', buildHash('/requests', hp));
+        if (tbody) tbody.classList.toggle('hide-unreleased', hideUnreleased);
+      });
+    }
 
     // Show "Retry all failed" button if any failed requests are visible
     const retryAllBtn = document.getElementById('retry-all-failed-btn');

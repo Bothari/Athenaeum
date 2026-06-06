@@ -449,6 +449,9 @@ tbody td { padding: 0.6rem 0.75rem; vertical-align: middle; }
   margin-bottom: 1rem;
 }
 .table-toolbar input[type="text"] { flex: 1; min-width: 180px; max-width: 320px; }
+.filter-toggle { display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+.filter-toggle input[type="checkbox"] { cursor: pointer; }
+tbody.hide-unreleased tr[data-unreleased] { display: none; }
 
 /* ── Page header ── */
 .page-header {
