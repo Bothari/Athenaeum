@@ -72,9 +72,17 @@ def _strip_subtitle(title: str) -> str:
 
 
 def _author_surname(author: str) -> str:
-    """Return the last token of an author name (the surname)."""
-    parts = author.strip().split()
-    return parts[-1] if parts else ""
+    """Return the surname from an author name, skipping initials and credentials.
+
+    Handles formats like "Daniel J. Siegel, MD" → "Siegel",
+    "S. A. Chakraborty" → "Chakraborty", "J. R. R. Tolkien" → "Tolkien".
+    """
+    _CREDENTIALS = frozenset({"md", "phd", "jr", "sr", "ii", "iii", "iv", "dds", "esq", "rn", "do", "mph"})
+    tokens = re.sub(r"[^\w\s]", " ", author).split()
+    for token in reversed(tokens):
+        if len(token) > 2 and token.lower() not in _CREDENTIALS:
+            return token
+    return tokens[-1] if tokens else ""
 
 
 def _score_result(result_title: str, original_title: str, author: str = "") -> int:
@@ -199,8 +207,10 @@ def build_prowlarr_query(title: str, author: str = "") -> str:
 
     Uses only the author's surname so pen-name initials (S. A. Chakraborty)
     don't prevent indexers from matching results filed under the full name.
+    Hyphens are replaced with spaces — some indexers interpret a leading hyphen
+    as a NOT operator (e.g. "No-Drama" → "No AND NOT Drama").
     """
-    main = _strip_subtitle(title)
+    main = _strip_subtitle(title).replace("-", " ")
     surname = _author_surname(author)
     return f"{main} {surname}".strip() if surname else main
 

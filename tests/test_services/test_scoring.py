@@ -1,6 +1,59 @@
-"""Unit tests for _score_result — real-world Prowlarr result titles we have seen."""
+"""Unit tests for _score_result, build_prowlarr_query, and _author_surname."""
 import pytest
-from app.services.download_clients import _score_result
+from app.services.download_clients import _score_result, build_prowlarr_query, _author_surname
+
+
+class TestAuthorSurname:
+    def test_simple(self):
+        assert _author_surname("Patrick Rothfuss") == "Rothfuss"
+
+    def test_initials(self):
+        assert _author_surname("S. A. Chakraborty") == "Chakraborty"
+
+    def test_middle_initial(self):
+        assert _author_surname("R. J. Barker") == "Barker"
+
+    def test_triple_initials(self):
+        assert _author_surname("J. R. R. Tolkien") == "Tolkien"
+
+    def test_medical_credential(self):
+        # "MD" must not be returned as surname
+        assert _author_surname("Daniel J. Siegel, MD") == "Siegel"
+
+    def test_phd_credential(self):
+        assert _author_surname("Tina Payne Bryson, PhD") == "Bryson"
+
+    def test_jr_suffix(self):
+        assert _author_surname("Martin Luther King Jr") == "King"
+
+    def test_no_credential(self):
+        assert _author_surname("Brandon Sanderson") == "Sanderson"
+
+
+class TestBuildProwlarrQuery:
+    def test_hyphen_replaced_with_space(self):
+        # Hyphens pass through as NOT operators on some indexers
+        assert build_prowlarr_query("No-Drama Discipline", "Daniel Siegel") == "No Drama Discipline Siegel"
+
+    def test_credential_stripped_from_surname(self):
+        # "MD" must not end up in the query
+        q = build_prowlarr_query("No-Drama Discipline", "Daniel J. Siegel, MD")
+        assert q == "No Drama Discipline Siegel"
+        assert "MD" not in q and "md" not in q
+
+    def test_subtitle_stripped(self):
+        assert build_prowlarr_query("Exodus: The Helium Sea", "John Hemry") == "Exodus Hemry"
+
+    def test_surname_only(self):
+        assert build_prowlarr_query("The Name of the Wind", "Patrick Rothfuss") == "The Name of the Wind Rothfuss"
+
+    def test_no_author(self):
+        assert build_prowlarr_query("Dune") == "Dune"
+
+    def test_hyphen_in_author_not_affected(self):
+        # Author hyphen doesn't go through build_prowlarr_query (surname only)
+        q = build_prowlarr_query("Some Book", "Ursula K. Le Guin")
+        assert "Guin" in q
 
 AUTO_DOWNLOAD_THRESHOLD = 60
 
