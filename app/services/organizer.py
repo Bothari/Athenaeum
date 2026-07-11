@@ -421,6 +421,7 @@ async def auto_organize(request_id: str):
     from ..database import get_db
     from ..settings import get_settings
     from .audiobookshelf import AudiobookshelfService
+    from .download_clients import is_torrent_client
 
     def _now():
         return datetime.now(timezone.utc).isoformat()
@@ -462,6 +463,7 @@ async def auto_organize(request_id: str):
         narrator = req_row["narrator"] or ""
         path_str = dl_row["download_path"] if dl_row else None
         download_client = dl_row["download_client"] if dl_row else None
+        use_copy = is_torrent_client(download_client or "", settings)
 
         if not path_str:
             logger.error("auto_organize: no download_path for request %s", request_id)
@@ -554,14 +556,14 @@ async def auto_organize(request_id: str):
                 dst = dest_dir / fname
                 if dst == item:
                     continue
-                if download_client == "qbittorrent":
+                if use_copy:
                     await asyncio.to_thread(shutil.copy2, str(item), str(dst))
                 else:
                     await asyncio.to_thread(shutil.move, str(item), str(dst))
             if cover_file:
                 dst = dest_dir / cover_file.name.lower()
                 if dst != cover_file:
-                    if download_client == "qbittorrent":
+                    if use_copy:
                         await asyncio.to_thread(shutil.copy2, str(cover_file), str(dst))
                     else:
                         await asyncio.to_thread(shutil.move, str(cover_file), str(dst))
@@ -578,7 +580,7 @@ async def auto_organize(request_id: str):
             organized_filenames.add(fname)
             dest_file = dest_dir / fname
             if dest_file != src:
-                if download_client == "qbittorrent":
+                if use_copy:
                     await asyncio.to_thread(shutil.copy2, str(src), str(dest_file))
                 else:
                     await asyncio.to_thread(shutil.move, str(src), str(dest_file))
@@ -945,6 +947,7 @@ async def auto_organize_series_pack(series_dl_id: str):
     from ..database import get_db
     from ..settings import get_settings
     from .audiobookshelf import AudiobookshelfService
+    from .download_clients import is_torrent_client
 
     def _now():
         return datetime.now(timezone.utc).isoformat()
@@ -964,6 +967,7 @@ async def auto_organize_series_pack(series_dl_id: str):
 
         pack_type = sdl_row["type"] or "ebook"
         download_client = sdl_row["download_client"]
+        use_copy = is_torrent_client(download_client or "", settings)
         mappings_raw = sdl_row["proposed_mappings"]
 
         if not mappings_raw:
@@ -1047,7 +1051,7 @@ async def auto_organize_series_pack(series_dl_id: str):
             dest_file = dest_dir / fname
 
             if not dest_file.exists():
-                if download_client == "qbittorrent":
+                if use_copy:
                     await asyncio.to_thread(shutil.copy2, str(media_file), str(dest_file))
                 else:
                     await asyncio.to_thread(shutil.move, str(media_file), str(dest_file))

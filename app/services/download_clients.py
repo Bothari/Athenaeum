@@ -328,6 +328,22 @@ def get_client_for_download(settings: dict, client_ref: str) -> tuple:
     return None, None
 
 
+_TORRENT_CLIENT_TYPES = frozenset({"qbittorrent", "deluge"})
+
+
+def is_torrent_client(client_ref: str, settings: dict) -> bool:
+    """Return True if client_ref refers to a torrent download client.
+
+    Accepts both downloader IDs (e.g. 'qbittorrent-1') and legacy type strings
+    (e.g. 'qbittorrent').  Torrent clients need shutil.copy2 so the source file
+    stays in place for continued seeding.
+    """
+    for dl in settings.get("downloaders", []):
+        if dl.get("id") == client_ref or dl.get("type") == client_ref:
+            return dl.get("type") in _TORRENT_CLIENT_TYPES
+    return client_ref in _TORRENT_CLIENT_TYPES
+
+
 # ── qBittorrent ────────────────────────────────────────────────────────────────
 
 class QBittorrentClient:
