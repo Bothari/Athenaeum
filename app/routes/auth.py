@@ -298,6 +298,12 @@ async def oidc_callback(request: Request, response: Response, code: str = "", st
             id_token, jwks,
             algorithms=["RS256", "HS256"],
             audience=client_id,
+            # Providers (e.g. Authelia) include an at_hash claim in the ID token;
+            # python-jose validates it against the access token and raises
+            # "No access_token provided to compare against at_hash claim" if it
+            # isn't supplied. Pass the access token from the token response so the
+            # claim can be verified instead of blocking every login.
+            access_token=token_data.get("access_token"),
         )
     except JWTError as e:
         raise HTTPException(400, f"ID token verification failed: {e}")
