@@ -37,7 +37,14 @@ def _make_session_token(user_id: str, role: str, secret: str, days: int) -> str:
 
 
 def set_session_cookie(response: Response, token: str, request: Request, days: int):
-    secure = request.headers.get("x-forwarded-proto", "http") == "https"
+    # Mark the long-lived session cookie Secure whenever the request is https —
+    # either via the proxy's X-Forwarded-Proto or a direct TLS request (no proxy),
+    # where only request.url.scheme reflects it. Missing this on direct HTTPS would
+    # ship the session cookie over an insecure flag.
+    secure = (
+        request.headers.get("x-forwarded-proto", "").lower() == "https"
+        or request.url.scheme == "https"
+    )
     response.set_cookie(
         "session", token,
         httponly=True,
