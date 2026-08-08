@@ -1,0 +1,104 @@
+/* Global base styles. Component-specific styling belongs in scoped <style> blocks.
+   This file holds only: design tokens, the reset, and rules that must not be
+   overridden. Tokens are ported verbatim from v1 static/style.css. */
+
+/* ── Tokens — dark (default) ────────────────────────────────────────────────── */
+:root {
+	--bg: #1c1917;
+	--surface: #252220;
+	--surface2: #2f2b28;
+	--border: #3d3830;
+	--text: #e8e0d5;
+	--text-dim: #8a7f75;
+	--accent: #c4622d;
+	--green: #5a9a5a;
+	--yellow: #c49a30;
+	--orange: #c4622d;
+	--red: #b84545;
+	--radius: 4px;
+}
+
+/* ── Tokens — light ─────────────────────────────────────────────────────────── */
+html.light {
+	--bg: #f2ece0;
+	--surface: #faf6ef;
+	--surface2: #ede6d9;
+	--border: #d0c8ba;
+	--text: #2a2420;
+	--text-dim: #7a7068;
+	--accent: #c4622d;
+	--green: #3a6b3a;
+	--yellow: #8a6010;
+	--orange: #a04010;
+	--red: #9e2c2c;
+	--radius: 4px;
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+/* Also the anchor for rem maths: every rem below resolves against this 16px. */
+html {
+	font-size: 16px;
+}
+
+body {
+	background: var(--bg);
+	color: var(--text);
+	font-family: system-ui, -apple-system, sans-serif;
+	line-height: 1.5;
+	min-height: 100vh;
+}
+
+a {
+	color: var(--accent);
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+button {
+	cursor: pointer;
+	font-family: inherit;
+	font-size: inherit;
+	touch-action: manipulation;
+}
+
+/* ── MOBILE ZOOM PREVENTION — DO NOT OVERRIDE ───────────────────────────────────
+   iOS Safari zooms the viewport when a focused text field's COMPUTED font-size is
+   below 16px. The only accessible fix is keeping every focusable field at >=16px;
+   suppressing it with user-scalable=no also kills legitimate pinch-zoom.
+
+   RULES:
+     1. Never set font-size below 16px on input / select / textarea, or on any
+        class applied to one. This includes rem values resolving below 16px
+        (0.9rem = 14.4px WILL zoom).
+     2. This bites harder than in v1: a scoped component style silently beats this
+        global rule and nothing warns you.
+     3. To make a field look smaller, reduce padding / height / width — never
+        font-size.
+     4. `npm run check:zoom` enforces this. Keep it in CI.
+
+   v1 hit this repeatedly: .fmt-narrator-input and .search-input-main each had to
+   re-declare font-size: 16px after a smaller value crept in. Do not relearn it.
+   See CLAUDE.md -> Frontend (v2). */
+input,
+select,
+textarea {
+	font-size: 16px;
+}
+
+/* Kills the 300ms double-tap-to-zoom delay on tappable controls. */
+button,
+[role='button'],
+.tappable {
+	touch-action: manipulation;
+}
