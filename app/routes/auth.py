@@ -576,6 +576,43 @@ async def _oidc_callback_inner(request: Request, settings: dict, auth_cfg: dict,
         ).fetchone()
 
         if not row:
+            # Legacy adoption. Accounts linked before migration 15 carry oidc_sub
+            # with oidc_iss NULL (the migration backfill), so the (iss, sub) lookup
+            # above can never match them — without this claim they would fall
+            # through to provisioning and be silently replaced by a fresh 'user'
+            # account, orphaning the original row and its role. The claim lives
+            # here rather than in the migration because the issuer comes from
+            # settings, which migrations must not depend on.
+            #
+            # This is NOT a re-introduction of email/username linking: it claims
+            # only a row that already carried THIS oidc_sub, and oidc_iss is the
+            # verified token issuer, which _get_oidc_config pins to the
+            # admin-configured provider_url — exactly the trust level the
+            # pre-migration sub-only lookup already had. One-time: once stamped,
+            # the row is keyed on (iss, sub) like any other.
+            #
+            # Conditional UPDATE rather than SELECT-then-UPDATE so two concurrent
+            # logins cannot both adopt the same row; rowcount 0 means nothing to
+            # adopt (>1 is impossible: legacy rows come from a schema with
+            # UNIQUE(oidc_sub)). Either way the re-SELECT below picks up whatever
+            # identity now exists — adopted here, or won by a concurrent login.
+            cur = await db.execute(
+                """UPDATE users SET oidc_iss = ?, updated_at = ?
+                   WHERE oidc_sub = ? AND oidc_iss IS NULL""",
+                (oidc_iss, _now(), oidc_sub),
+            )
+            if cur.rowcount == 1:
+                await db.commit()
+            else:
+                await db.rollback()
+            row = await (
+                await db.execute(
+                    "SELECT id, role FROM users WHERE oidc_iss = ? AND oidc_sub = ?",
+                    (oidc_iss, oidc_sub),
+                )
+            ).fetchone()
+
+        if not row:
             # Store the email only when verified; otherwise keep it empty so an
             # unverified (attacker-chosen) address never lands in the account.
             stored_email = email if email_verified else ""

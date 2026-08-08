@@ -378,6 +378,136 @@ async def test_does_not_link_by_verified_email(oidc_client, rsa_key_and_jwks, ht
         assert provisioned["role"] == "user"  # a fresh account was created
 
 
+# ── Legacy adoption (rows linked before migration 15) ───────────────────────────
+
+ISSUER2 = "https://idp2.example.com"
+
+
+async def _insert_legacy_oidc_user(username, sub, role="admin"):
+    """A pre-migration-15 row: linked by oidc_sub alone, oidc_iss left NULL by the
+    migration backfill."""
+    from app.database import get_db
+    import uuid as _uuid
+    uid = str(_uuid.uuid4())
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO users (id, username, email, role, oidc_sub, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (uid, username, "", role, sub, "2026-01-01", "2026-01-01"))
+        await db.commit()
+    return uid
+
+
+@pytest.mark.asyncio
+async def test_legacy_account_adopted_on_first_login(oidc_client, rsa_key_and_jwks, httpx_mock):
+    # Migration 15 backfills oidc_iss as NULL, which the (iss, sub) lookup can never
+    # match — the first post-migration login must ADOPT the legacy row (stamp the
+    # verified issuer, keep id and role), not provision a duplicate 'user' account.
+    priv_pem, jwks = rsa_key_and_jwks
+    uid = await _insert_legacy_oidc_user("boss", "legacy-sub", role="admin")
+    resp = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks, sub="legacy-sub")
+    assert resp.status_code == 200
+    from app.database import get_db
+    async with get_db() as db:
+        n = (await (await db.execute("SELECT COUNT(*) AS n FROM users")).fetchone())["n"]
+        assert n == 1  # adopted, not duplicated
+        row = await (await db.execute(
+            "SELECT id, role, oidc_iss FROM users WHERE oidc_sub = 'legacy-sub'")).fetchone()
+        assert row["id"] == uid
+        assert row["role"] == "admin"
+        assert row["oidc_iss"] == ISSUER
+    me = await oidc_client.get("/api/auth/me")
+    assert me.status_code == 200
+    assert me.json()["username"] == "boss"
+    assert me.json()["role"] == "admin"  # session carries the preserved role
+
+
+@pytest.mark.asyncio
+async def test_adoption_claims_only_matching_sub(oidc_client, rsa_key_and_jwks, httpx_mock):
+    priv_pem, jwks = rsa_key_and_jwks
+    await _insert_legacy_oidc_user("alice", "legacy-a", role="user")
+    await _insert_legacy_oidc_user("bob", "legacy-b", role="user")
+    resp = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks, sub="legacy-a")
+    assert resp.status_code == 200
+    from app.database import get_db
+    async with get_db() as db:
+        a = await (await db.execute(
+            "SELECT oidc_iss FROM users WHERE oidc_sub = 'legacy-a'")).fetchone()
+        b = await (await db.execute(
+            "SELECT oidc_iss FROM users WHERE oidc_sub = 'legacy-b'")).fetchone()
+        assert a["oidc_iss"] == ISSUER
+        assert b["oidc_iss"] is None  # other legacy rows untouched
+
+
+@pytest.mark.asyncio
+async def test_adopted_account_second_login_stable(oidc_client, rsa_key_and_jwks, httpx_mock):
+    priv_pem, jwks = rsa_key_and_jwks
+    uid = await _insert_legacy_oidc_user("carol", "legacy-c", role="admin")
+    r1 = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks, sub="legacy-c")
+    assert r1.status_code == 200
+    oidc_client.cookies.clear()
+    auth_routes._oidc_discovery_cache.clear()  # force the 2nd /start to re-fetch discovery
+    r2 = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks, sub="legacy-c")
+    assert r2.status_code == 200
+    from app.database import get_db
+    async with get_db() as db:
+        rows = await (await db.execute("SELECT id, role FROM users")).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["id"] == uid
+        assert rows[0]["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_adopted_row_not_reclaimable_by_other_issuer(
+        oidc_client, rsa_key_and_jwks, httpx_mock, tmp_path, monkeypatch):
+    # Adoption is one-time: once stamped with issuer A, a login from issuer B
+    # presenting the SAME sub must not re-claim the row — B gets a fresh account.
+    priv_pem, jwks = rsa_key_and_jwks
+    uid = await _insert_legacy_oidc_user("dave", "legacy-d", role="admin")
+    r1 = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks, sub="legacy-d")
+    assert r1.status_code == 200
+
+    # Repoint the app at a second provider. A fresh settings file starts with auth
+    # disabled, so the passthrough PUT works exactly as in _setup.
+    monkeypatch.setattr(settings_module, "SETTINGS_PATH", str(tmp_path / "settings2.yaml"))
+    auth_routes._oidc_discovery_cache.clear()
+    await oidc_client.put("/api/settings", json={
+        "auth": {**_OIDC_AUTH, "oidc_provider_url": ISSUER2}})
+
+    httpx_mock.add_response(
+        url=f"{ISSUER2}/.well-known/openid-configuration",
+        json={"issuer": ISSUER2, "authorization_endpoint": f"{ISSUER2}/authorize",
+              "token_endpoint": f"{ISSUER2}/token", "jwks_uri": f"{ISSUER2}/jwks"})
+    resp = await oidc_client.get("/api/auth/oidc/start", follow_redirects=False)
+    assert resp.status_code == 302
+    payload = jose_jwt.decode(oidc_client.cookies.get("__Host-oidc_state"),
+                              SESSION_SECRET, algorithms=["HS256"])
+    access_token = "tok2"
+    id_token = _make_id_token(priv_pem, access_token=access_token,
+                              nonce=payload["nonce"], iss=ISSUER2, sub="legacy-d")
+    httpx_mock.add_response(url=f"{ISSUER2}/token",
+                            json={"access_token": access_token, "id_token": id_token,
+                                  "token_type": "bearer"})
+    httpx_mock.add_response(url=f"{ISSUER2}/jwks", json=jwks)
+    r2 = await oidc_client.get(
+        f"/api/auth/oidc/callback?code=abc&state={payload['state']}",
+        follow_redirects=False)
+    assert r2.status_code == 200
+
+    from app.database import get_db
+    async with get_db() as db:
+        orig = await (await db.execute(
+            "SELECT role, oidc_iss FROM users WHERE id = ?", (uid,))).fetchone()
+        assert orig["oidc_iss"] == ISSUER  # still owned by the first issuer
+        assert orig["role"] == "admin"
+        newrow = await (await db.execute(
+            "SELECT id, role FROM users WHERE oidc_iss = ? AND oidc_sub = 'legacy-d'",
+            (ISSUER2,))).fetchone()
+        assert newrow is not None
+        assert newrow["id"] != uid
+        assert newrow["role"] == "user"
+
+
 # ── Required-claim enforcement (item 1) ─────────────────────────────────────────
 
 @pytest.mark.asyncio
