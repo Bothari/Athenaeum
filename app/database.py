@@ -177,6 +177,13 @@ async def get_db():
 
 
 async def _run_migrations(db):
+    # Migrations must run with FK enforcement OFF. Table rebuilds (CREATE new →
+    # copy → DROP old → RENAME) fail under foreign_keys=ON whenever another table
+    # holds references to the rebuilt one (e.g. requests.requested_by_user_id →
+    # users.id) — and only on POPULATED databases, so fresh-DB test runs never see
+    # it. Plain connections default to OFF, but get_db() turns it ON: pin it here
+    # so migrations stay correct no matter what connection they are handed.
+    await db.execute("PRAGMA foreign_keys=OFF")
     row = await (await db.execute("PRAGMA user_version")).fetchone()
     current = row[0]
 
