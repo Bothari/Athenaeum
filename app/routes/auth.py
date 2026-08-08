@@ -616,9 +616,20 @@ async def _oidc_callback_inner(request: Request, settings: dict, auth_cfg: dict,
             # Store the email only when verified; otherwise keep it empty so an
             # unverified (attacker-chosen) address never lands in the account.
             stored_email = email if email_verified else ""
-            base_username = (
-                email.split("@")[0] if (email_verified and email) else oidc_sub[:20]
-            )
+            # Username base: verified email local part, else the IdP's
+            # preferred_username, else the opaque sub. preferred_username is
+            # DISPLAY input only — it is attacker-selectable, so it must never
+            # drive account linking (that stays (iss, sub) above); the worst a
+            # squatted name can do is cost the next user a "-2" suffix via the
+            # collision loop in _provision_oidc_user.
+            preferred = claims.get("preferred_username")
+            preferred = preferred.strip() if isinstance(preferred, str) else ""
+            if email_verified and email:
+                base_username = email.split("@")[0]
+            elif preferred:
+                base_username = preferred[:32]
+            else:
+                base_username = oidc_sub[:20]
             user_id = await _provision_oidc_user(
                 db, oidc_iss=oidc_iss, oidc_sub=oidc_sub,
                 base_username=base_username, stored_email=stored_email,

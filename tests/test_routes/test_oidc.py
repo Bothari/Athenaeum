@@ -508,6 +508,85 @@ async def test_adopted_row_not_reclaimable_by_other_issuer(
         assert newrow["role"] == "user"
 
 
+# ── Provisioned username derivation (preferred_username as display base) ────────
+
+@pytest.mark.asyncio
+async def test_provisions_username_from_preferred_username_when_email_unverified(
+        oidc_client, rsa_key_and_jwks, httpx_mock):
+    # Without a verified email the old base was the opaque oidc_sub — a hex account
+    # name on IdPs that don't assert email_verified. preferred_username is a better
+    # DISPLAY base; linking still happens only via (iss, sub).
+    priv_pem, jwks = rsa_key_and_jwks
+    resp = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks,
+                                 sub="pu-sub-1", preferred_username="fabian")
+    assert resp.status_code == 200
+    from app.database import get_db
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT username, email, role FROM users WHERE oidc_sub = 'pu-sub-1'")).fetchone()
+    assert row["username"] == "fabian"
+    assert row["email"] == ""      # email still withheld without email_verified
+    assert row["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_preferred_username_collision_gets_suffix_and_never_links(
+        oidc_client, rsa_key_and_jwks, httpx_mock):
+    # An attacker-selectable preferred_username colliding with an existing local
+    # username must cost only a "-2" suffix — never bind to the local account.
+    priv_pem, jwks = rsa_key_and_jwks
+    await _insert_user("admin", "realadmin@example.com", role="admin")
+    resp = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks,
+                                 sub="pu-sub-2", preferred_username="admin")
+    assert resp.status_code == 200
+    from app.database import get_db
+    async with get_db() as db:
+        local = await (await db.execute(
+            "SELECT oidc_sub, role FROM users WHERE username = 'admin'")).fetchone()
+        provisioned = await (await db.execute(
+            "SELECT username, role FROM users WHERE oidc_sub = 'pu-sub-2'")).fetchone()
+    assert local["oidc_sub"] in (None, "")   # local admin untouched
+    assert local["role"] == "admin"
+    assert provisioned["username"] != "admin"
+    assert provisioned["username"].startswith("admin")  # suffixed, e.g. admin-2
+    assert provisioned["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_non_string_preferred_username_falls_back_to_sub(
+        oidc_client, rsa_key_and_jwks, httpx_mock):
+    # Invariant pin: the output deliberately matches pre-change behaviour — the
+    # value of the test is the type-guard path (a naive .strip() on a non-string
+    # claim would 500 the callback) and freezing the sub fallback.
+    priv_pem, jwks = rsa_key_and_jwks
+    resp = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks,
+                                 sub="pu-sub-3", preferred_username=12345)
+    assert resp.status_code == 200
+    from app.database import get_db
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT username FROM users WHERE oidc_sub = 'pu-sub-3'")).fetchone()
+    assert row["username"] == "pu-sub-3"  # sub[:20] fallback
+
+
+@pytest.mark.asyncio
+async def test_verified_email_still_beats_preferred_username(
+        oidc_client, rsa_key_and_jwks, httpx_mock):
+    # Invariant pin: verified email must keep precedence over preferred_username;
+    # matches pre-change output by design, guards the ordering from regressing.
+    priv_pem, jwks = rsa_key_and_jwks
+    resp = await _complete_login(oidc_client, httpx_mock, priv_pem, jwks,
+                                 sub="pu-sub-4", email="reader@example.com",
+                                 email_verified=True, preferred_username="ignored")
+    assert resp.status_code == 200
+    from app.database import get_db
+    async with get_db() as db:
+        row = await (await db.execute(
+            "SELECT username, email FROM users WHERE oidc_sub = 'pu-sub-4'")).fetchone()
+    assert row["username"] == "reader"
+    assert row["email"] == "reader@example.com"
+
+
 # ── Required-claim enforcement (item 1) ─────────────────────────────────────────
 
 @pytest.mark.asyncio
