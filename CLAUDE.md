@@ -140,6 +140,58 @@ Never use bare `CREATE TABLE IF NOT EXISTS`. All schema changes go through the m
 
 ---
 
+## Frontend (v2)
+
+The UI is being rewritten in Svelte. Stack: SvelteKit 2 + Svelte 5 (runes) +
+TypeScript + `adapter-static` in SPA mode, built by Vite into `static/` and served by
+the existing FastAPI catch-all. No Node server at runtime. No Tailwind — styling uses
+scoped component `<style>` blocks with shared tokens as CSS custom properties in
+`src/app.css`. Full plan in `docs/V2_FRONTEND_PLAN.md`.
+
+### Mobile: never zoom the page on text-field focus
+
+This is a hard requirement, not a preference. It was painful to get right in v1 and
+must not regress.
+
+iOS Safari zooms the viewport when a focused text field's **computed** font-size is
+below 16px. Therefore:
+
+- **Never set `font-size` below 16px on `input`, `select`, `textarea`, or any class
+  applied to one.** This includes rem values that resolve below 16px — `0.9rem` is
+  14.4px and WILL zoom.
+- To make a field look smaller, reduce **padding, height, or width**. Never font-size.
+- **Never** suppress zoom with `user-scalable=no` or `maximum-scale=1` in the viewport
+  meta. That works by disabling pinch-zoom entirely, which breaks accessibility. The
+  font-size approach is the only acceptable fix.
+- Scoped component styles make this more dangerous than in v1: a local rule silently
+  beats the global one in `src/app.css` and nothing warns you.
+- `npm run check:zoom` enforces this and must stay in CI.
+
+v1 hit this repeatedly — `.fmt-narrator-input` and `.search-input-main` each had to
+re-declare `font-size: 16px` after a smaller value crept in. Do not relearn it.
+
+Also keep `touch-action: manipulation` on tappable controls to kill the 300ms
+double-tap-zoom delay.
+
+### No monolith
+
+v1's entire UI was one 4,506-line `static/app.js` with 158 `innerHTML` assignments.
+Avoiding a repeat is a primary goal of the rewrite, not a nice-to-have.
+
+- **One route per file** under `src/routes/`, using SvelteKit's file-based routing.
+  Never a central router or dispatch table.
+- **Any component over ~200 lines is a smell** — extract sub-components. Route files
+  should mostly compose components and handle data loading.
+- **Shared UI goes in `src/lib/components/`** and is reused. If you find yourself
+  writing a second variant of an existing card/table/state component, extend the
+  existing one instead. v1 had three near-duplicate card renderers.
+- **API calls go through `src/lib/api/`**, one module per backend router, with typed
+  responses. Never call `fetch` directly from a component.
+- **Shared state goes in `src/lib/stores/`** using runes. Never module-level mutable
+  `let` bindings as de facto globals, which is how v1 handled auth state.
+
+---
+
 ## Progress Tracking
 
 `docs/PROGRESS.md` tracks build progress against the phases in `PLAN.md`.
