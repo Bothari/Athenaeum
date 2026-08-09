@@ -180,7 +180,11 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    options live in `vite.config.ts` under the `sveltekit()` plugin.
 2. **Shell** — layout, nav, routing, auth guard, API client, toast. Login and
    change-password work end to end. This proves the auth model before anything else.
-3. **Component library** — the §5 primitives, in isolation.
+3. **Component library** — DONE (2026-08-08). The §5 primitives, minus `TryLinkLog`.
+
+   `TryLinkLog` is deliberately deferred to phase 7, where its only consumer
+   (series detail) is ported. It is ~200 lines shaped entirely by that page's
+   needs, and building it blind risks designing the wrong props and rewriting it.
 4. **Small routes** — profile, downloads, books list, authors list, series list,
    dashboard. Cheap, and they exercise the primitives.
 5. **Detail routes** — book detail, author detail.

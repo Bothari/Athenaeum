@@ -17,6 +17,8 @@
 		| 'sun'
 		| 'moon'
 		| 'chevron-down'
+		| 'arrow-up'
+		| 'arrow-down'
 		| 'spinner';
 
 	interface Props {
@@ -96,6 +98,12 @@
 		<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
 	{:else if name === 'chevron-down'}
 		<polyline points="6 9 12 15 18 9" />
+	{:else if name === 'arrow-up'}
+		<line x1="12" y1="19" x2="12" y2="5" />
+		<polyline points="5 12 12 5 19 12" />
+	{:else if name === 'arrow-down'}
+		<line x1="12" y1="5" x2="12" y2="19" />
+		<polyline points="19 12 12 19 5 12" />
 	{:else if name === 'spinner'}
 		<path d="M21 12a9 9 0 1 1-6.219-8.56" />
 	{/if}
