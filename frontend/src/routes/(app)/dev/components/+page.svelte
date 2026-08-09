@@ -230,8 +230,4 @@
 		color: var(--accent);
 	}
 
-	td {
-		padding: 0.5rem;
-		border-bottom: 1px solid var(--border);
-	}
 </style>

@@ -36,6 +36,33 @@ export interface AuthorCardData {
 	book_count?: number;
 }
 
+/** Hardcover linkage, present on list rows. Empty ids mean "not linked". */
+export interface AuthorLink {
+	hardcover_author_id?: string | null;
+	hardcover_author_slug?: string | null;
+}
+
+export interface SeriesLink {
+	hardcover_series_id?: string | null;
+	hardcover_series_slug?: string | null;
+}
+
+/** GET /api/books — extends the card shape with what the table column needs. */
+export interface BookListItem extends BookCardData {
+	updated_at?: string;
+	link?: { abs_id?: string | null; hardcover_id?: string | null };
+}
+
+/** GET /api/authors */
+export interface AuthorListItem extends AuthorCardData {
+	link?: AuthorLink;
+}
+
+/** GET /api/series */
+export interface SeriesListItem extends SeriesCardData {
+	link?: SeriesLink;
+}
+
 export interface SeriesCardData {
 	id: string;
 	name: string;

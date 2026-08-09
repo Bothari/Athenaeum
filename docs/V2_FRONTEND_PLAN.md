@@ -185,8 +185,12 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    `TryLinkLog` is deliberately deferred to phase 7, where its only consumer
    (series detail) is ported. It is ~200 lines shaped entirely by that page's
    needs, and building it blind risks designing the wrong props and rewriting it.
-4. **Small routes** — profile, downloads, books list, authors list, series list,
-   dashboard. Cheap, and they exercise the primitives.
+4. **Small routes** — DONE (2026-08-09). Profile, downloads, books/authors/series
+   lists, dashboard.
+
+   Not ported: the series list's scroll restoration, which in v1 stashed
+   `{scrollY, count}` in sessionStorage and re-fetched pages until the count was
+   reached. Revisit once the series detail route exists to navigate back from.
 5. **Detail routes** — book detail, author detail.
 6. **Requests** (459 LOC) — first genuinely complex one.
 7. **Series detail** (879 LOC) — pack search and download flows.

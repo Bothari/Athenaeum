@@ -92,7 +92,13 @@ const ROW_COUNT = 137;
 
 const allRows: DemoRow[] = Array.from({ length: ROW_COUNT }, (_, i) => ({
 	title: `Demo row ${i + 1}`,
-	author: `Author ${String.fromCharCode(65 + (i % 26))}`,
+	// Every fifth row carries a long author list so cells wrap to several lines.
+	// Uniform short cells hid a row-alignment bug that only appeared on mobile:
+	// fixtures must include the ragged case, not just the tidy one.
+	author:
+		i % 5 === 0
+			? `Author ${String.fromCharCode(65 + (i % 26))}, Second Contributor, Third Collaborator`
+			: `Author ${String.fromCharCode(65 + (i % 26))}`,
 	year: 1970 + (i % 55)
 }));
 
