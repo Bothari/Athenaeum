@@ -210,10 +210,9 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
      changes) and `renderProwlarrResults`. Shared with `/requests`, so worth
      doing alongside phase 6.
 
-6.5. **Home / search** — MISSING FROM THE ORIGINAL PLAN. The `/` route (160
-   lines) plus the request card it shares with author detail's "Also by" section
-   (`populateBookCard` 75 + `buildFormatRows` 131). Must be scheduled; author
-   detail is incomplete until it exists.
+6.5. **Home / search** — DONE (2026-08-09). Was missing from the original plan.
+   The `/` route plus `SearchCard` and `FormatPills` (`populateBookCard` +
+   `buildFormatRows`), including the author/series id pivots.
 6. **Requests** (459 LOC) — first genuinely complex one.
 7. **Series detail** (879 LOC) — pack search and download flows.
 8. **Settings** (1,151 LOC) — tab by tab; leave for last, it is mostly forms and the
@@ -223,6 +222,22 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
 
 Phases 1–3 are the ones worth getting right slowly; 4–8 are largely mechanical once
 the primitives exist.
+
+## 8b. Outstanding stubs
+
+Things the UI currently labels as unfinished. Each is small on its own, which is
+exactly why they need writing down.
+
+- **"Also by this Author"** on `/library/authors/[id]`. The page shows a
+  placeholder line instead of the section. Everything it needs now exists: call
+  `GET /api/authors/{id}/also-by` and render each item with `SearchCard`. v1
+  showed "You already have everything. True super fan status achieved." for an
+  empty result, and "Could not reach Hardcover to check for more books." on
+  failure — both worth keeping. Blocked on nothing; do it before cutover.
+
+- **Series list scroll restoration.** v1 stashed `{scrollY, count}` in
+  sessionStorage on click and re-fetched pages until the count was reached.
+  Revisit once series detail exists to navigate back from (phase 7).
 
 ## 9. Open decisions
 

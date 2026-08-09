@@ -54,6 +54,14 @@ body {
 	font-family: system-ui, -apple-system, sans-serif;
 	line-height: 1.5;
 	min-height: 100vh;
+	/*
+	 * Much of what this app renders is third-party metadata, and Hardcover data is
+	 * not always sane — a title once arrived as a whole CSV row with comma-joined
+	 * URLs, one unbreakable token wider than the viewport, which dragged the page
+	 * sideways. Breaking long words by default keeps bad data contained; anything
+	 * that must not break can opt out locally.
+	 */
+	overflow-wrap: break-word;
 }
 
 a {
