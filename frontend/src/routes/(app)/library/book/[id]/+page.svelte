@@ -1,14 +1,20 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import Badge from '$lib/components/Badge.svelte';
-	import type { BadgeVariant } from '$lib/components/Badge.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
+	import FormatRow from '$lib/components/FormatRow.svelte';
 	import HardcoverCard from '$lib/components/HardcoverCard.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import LoadingState from '$lib/components/LoadingState.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { getBook, hardcoverUrl } from '$lib/api/books';
-	import type { BookDetail, BookSeriesRef } from '$lib/types/detail';
+	import type { FormatType } from '$lib/types/library';
+	import type {
+		BookDetail,
+		BookFormatDetail,
+		BookRequestDetail,
+		BookSeriesRef
+	} from '$lib/types/detail';
 
 	const bookId = $derived(page.params.id!);
 
@@ -53,6 +59,65 @@
 	}
 
 	const release = $derived(releaseInfo(book?.release_date));
+
+	/**
+	 * One row per held format, then any request for a format/narrator combination
+	 * not already held, then a placeholder for each type still missing entirely.
+	 * Ported from v1's renderDetailFormats, keyed on type+narrator so a book held
+	 * in two narrations shows both.
+	 */
+	const formatRows = $derived.by(() => {
+		const rows: {
+			key: string;
+			type: FormatType;
+			status: string;
+			narrator: string | null;
+			format: BookFormatDetail | null;
+			request: BookRequestDetail | null;
+		}[] = [];
+		const seen = new Set<string>();
+		const key = (t: string, n?: string | null) => `${t}::${n || ''}`;
+
+		for (const f of book?.formats ?? []) {
+			seen.add(key(f.type, f.narrator));
+			rows.push({
+				key: key(f.type, f.narrator),
+				type: f.type,
+				status: 'in_library',
+				narrator: f.narrator || null,
+				format: f,
+				request: null
+			});
+		}
+
+		for (const r of book?.requests ?? []) {
+			if (seen.has(key(r.type, r.narrator))) continue;
+			seen.add(key(r.type, r.narrator));
+			rows.push({
+				key: key(r.type, r.narrator),
+				type: r.type,
+				status: r.status,
+				narrator: r.narrator || null,
+				format: null,
+				request: r
+			});
+		}
+
+		for (const type of ['ebook', 'audiobook'] as FormatType[]) {
+			if (!rows.some((r) => r.type === type)) {
+				rows.push({
+					key: key(type),
+					type,
+					status: 'missing',
+					narrator: null,
+					format: null,
+					request: null
+				});
+			}
+		}
+
+		return rows;
+	});
 </script>
 
 {#if failed}
@@ -121,43 +186,18 @@
 
 	<h2 class="section">Formats</h2>
 	<div class="formats">
-		{#each book.formats ?? [] as format (format.id)}
-			<div class="format">
-				<Badge variant="completed" title="In library">
-					<Icon name={format.type === 'audiobook' ? 'audiobook' : 'ebook'} size={12} />
-				</Badge>
-				<span class="type">{format.type === 'audiobook' ? 'Audiobook' : 'Ebook'}</span>
-				{#if format.narrator}<span class="narrator">{format.narrator}</span>{/if}
-				{#if format.abs_url}
-					<a class="abs" href={format.abs_url} target="_blank" rel="noreferrer">Listen</a>
-				{/if}
-			</div>
-		{/each}
-
-		{#each book.requests ?? [] as req (req.id)}
-			<div class="format">
-				<Badge variant={req.status as BadgeVariant} title={req.status}>
-					<Icon name={req.type === 'audiobook' ? 'audiobook' : 'ebook'} size={12} />
-				</Badge>
-				<span class="type">{req.type === 'audiobook' ? 'Audiobook' : 'Ebook'}</span>
-				{#if req.narrator}<span class="narrator">{req.narrator}</span>{/if}
-				<span class="faint">{req.status}</span>
-			</div>
-		{/each}
-
-		{#each ['ebook', 'audiobook'] as const as type (type)}
-			{#if !book.formats?.some((f) => f.type === type) && !book.requests?.some((r) => r.type === type)}
-				<div class="format missing">
-					<Badge variant="neutral" title="missing">
-						<Icon name={type === 'audiobook' ? 'audiobook' : 'ebook'} size={12} />
-					</Badge>
-					<span class="type">{type === 'audiobook' ? 'Audiobook' : 'Ebook'}</span>
-					<span class="faint">not in library</span>
-				</div>
-			{/if}
+		{#each formatRows as fmtRow (fmtRow.key)}
+			<FormatRow
+				{bookId}
+				type={fmtRow.type}
+				status={fmtRow.status}
+				narrator={fmtRow.narrator}
+				format={fmtRow.format}
+				request={fmtRow.request}
+				onrefresh={load}
+			/>
 		{/each}
 	</div>
-	<p class="deferred">Per-format search and download arrive in phase 5b.</p>
 
 	<HardcoverCard
 		type="book"
@@ -237,41 +277,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
-	}
-
-	.format {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: 0.5rem 0.75rem;
-		font-size: 0.875rem;
-	}
-
-	.format.missing {
-		opacity: 0.65;
-	}
-
-	.type {
-		font-weight: 500;
-	}
-
-	.narrator {
-		color: var(--text-dim);
-		font-size: 0.8rem;
-	}
-
-	.abs {
-		margin-left: auto;
-		font-size: 0.8rem;
-	}
-
-	.deferred {
-		margin-top: 0.5rem;
-		font-size: 0.78rem;
-		color: var(--text-dim);
 	}
 
 	@media (max-width: 640px) {

@@ -143,7 +143,9 @@
 		</div>
 	{/if}
 
-	<p class="deferred">"Also by this Author" arrives with the search card in phase 5b.</p>
+	<p class="deferred">
+		"Also by this Author" arrives with the search card, in the home/search phase.
+	</p>
 
 	<HardcoverCard
 		type="author"
