@@ -129,8 +129,16 @@
 
 	<div class="card">
 		<div class="detail">
+			<!-- Only ABS-sourced covers follow the library's aspect ratio; Hardcover
+			     art is always 2:3. Same distinction v1 drew with .abs-cover. -->
 			{#if book.cover_url}
-				<img class="cover" src={book.cover_url} alt="" loading="lazy" />
+				<img
+					class="cover"
+					class:abs-cover={book.cover_url.startsWith('/api/abs/')}
+					src={book.cover_url}
+					alt=""
+					loading="lazy"
+				/>
 			{:else}
 				<div class="cover placeholder"><Icon name="ebook" size={40} /></div>
 			{/if}
@@ -223,11 +231,19 @@
 
 	.cover {
 		width: 120px;
+		min-width: 120px;
 		flex-shrink: 0;
 		aspect-ratio: 2/3;
 		object-fit: cover;
 		border-radius: var(--radius);
 		background: var(--surface2);
+		/*
+		 * Required, not cosmetic. The parent is a flex row and align-items defaults
+		 * to stretch, which sets this item's height from the row rather than from
+		 * aspect-ratio — so the cover renders at whatever height the metadata
+		 * column happens to be and the ratio is ignored entirely.
+		 */
+		align-self: flex-start;
 	}
 
 	.cover.placeholder {
@@ -235,6 +251,11 @@
 		align-items: center;
 		justify-content: center;
 		color: var(--text-dim);
+	}
+
+	/* Set from the ABS library's coverAspectRatio — see stores/covers.svelte.ts. */
+	:global(body.square-covers) .cover.abs-cover {
+		aspect-ratio: 1 / 1;
 	}
 
 	.meta {

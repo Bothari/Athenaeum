@@ -214,7 +214,14 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    The `/` route plus `SearchCard` and `FormatPills` (`populateBookCard` +
    `buildFormatRows`), including the author/series id pivots.
 6. **Requests** (459 LOC) — first genuinely complex one.
-7. **Series detail** (879 LOC) — pack search and download flows.
+7. **Series detail** — DONE (2026-08-09). Books list (list/poster with position
+   badges), missing/upcoming sections with "add to this series", the series pack
+   flow (search, download, mapping review, organise) and Hardcover linking.
+
+   Came in cheaper than its 879 lines suggested, unlike phase 5: every helper it
+   calls — DetailStats, HardcoverCard, SearchCard, BookCard, ProwlarrResults —
+   already existed, so the route was almost entirely its own logic. Sizing by
+   handler length is only misleading when the helpers are unported.
 8. **Settings** (1,151 LOC) — tab by tab; leave for last, it is mostly forms and the
    most mechanical.
 9. **Cutover** — Dockerfile build stage, delete `static/app.js` + `style.css`,

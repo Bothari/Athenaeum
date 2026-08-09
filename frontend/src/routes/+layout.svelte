@@ -2,6 +2,7 @@
 	import '../app.css';
 	import Toast from '$lib/components/Toast.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { covers } from '$lib/stores/covers.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
 
 	let { children } = $props();
@@ -11,6 +12,8 @@
 	$effect(() => {
 		theme.init();
 		auth.load();
+		// Cover aspect ratio comes from the ABS library settings.
+		covers.init();
 	});
 </script>
 

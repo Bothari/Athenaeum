@@ -144,6 +144,9 @@
 	.cover-link {
 		flex-shrink: 0;
 		display: block;
+		/* Without this the flex row stretches the link past the cover, making the
+		   click target taller than what it looks like. */
+		align-self: flex-start;
 	}
 
 	.cover {
