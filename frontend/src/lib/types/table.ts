@@ -4,6 +4,9 @@ export interface Column {
 	/** Defaults to true, matching v1 where sortable was opt-out. */
 	sortable?: boolean;
 	width?: string;
+	/** Hides the header below 640px. The row snippet must hide its matching cell
+	 *  too, or the columns misalign. */
+	hideOnMobile?: boolean;
 }
 
 export interface PageParams {

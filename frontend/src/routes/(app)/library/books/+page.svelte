@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
+	import { setSearchParam } from '$lib/url';
 	import Badge from '$lib/components/Badge.svelte';
 	import type { BadgeVariant } from '$lib/components/Badge.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
@@ -20,10 +20,7 @@
 	const unlinked = $derived(page.url.searchParams.get('unlinked') === '1');
 
 	function setUnlinked(value: boolean) {
-		const params = new URLSearchParams(page.url.searchParams);
-		if (value) params.set('unlinked', '1');
-		else params.delete('unlinked');
-		replaceState(`${page.url.pathname}?${params}`, page.state);
+		setSearchParam('unlinked', value ? '1' : null);
 	}
 
 	function fetchPage(params: PageParams) {

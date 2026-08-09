@@ -34,4 +34,8 @@ export interface DownloadItem {
 	eta?: number | string | null;
 	speed?: number | null;
 	size?: number | null;
+	/** The grabbed release's name, shown on the queue's Downloads tab. */
+	release_title?: string | null;
+	indexer?: string | null;
+	request_id?: string | null;
 }

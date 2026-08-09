@@ -1,9 +1,12 @@
 import { request } from './client';
 import type { FormatType } from '$lib/types/library';
+import type { PageParams, PageResult } from '$lib/types/table';
 import type {
 	CreateRequestResult,
 	HistoryEvent,
 	IndexerResult,
+	PendingGroup,
+	RequestListItem,
 	SearchIndexersResult
 } from '$lib/types/requests';
 
@@ -50,4 +53,49 @@ export function downloadResult(id: string, result: IndexerResult): Promise<unkno
 
 export function getRequestHistory(bookId: string): Promise<HistoryEvent[]> {
 	return request<HistoryEvent[]>(`/books/${bookId}/request-history`);
+}
+
+export interface ListRequestsQuery extends Partial<PageParams> {
+	status?: string;
+	type?: string;
+}
+
+export function listRequests(params: ListRequestsQuery): Promise<PageResult<RequestListItem>> {
+	const q = new URLSearchParams();
+	if (params.q) q.set('q', params.q);
+	if (params.sort) q.set('sort', params.sort);
+	if (params.dir) q.set('dir', params.dir);
+	if (params.limit != null) q.set('limit', String(params.limit));
+	if (params.offset != null) q.set('offset', String(params.offset));
+	if (params.status) q.set('status', params.status);
+	if (params.type) q.set('type', params.type);
+	return request<PageResult<RequestListItem>>(`/requests?${q}`);
+}
+
+export function getPending(): Promise<{ groups: PendingGroup[] }> {
+	return request<{ groups: PendingGroup[] }>('/requests/pending');
+}
+
+/** Approving takes the format list, so an admin can add a format the user did
+ *  not ask for. */
+export function approveBook(bookId: string, types: string[]): Promise<unknown> {
+	return request<unknown>(`/requests/book/${bookId}/approve`, { method: 'POST', body: { types } });
+}
+
+export function rejectBook(bookId: string): Promise<unknown> {
+	return request<unknown>(`/requests/book/${bookId}/reject`, { method: 'POST' });
+}
+
+export function retryFailed(): Promise<{ count: number }> {
+	return request<{ count: number }>('/requests/retry-failed', { method: 'POST' });
+}
+
+export interface ManualRequestBody {
+	title: string;
+	author: string;
+	type: FormatType;
+}
+
+export function createManualRequest(body: ManualRequestBody): Promise<{ book_id: string }> {
+	return request<{ book_id: string }>('/requests/manual', { method: 'POST', body });
 }

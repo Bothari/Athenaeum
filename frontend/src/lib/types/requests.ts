@@ -27,6 +27,39 @@ export interface SearchIndexersResult {
 	error?: string | null;
 }
 
+/** GET /api/requests */
+export interface RequestListItem {
+	id: string;
+	book_id: string;
+	book_title?: string | null;
+	/** Some endpoints use `title` instead. */
+	title?: string | null;
+	author?: string | null;
+	type: FormatType;
+	status: string;
+	narrator?: string | null;
+	release_date?: string | null;
+	/** True once Hardcover has been asked; with a null date it means "no date
+	 *  exists", which is different from "not looked up yet". */
+	release_date_fetched?: boolean;
+	created_at?: string | null;
+	requested_by_user_id?: string | null;
+	requested_by_username?: string | null;
+}
+
+/** One book's worth of pending requests, from GET /api/requests/pending. */
+export interface PendingGroup {
+	book_id: string;
+	book_title: string;
+	author?: string | null;
+	requests: {
+		id: string;
+		type: FormatType;
+		created_at: string;
+		requested_by?: string | null;
+	}[];
+}
+
 export type HistoryEventType =
 	| 'created'
 	| 'state_change'
