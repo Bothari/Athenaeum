@@ -86,11 +86,16 @@ Tags follow semver (`major.minor.patch`) with `-beta.N` pre-release suffixes whi
 
 ## Git Commits
 
-All commits must end with:
+All commits must end with a co-author trailer naming the model that actually wrote
+the commit:
 
 ```
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Co-Authored-By: <model name> <noreply@anthropic.com>
 ```
+
+For example `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`. Use your own
+model name — do not copy a name from an older commit, and never attribute work to a
+model that did not write it.
 
 Commit messages should be concise and describe *why*, not just *what*.
 Use present tense. Example: "Add WAL mode to prevent database locking under load"
@@ -207,5 +212,8 @@ Keep entries concise. The git log has the detail; PROGRESS.md is the at-a-glance
 
 ## Attribution
 
-This project is being developed with Claude Code (Claude Sonnet 4.6).
+This project is being developed with Claude Code, across successive Claude models.
+Per-commit attribution lives in the git log's co-author trailers, which is the
+authoritative record — this file does not name a specific model.
+
 The development process — including the original spec, adversarial review, and review-driven amendments — is documented in `docs/`.
