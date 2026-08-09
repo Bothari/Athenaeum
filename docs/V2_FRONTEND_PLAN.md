@@ -191,7 +191,29 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    Not ported: the series list's scroll restoration, which in v1 stashed
    `{scrollY, count}` in sessionStorage and re-fetched pages until the count was
    reached. Revisit once the series detail route exists to navigate back from.
-5. **Detail routes** — book detail, author detail.
+5. **Detail routes** — split, because the original sizing was wrong.
+
+   §4's table sized routes by their handler length and ignored the shared helpers
+   they call. Book detail is really ~712 lines of v1 (handler 157 +
+   `renderDetailFormatContent` 225 + `setupHcCard` 155 + `renderDetailFormats` 75
+   + `renderProwlarrResults` 56 + `renderTryLinkLog` 44), and author detail adds
+   ~350. That is larger than `/settings`, which was scheduled last as the big one.
+   Series detail in phase 7 is underestimated the same way.
+
+   - **5a — DONE (2026-08-09).** Book detail (info card, format summary) and
+     author detail (list/poster views, sorting), plus `HardcoverCard` and
+     `TryLinkCandidates` — the `setupHcCard`/`renderTryLinkLog` port, shared by
+     book, author and series detail. Moved forward from phase 7, where it was
+     wrongly parked as having no consumer yet.
+   - **5b — TODO.** The per-format interaction surface:
+     `renderDetailFormatContent` (indexer search, download, request state
+     changes) and `renderProwlarrResults`. Shared with `/requests`, so worth
+     doing alongside phase 6.
+
+6.5. **Home / search** — MISSING FROM THE ORIGINAL PLAN. The `/` route (160
+   lines) plus the request card it shares with author detail's "Also by" section
+   (`populateBookCard` 75 + `buildFormatRows` 131). Must be scheduled; author
+   detail is incomplete until it exists.
 6. **Requests** (459 LOC) — first genuinely complex one.
 7. **Series detail** (879 LOC) — pack search and download flows.
 8. **Settings** (1,151 LOC) — tab by tab; leave for last, it is mostly forms and the
