@@ -4,6 +4,7 @@
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import LoadingState from '$lib/components/LoadingState.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
+	import AuthTab from '$lib/components/settings/AuthTab.svelte';
 	import DownloadersTab from '$lib/components/settings/DownloadersTab.svelte';
 	import RankingEditor from '$lib/components/settings/RankingEditor.svelte';
 	import SettingsForm from '$lib/components/settings/SettingsForm.svelte';
@@ -22,7 +23,6 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import type { AppSettings, RankingCriterion } from '$lib/types/settings';
 
-	/** Auth is deliberately absent — it lands in phase 8b with user management. */
 	const TABS = [
 		'General',
 		'ABS',
@@ -30,7 +30,8 @@
 		'Downloads',
 		'Hardcover',
 		'Notifications',
-		'Tasks'
+		'Tasks',
+		'Auth'
 	] as const;
 	type Tab = (typeof TABS)[number];
 
@@ -172,8 +173,10 @@
 		initial={settings.notifications ?? {}}
 		test="notifications"
 	/>
-{:else}
+{:else if tab === 'Tasks'}
 	<TasksTab initial={settings.schedule ?? {}} />
+{:else}
+	<AuthTab {settings} />
 {/if}
 
 <style>

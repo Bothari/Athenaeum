@@ -50,28 +50,38 @@
 </button>
 
 <style>
+	/*
+	 * A real button, not a link. It previously had no background and a transparent
+	 * border, so the first click armed it and the 4s timeout disarmed it — which
+	 * from the outside is indistinguishable from the button doing nothing.
+	 *
+	 * Sizing matches the app's small-button convention so it lines up with
+	 * siblings; it was visibly shorter than the buttons beside it.
+	 */
 	button {
-		padding: 0.15rem 0.5rem;
-		font-size: 0.8rem;
-		background: none;
-		border: 1px solid transparent;
-		border-radius: var(--radius);
-		color: var(--text-dim);
-		white-space: nowrap;
-	}
-
-	button:hover:not(:disabled) {
+		padding: 0.3rem 0.7rem;
+		font-size: 0.85rem;
+		background: var(--surface2);
 		color: var(--text);
-		border-color: var(--border);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		white-space: nowrap;
 	}
 
 	button.danger {
 		color: var(--red);
+		border-color: color-mix(in srgb, var(--red) 40%, transparent);
 	}
 
+	button:hover:not(:disabled) {
+		border-color: currentColor;
+	}
+
+	/* Armed: unmistakably different, and the label says what a second tap does. */
 	button.pending {
-		color: var(--yellow);
-		border-color: var(--yellow);
+		background: var(--red);
+		border-color: var(--red);
+		color: #fff;
 	}
 
 	button:disabled {

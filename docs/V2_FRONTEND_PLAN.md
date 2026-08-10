@@ -251,6 +251,30 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
 
    None of these are regressions from the port — all pre-date it. v2 deliberately
    builds no UI for any of them.
+
+   **Deleting a user with requests returns a 500.** Also pre-existing — v1 hit the
+   same failure. `requests.requested_by_user_id` references `users(id)` with
+   `ON DELETE NO ACTION`, so SQLite refuses the delete and the uncaught
+   `IntegrityError` surfaces as a bare 500 from
+   `app/routes/auth.py` → `delete_user`. Any user who has ever made a request is
+   therefore undeletable; on the dev clone that is three of five accounts.
+
+   Agreed fix: **orphan the requests**. Inside the same transaction, before the
+   delete:
+
+   ```sql
+   UPDATE requests SET requested_by_user_id = NULL WHERE requested_by_user_id = ?
+   ```
+
+   Chosen over cascading the requests away because a request's value does not
+   depend on who asked for it, and those requests may have produced books still
+   in the library. No schema migration is needed — the column is already
+   nullable, so this needs no `ON DELETE` change and no table rebuild (SQLite
+   cannot alter a foreign key in place).
+
+   Also wrap the delete so an `IntegrityError` returns a 4xx with a readable
+   message rather than a 500. The bare 500 is what made a backend constraint look
+   like a broken button.
 9. **Cutover** — Dockerfile build stage, delete `static/app.js` + `style.css`,
    point prod at the new build.
 
