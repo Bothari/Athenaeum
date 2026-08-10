@@ -1,5 +1,8 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
+	import { restoreScrollPosition, saveScroll, takeScroll } from '$lib/scroll';
 	import DetailStats from '$lib/components/DetailStats.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import HardcoverCard from '$lib/components/HardcoverCard.svelte';
@@ -51,9 +54,22 @@
 		}
 	}
 
+	// Not paginated, so only the position matters — but the page is empty until
+	// the fetch resolves, which is why the browser's own restoration lands at the
+	// top and this has to wait for the data.
+	const scrollKey = untrack(() => page.url.pathname);
+	let pendingRestore = takeScroll(scrollKey);
+
+	beforeNavigate(() => saveScroll(scrollKey));
+
 	$effect(() => {
 		void seriesId;
-		load();
+		load().then(() => {
+			if (!pendingRestore) return;
+			const { y } = pendingRestore;
+			pendingRestore = null;
+			restoreScrollPosition(y);
+		});
 	});
 
 	$effect(() => {

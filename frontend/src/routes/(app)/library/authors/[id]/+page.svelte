@@ -1,5 +1,9 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
+	import { restoreScrollPosition, saveScroll, takeScroll } from '$lib/scroll';
+	import AlsoBySection from '$lib/components/AlsoBySection.svelte';
 	import BookCard from '$lib/components/BookCard.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
@@ -41,9 +45,22 @@
 		}
 	}
 
+	// Not paginated, so only the position matters — but the page is empty until
+	// the fetch resolves, which is why the browser's own restoration lands at the
+	// top and this has to wait for the data.
+	const scrollKey = untrack(() => page.url.pathname);
+	let pendingRestore = takeScroll(scrollKey);
+
+	beforeNavigate(() => saveScroll(scrollKey));
+
 	$effect(() => {
 		void authorId;
-		load();
+		load().then(() => {
+			if (!pendingRestore) return;
+			const { y } = pendingRestore;
+			pendingRestore = null;
+			restoreScrollPosition(y);
+		});
 	});
 
 	$effect(() => {
@@ -143,9 +160,7 @@
 		</div>
 	{/if}
 
-	<p class="deferred">
-		"Also by this Author" arrives with the search card, in the home/search phase.
-	</p>
+	<AlsoBySection {authorId} />
 
 	<HardcoverCard
 		type="author"
@@ -226,9 +241,4 @@
 		gap: 1rem;
 	}
 
-	.deferred {
-		margin-top: 1rem;
-		font-size: 0.78rem;
-		color: var(--text-dim);
-	}
 </style>

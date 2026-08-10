@@ -1,5 +1,6 @@
 import { request } from './client';
 import type { BookDetail } from '$lib/types/detail';
+import type { SearchResult } from '$lib/types/search';
 
 export function getBook(id: string): Promise<BookDetail> {
 	return request<BookDetail>(`/books/${id}`);
@@ -17,6 +18,19 @@ export function refreshHardcover(
 /** Returns a bare array, not a paged envelope. */
 export function getAuthorBooks(authorId: string): Promise<BookDetail[]> {
 	return request<BookDetail[]>(`/authors/${authorId}/books`);
+}
+
+/**
+ * Books by this author that are not in the library, per Hardcover. Returns
+ * search-shaped results so they render with SearchCard. `error` is set when
+ * Hardcover could not be reached.
+ */
+export function getAlsoBy(
+	authorId: string
+): Promise<{ items?: SearchResult[]; error?: string | null }> {
+	return request<{ items?: SearchResult[]; error?: string | null }>(
+		`/authors/${authorId}/also-by`
+	);
 }
 
 export const HC_BASE: Record<string, string> = {
