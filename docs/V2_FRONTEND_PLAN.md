@@ -222,8 +222,35 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    calls — DetailStats, HardcoverCard, SearchCard, BookCard, ProwlarrResults —
    already existed, so the route was almost entirely its own logic. Sizing by
    handler length is only misleading when the helpers are unported.
-8. **Settings** (1,151 LOC) — tab by tab; leave for last, it is mostly forms and the
-   most mechanical.
+8. **Settings** (1,151 LOC) — a deliberate rewrite, not a line-by-line port. Field
+   checklist and structure in `docs/V2_SETTINGS_INVENTORY.md`.
+
+   - **8a.** General, ABS, Prowlarr, Downloads, Hardcover, Notifications, Tasks.
+   - **8b.** Auth (523 LOC) as its own step: it carries user management —
+     create, delete, role changes, password resets — which is the
+     highest-consequence surface in the app and should not ride along with six
+     form tabs.
+
+8c. **Dead settings keys** — BACKEND WORK, not part of the frontend rewrite.
+   Five stored keys are read by nothing (see the inventory §3). Two are actively
+   misleading and should be fixed at the source rather than papered over in the
+   UI:
+
+   - `prowlarr.tags` (plural) is in `DEFAULT_SETTINGS` but the backend reads the
+     singular `prowlarr.tag` (`app/services/download_clients.py:230`). Editing
+     the wrong one silently does nothing.
+   - `auto_search.enabled` is never read; `auto_search.py` uses `max_attempts`,
+     `min_seeders` and `ranking` only. Auto-search is gated by
+     `schedule.auto_search` instead.
+
+   The other three are merely inert and can be dropped whenever convenient:
+   `audiobookshelf.square_book_covers` (cover shape comes from the ABS library's
+   own `coverAspectRatio`), `general.group_series_in_search`, and
+   `pushover.app_token` / `pushover.user_key` (superseded by
+   `notifications.urls`).
+
+   None of these are regressions from the port — all pre-date it. v2 deliberately
+   builds no UI for any of them.
 9. **Cutover** — Dockerfile build stage, delete `static/app.js` + `style.css`,
    point prod at the new build.
 
