@@ -41,7 +41,8 @@ Everything below must exist in v2. Types are as v1 renders them.
 **ABS** — `url`, `internal_url`, `api_key`, `library_id` (multi-select, custom
 UI), plus a Test Connection button
 
-**Prowlarr** — `url`, `api_key`, `tag` (indexer tag filter), Test Connection
+**Prowlarr** — `url`, `api_key`, `tags` (indexer tag filter, multiple), Test
+Connection
 
 **Downloads** — the `downloaders` array (add/remove/edit entries of type
 qbittorrent, sabnzbd, deluge; per-entry test), plus auto-search settings:
@@ -73,15 +74,18 @@ the rewrite is a good moment to decide about them.
 | `audiobookshelf.square_book_covers` | `true` | Misleading. Cover shape actually comes from the ABS library's own `coverAspectRatio` via `/abs/library-settings`; this key does nothing. |
 | `general.group_series_in_search` | `true` | Reads like a real feature toggle. Nothing implements it. |
 | `pushover.app_token`, `pushover.user_key` | `""` | Superseded by `notifications.urls`, which carries a `pover://` URL. |
-| `prowlarr.tags` | `["books"]` | The backend reads the **singular** `prowlarr.tag` (`app/services/download_clients.py:230`). The plural is in `DEFAULT_SETTINGS` and is never read — easy to edit the wrong one. |
 | `auto_search.enabled` | `false` | `auto_search.py` reads `max_attempts`, `min_seeders` and `ranking` from `auto_cfg`, never `enabled`. Scheduling is what actually gates auto-search, via `schedule.auto_search`. |
 
 **Correctly hidden:** `auth.session_secret` — internal, must never be editable.
 
-Recommendation: leave the values alone for now (removing keys is a backend
+`prowlarr.tags` was on this list and has since been **fixed rather than removed**:
+the backend now reads the plural, supports several tags, and falls back to the
+singular `tag` for existing configs. The settings UI edits `tags`.
+
+Recommendation: leave the remaining values alone for now (removing keys is a backend
 change, out of scope for a frontend phase) but do **not** build UI for them, and
-raise `prowlarr.tags` and `auto_search.enabled` separately — those two are
-actively misleading, since a plausible-looking setting silently does nothing.
+raise `auto_search.enabled` separately — it is actively misleading, since a
+plausible-looking setting silently does nothing.
 
 ## 4. Proposed structure
 

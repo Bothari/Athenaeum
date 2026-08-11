@@ -59,9 +59,10 @@ export const PROWLARR_FIELDS: FieldSpec[] = [
 	{ key: 'url', label: 'URL' },
 	{ key: 'api_key', label: 'API Key', type: 'password' },
 	{
-		key: 'tag',
+		key: 'tags',
 		label: 'Indexer tag filter',
-		hint: 'e.g. books — only search indexers with this tag'
+		type: 'csv',
+		hint: 'Comma-separated — only search indexers carrying any of these tags. e.g. books, audiobooks. Leave empty to search all indexers.'
 	}
 ];
 
