@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import secrets
+import sqlite3
 import time
 import uuid
 from urllib.parse import urlencode
@@ -446,8 +447,25 @@ async def delete_user(user_id: str, auth: dict = Depends(require_admin)):
         row = await (await db.execute("SELECT id FROM users WHERE id = ?", (user_id,))).fetchone()
         if not row:
             raise HTTPException(404, "User not found")
-        await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        await db.commit()
+        try:
+            # requests.requested_by_user_id references users(id) with ON DELETE
+            # NO ACTION, so deleting anyone who has ever made a request fails on a
+            # foreign key. Orphan those requests rather than cascading them away:
+            # a request's value does not depend on who asked for it, and the books
+            # it produced may still be in the library. The column is nullable, so
+            # this needs no schema change.
+            await db.execute(
+                "UPDATE requests SET requested_by_user_id = NULL WHERE requested_by_user_id = ?",
+                (user_id,),
+            )
+            await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            await db.commit()
+        except sqlite3.IntegrityError as e:
+            # Anything still referencing the user surfaces as a readable 409
+            # rather than an unhandled 500.
+            await db.rollback()
+            logger.warning("delete_user %s blocked by integrity constraint: %s", user_id, e)
+            raise HTTPException(409, "User still has linked records and cannot be deleted")
     return {"ok": True}
 
 
