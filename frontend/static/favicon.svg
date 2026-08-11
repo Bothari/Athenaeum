@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+	<title>Athenaeum</title>
+	<!-- Solid accent tile rather than a bare outline: a favicon renders at 16px against
+	     browser chrome of unknown colour, where a stroke-only mark disappears. -->
+	<rect width="32" height="32" rx="7" fill="#c4622d" />
+	<!-- The 'library' glyph from Icon.svelte, drawn on its native 24 grid and scaled
+	     to fit. Stroke is heavier than the 1.5 used in the UI so it survives 16px. -->
+	<g
+		transform="translate(6 6) scale(0.8333)"
+		fill="none"
+		stroke="#fff"
+		stroke-width="2.4"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+	>
+		<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+		<path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+	</g>
+</svg>
