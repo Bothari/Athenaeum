@@ -6,6 +6,48 @@ not in scope. This is a frontend replacement against a stable API.
 
 ---
 
+## Status — 2026-08-10
+
+**The rewrite is complete. Only cutover (§8, item 9) remains.**
+
+Everything is on the long-lived `dev` branch, in the worktree
+`~/Projects/Athenaeum-dev`. 18 commits, working tree clean, nothing pushed.
+Production has not been touched at any point.
+
+| | |
+|---|---|
+| Routes ported | all 14, plus home/search; no stubs remain |
+| Backend fixes | done (§8, item 8c) — user deletion, prowlarr tags, dead keys |
+| Checks | `svelte-check` 0/0, `npm run check:zoom` passes, 205 pytest tests pass |
+| Not done | cutover: Dockerfile build stage, delete v1 assets, merge to `main`, tag, rebuild prod |
+
+**Where things run**
+
+| | |
+|---|---|
+| `athenaeum` (8741) | production, real DB, still serving v1 from `main` |
+| `athenaeum-dev` (8742) | dev backend, **cloned** DB and settings, serves v1's assets |
+| `athenaeum-dev-ui` (5173) | Vite dev server — this is where v2 is, LAN only |
+
+v2 is reachable at `http://10.0.0.50:5173`, not on any public hostname.
+
+**Carried over into cutover**
+
+- Apply the dead-key cleanup to production's `settings.yaml` **after** deploying,
+  never before — `main` still reads the singular `prowlarr.tag`, so removing it
+  early silently disables tag filtering. Detail in `V2_SETTINGS_INVENTORY.md`.
+- The `athenaeum-dev` and `athenaeum-dev-ui` service definitions live in
+  `/mnt/config/htpc/docker-compose.yml`, which is not version-controlled.
+  Cutover also edits the production service there.
+- Merge `main` back into `dev` after the release so the branches do not drift.
+
+**Worth knowing for whoever picks this up:** every UI bug found during this work
+was found by using the app, not by a check — ragged table rows, filters that did
+nothing on a hard load, square covers, a settings tab that failed to render. All
+of them passed typechecking and the build. Mobile especially needs a real device.
+
+---
+
 ## 1. Why
 
 The current UI is a single 4,506-line `static/app.js`, plus 1,213 lines of CSS and a
@@ -74,7 +116,6 @@ Athenaeum/
 │   │   │   ├── components/  # shared primitives
 │   │   │   ├── stores/      # auth, toasts (runes-based)
 │   │   │   └── types/       # API response types
-│   │   └── app.css
 │   │   ├── app.css          # tokens, reset, zoom guard
 │   │   └── app.html         # viewport meta
 │   ├── scripts/
@@ -178,7 +219,7 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
 
    Note: current SvelteKit has **no `svelte.config.js`** — the adapter and compiler
    options live in `vite.config.ts` under the `sveltekit()` plugin.
-2. **Shell** — layout, nav, routing, auth guard, API client, toast. Login and
+2. **Shell** — DONE (2026-08-08). Layout, nav, routing, auth guard, API client, toast. Login and
    change-password work end to end. This proves the auth model before anything else.
 3. **Component library** — DONE (2026-08-08). The §5 primitives, minus `TryLinkLog`.
 
@@ -205,7 +246,7 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
      `TryLinkCandidates` — the `setupHcCard`/`renderTryLinkLog` port, shared by
      book, author and series detail. Moved forward from phase 7, where it was
      wrongly parked as having no consumer yet.
-   - **5b — TODO.** The per-format interaction surface:
+   - **5b — DONE (2026-08-09).** The per-format interaction surface:
      `renderDetailFormatContent` (indexer search, download, request state
      changes) and `renderProwlarrResults`. Shared with `/requests`, so worth
      doing alongside phase 6.
@@ -213,7 +254,8 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
 6.5. **Home / search** — DONE (2026-08-09). Was missing from the original plan.
    The `/` route plus `SearchCard` and `FormatPills` (`populateBookCard` +
    `buildFormatRows`), including the author/series id pivots.
-6. **Requests** (459 LOC) — first genuinely complex one.
+6. **Requests** — DONE (2026-08-09). Queue page with requests, downloads, pending
+   and search-all tabs, the manual request dialog and the two-stage confirm button.
 7. **Series detail** — DONE (2026-08-09). Books list (list/poster with position
    badges), missing/upcoming sections with "add to this series", the series pack
    flow (search, download, mapping review, organise) and Hardcover linking.
@@ -222,16 +264,17 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    calls — DetailStats, HardcoverCard, SearchCard, BookCard, ProwlarrResults —
    already existed, so the route was almost entirely its own logic. Sizing by
    handler length is only misleading when the helpers are unported.
-8. **Settings** (1,151 LOC) — a deliberate rewrite, not a line-by-line port. Field
+8. **Settings** — DONE (2026-08-10). A deliberate rewrite, not a line-by-line port. Field
    checklist and structure in `docs/V2_SETTINGS_INVENTORY.md`.
 
-   - **8a.** General, ABS, Prowlarr, Downloads, Hardcover, Notifications, Tasks.
-   - **8b.** Auth (523 LOC) as its own step: it carries user management —
+   - **8a — DONE (2026-08-09).** General, ABS, Prowlarr, Downloads, Hardcover,
+     Notifications, Tasks.
+   - **8b — DONE (2026-08-10).** Auth (523 LOC) as its own step: it carries user management —
      create, delete, role changes, password resets — which is the
      highest-consequence surface in the app and should not ride along with six
      form tabs.
 
-8c. **Dead settings keys** — BACKEND WORK, not part of the frontend rewrite.
+8c. **Backend fixes** — DONE (2026-08-10), in three separate commits.
    Five stored keys are read by nothing (see the inventory §3). Two are actively
    misleading and should be fixed at the source rather than papered over in the
    UI:
@@ -275,31 +318,56 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    Also wrap the delete so an `IntegrityError` returns a 4xx with a readable
    message rather than a 500. The bare 500 is what made a backend constraint look
    like a broken button.
-9. **Cutover** — Dockerfile build stage, delete `static/app.js` + `style.css`,
-   point prod at the new build.
+9. **Cutover** — released as **v2.0.0**, i.e. a `dev` → `main` merge.
+
+   Steps:
+   1. Add a Node build stage to the Dockerfile that runs `vite build` and copies
+      the output into `static/`.
+   2. Delete `static/app.js` and `static/style.css` (~5,700 lines of v1) and the
+      `/dev/components` gallery.
+   3. Merge `dev` into `main`, tag per the versioning rules in CLAUDE.md.
+   4. Rebuild prod, which builds from `main`.
+
+   **Decisions made, so they are not reopened:**
+
+   - **v1 is not kept runnable.** It is deleted at cutover and survives only in
+     git history. No `/v1` route, no preserved assets.
+   - **`dev` is a long-lived integration branch**, not merged-and-deleted.
+     Releases are `dev` → `main` merges at major versions. The containers already
+     track this: prod builds from `~/Projects/Athenaeum` on `main`,
+     `athenaeum-dev` from the worktree `~/Projects/Athenaeum-dev` on `dev`.
+     After a release, merge `main` back into `dev` so hotfixes committed straight
+     to `main` do not cause drift.
+   - **The Vite dev server stays indefinitely.** `athenaeum-dev-ui` is not retired
+     at cutover — it is how UI iteration happens. Only production is Node-free,
+     which is what `adapter-static` was chosen for.
+   - **Not version-controlled:** the `athenaeum-dev` and `athenaeum-dev-ui`
+     service definitions live in `/mnt/config/htpc/docker-compose.yml`, which is
+     not a git repo. Cutover also edits the prod service there.
 
 Phases 1–3 are the ones worth getting right slowly; 4–8 are largely mechanical once
 the primitives exist.
 
-## 8b. Outstanding stubs
+## 10. Outstanding stubs
 
-Things the UI currently labels as unfinished. Each is small on its own, which is
-exactly why they need writing down.
+None. Both are closed:
 
-- **"Also by this Author"** on `/library/authors/[id]`. The page shows a
-  placeholder line instead of the section. Everything it needs now exists: call
-  `GET /api/authors/{id}/also-by` and render each item with `SearchCard`. v1
-  showed "You already have everything. True super fan status achieved." for an
-  empty result, and "Could not reach Hardcover to check for more books." on
-  failure — both worth keeping. Blocked on nothing; do it before cutover.
+- **"Also by this Author"** — done 2026-08-09. Author detail calls
+  `GET /api/authors/{id}/also-by` and renders results with `SearchCard`,
+  keeping v1's empty and failure wording.
+- **Series list scroll restoration** — done 2026-08-09, and generalised: position
+  is restored on the books, authors, series and requests lists plus the author
+  and series pages. Paginated lists replay pages until the saved row count is
+  reached before jumping. See `lib/scroll.ts`.
 
-- **Series list scroll restoration.** v1 stashed `{scrollY, count}` in
-  sessionStorage on click and re-fetched pages until the count was reached.
-  Revisit once series detail exists to navigate back from (phase 7).
+## 11. Open decisions
 
-## 9. Open decisions
-
-- **Where does `frontend/` live?** Same repo as proposed here (simplest, one
-  Dockerfile) versus a separate repo.
-- **Test strategy.** Whether v2 UI gets component tests (vitest) or leans on the
-  existing pytest suite for the API contract.
+- **RESOLVED — where `frontend/` lives.** Same repo, one Dockerfile.
+- **STILL OPEN — test strategy.** The frontend has no automated tests. It relies
+  on `svelte-check`, `check:zoom` and manual testing; the backend keeps its
+  pytest suite (205 tests). Every UI bug found so far was found by using the app,
+  not by a check — the table row heights, the mobile-only filter failures, square
+  covers, and the Downloads tab all passed typechecking and the build. Worth
+  deciding whether component tests (vitest) earn their place.
+- **STILL OPEN — release flavour.** Whether cutover ships as `v2.0.0` or
+  `v2.0.0-beta.1` with a soak period on production first.
