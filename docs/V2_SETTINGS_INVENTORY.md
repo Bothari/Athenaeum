@@ -67,25 +67,29 @@ Cross-referencing turned up keys that exist in stored settings but are read by
 nobody. None of these are regressions from the port — they are pre-existing, and
 the rewrite is a good moment to decide about them.
 
-**Dead: zero references in the backend and zero in the UI.**
+**Removed (2026-08-10).** These were read by nothing. Four of them were never in
+`DEFAULT_SETTINGS` at all — they existed only as stale entries in the stored
+`settings.yaml`, which is why nothing consumed them.
 
-| Key | Live value | Notes |
+| Key | Was | Why it was dead |
 |---|---|---|
-| `audiobookshelf.square_book_covers` | `true` | Misleading. Cover shape actually comes from the ABS library's own `coverAspectRatio` via `/abs/library-settings`; this key does nothing. |
-| `general.group_series_in_search` | `true` | Reads like a real feature toggle. Nothing implements it. |
-| `pushover.app_token`, `pushover.user_key` | `""` | Superseded by `notifications.urls`, which carries a `pover://` URL. |
-| `auto_search.enabled` | `false` | `auto_search.py` reads `max_attempts`, `min_seeders` and `ranking` from `auto_cfg`, never `enabled`. Scheduling is what actually gates auto-search, via `schedule.auto_search`. |
+| `audiobookshelf.square_book_covers` | `true` | Cover shape comes from the ABS library's own `coverAspectRatio` via `/abs/library-settings`. |
+| `general.group_series_in_search` | `true` | Read like a feature toggle; nothing implemented it. |
+| `pushover.app_token`, `pushover.user_key` | `""` | Superseded by `notifications.urls` (`pover://`). Not even in `KNOWN_SECTIONS`, so unsaveable via the API. |
+| `auto_search.enabled` | `false` | `auto_search.py` reads `max_attempts`, `min_seeders` and `ranking` only. Auto-search is gated by `schedule.auto_search`. |
+| `prowlarr.tag` | `"books"` | Superseded by the plural `tags`, which now supports several tags. |
+
+`prowlarr.tags` was on this list too, and was **fixed rather than removed**: the
+backend now reads the plural, accepts several tags, and falls back to the
+singular for configs that only have it. It defaults to `["books"]`.
 
 **Correctly hidden:** `auth.session_secret` — internal, must never be editable.
 
-`prowlarr.tags` was on this list and has since been **fixed rather than removed**:
-the backend now reads the plural, supports several tags, and falls back to the
-singular `tag` for existing configs. The settings UI edits `tags`.
-
-Recommendation: leave the remaining values alone for now (removing keys is a backend
-change, out of scope for a frontend phase) but do **not** build UI for them, and
-raise `auto_search.enabled` separately — it is actively misleading, since a
-plausible-looking setting silently does nothing.
+**Still to do at cutover:** the same cleanup has NOT been applied to production's
+`settings.yaml`. Production runs `main`, which still reads the singular
+`prowlarr.tag`; removing it before v2.0.0 ships would silently disable tag
+filtering there and quietly search every indexer. Apply the same edit as part of
+the release, after the new code is deployed.
 
 ## 4. Proposed structure
 
