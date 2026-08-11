@@ -60,17 +60,12 @@ Tests only need to be run before pushing to GitHub. Run them inside the project 
 
 ### Cache Busting
 
-`static/index.html` has a `?v=N` query string on the script tag. After any change to
-`static/app.js` or `static/style.css`, increment `N` by 1. The HTML response is served
-with `Cache-Control: no-cache` so browsers always revalidate the HTML, then the `?v=N`
-ensures the JS/CSS is re-fetched when it changes.
+Nothing to do by hand. Vite hashes every asset filename, so a changed file is a
+changed URL. The shell that references them is served with `Cache-Control: no-cache`,
+so browsers always revalidate it and pick up the new hashes.
 
-```html
-<script src="/static/app.js?v=4"></script>
-<link rel="stylesheet" href="/static/style.css?v=4">
-```
-
-Bump both to the same version number together.
+`static/` is build output, not source — it is populated by the frontend build stage
+in the Dockerfile and is empty in a fresh checkout. Never edit anything in it.
 
 ---
 

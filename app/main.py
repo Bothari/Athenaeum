@@ -36,13 +36,12 @@ app.include_router(books_router, dependencies=[Depends(require_auth)])
 app.include_router(requests_router, dependencies=[Depends(require_auth)])
 app.include_router(downloads_router, dependencies=[Depends(require_auth)])
 app.include_router(abs_proxy_router, dependencies=[Depends(require_auth)])
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# The SPA's own assets are referenced from the web root as /_app/..., not /static/...,
-# so they need their own mount — without it the catch-all below answers every JS and
-# CSS request with index.html and the app never boots. check_dir=False because the
-# directory only exists once the frontend has been built, which is not the case in a
-# bare checkout or when running the backend tests.
+# The SPA's assets are referenced from the web root as /_app/..., so they need their
+# own mount — without it the catch-all below answers every JS and CSS request with
+# index.html and the app never boots. There is no /static mount any more: it existed
+# for v1's app.js and style.css, and nothing in v2 refers to it. check_dir=False
+# because static/ is populated by the frontend build stage, so it is empty in a bare
+# checkout and when running the backend tests.
 app.mount("/_app", StaticFiles(directory="static/_app", check_dir=False), name="spa_assets")
 
 
