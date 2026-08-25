@@ -74,13 +74,38 @@ Bump both to the same version number together.
 
 ---
 
-## Versioning
+## Versioning and branches
 
-Tags follow semver (`major.minor.patch`) with `-beta.N` pre-release suffixes while in beta:
+Tags follow semver (`major.minor.patch`). Every `v*` tag is a real release:
 
-- `v1.0.0-beta.N` — beta releases
-- `v1.0.0` — stable release
-- After stable: patch for bugfixes, minor for new features, major for breaking changes
+- patch (`v1.0.1`) — bugfixes
+- minor (`v1.1.0`) — new features
+- major (`v2.0.0`) — breaking changes
+
+### Branches
+
+| branch | image tag | role |
+|--------|-----------|------|
+| `main` | `:latest`, `:x.y.z`, `:x.y` | always releasable; tag it to publish |
+| `topic/*` | — | one change each, however long it takes |
+| `dogfood` | `:testing` | throwaway integration branch |
+
+A topic branch graduates to `main` **on its own**, via PR, and is then tagged. It
+never reaches main by way of `dogfood`.
+
+`dogfood` exists to answer "what do all the in-flight changes look like together".
+It is rebuilt, never merged into anything, and never branched off — which is what
+lets a risky topic sit for months without blocking releases, and why force-pushing
+it is safe:
+
+```bash
+scripts/rebuild-dogfood.sh          # main + every topic/* branch
+git push -f origin dogfood          # publishes :testing
+```
+
+Note that you dogfood the *combination* but ship the *individual* branch, so a
+topic is not proven in isolation by dogfooding. The PR's CI run against main is
+what covers that.
 
 ---
 

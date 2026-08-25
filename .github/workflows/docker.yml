@@ -2,6 +2,11 @@ name: Docker
 
 on:
   push:
+    # Releases are cut by tagging main; `dogfood` is the throwaway integration
+    # branch where in-flight topic branches are merged for testing. Topic branches
+    # graduate to main on their own via PR — dogfood is never merged into anything,
+    # it is rebuilt (scripts/rebuild-dogfood.sh).
+    branches: [dogfood]
     tags: ["v*"]
 
 jobs:
@@ -33,9 +38,15 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
+            # dogfood branch -> :testing. The only branch this workflow runs on,
+            # so a branch ref can only be dogfood.
+            type=raw,value=testing,enable=${{ github.ref_type == 'branch' }}
+            # v* tag -> :x.y.z, :x.y and :latest. Every tag is a real release now
+            # that the beta suffix is gone, so latest is unconditional on tags —
+            # but never on a branch push, or dogfood would claim it.
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
