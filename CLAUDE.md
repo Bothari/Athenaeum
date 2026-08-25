@@ -60,17 +60,12 @@ Tests only need to be run before pushing to GitHub. Run them inside the project 
 
 ### Cache Busting
 
-`static/index.html` has a `?v=N` query string on the script tag. After any change to
-`static/app.js` or `static/style.css`, increment `N` by 1. The HTML response is served
-with `Cache-Control: no-cache` so browsers always revalidate the HTML, then the `?v=N`
-ensures the JS/CSS is re-fetched when it changes.
+Nothing to do by hand. Vite hashes every asset filename, so a changed file is a
+changed URL. The shell that references them is served with `Cache-Control: no-cache`,
+so browsers always revalidate it and pick up the new hashes.
 
-```html
-<script src="/static/app.js?v=4"></script>
-<link rel="stylesheet" href="/static/style.css?v=4">
-```
-
-Bump both to the same version number together.
+`static/` is build output, not source — it is populated by the frontend build stage
+in the Dockerfile and is empty in a fresh checkout. Never edit anything in it.
 
 ---
 
@@ -111,11 +106,16 @@ what covers that.
 
 ## Git Commits
 
-All commits must end with:
+All commits must end with a co-author trailer naming the model that actually wrote
+the commit:
 
 ```
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Co-Authored-By: <model name> <noreply@anthropic.com>
 ```
+
+For example `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`. Use your own
+model name — do not copy a name from an older commit, and never attribute work to a
+model that did not write it.
 
 Commit messages should be concise and describe *why*, not just *what*.
 Use present tense. Example: "Add WAL mode to prevent database locking under load"
@@ -165,6 +165,58 @@ Never use bare `CREATE TABLE IF NOT EXISTS`. All schema changes go through the m
 
 ---
 
+## Frontend (v2)
+
+The UI is being rewritten in Svelte. Stack: SvelteKit 2 + Svelte 5 (runes) +
+TypeScript + `adapter-static` in SPA mode, built by Vite into `static/` and served by
+the existing FastAPI catch-all. No Node server at runtime. No Tailwind — styling uses
+scoped component `<style>` blocks with shared tokens as CSS custom properties in
+`src/app.css`. Full plan in `docs/V2_FRONTEND_PLAN.md`.
+
+### Mobile: never zoom the page on text-field focus
+
+This is a hard requirement, not a preference. It was painful to get right in v1 and
+must not regress.
+
+iOS Safari zooms the viewport when a focused text field's **computed** font-size is
+below 16px. Therefore:
+
+- **Never set `font-size` below 16px on `input`, `select`, `textarea`, or any class
+  applied to one.** This includes rem values that resolve below 16px — `0.9rem` is
+  14.4px and WILL zoom.
+- To make a field look smaller, reduce **padding, height, or width**. Never font-size.
+- **Never** suppress zoom with `user-scalable=no` or `maximum-scale=1` in the viewport
+  meta. That works by disabling pinch-zoom entirely, which breaks accessibility. The
+  font-size approach is the only acceptable fix.
+- Scoped component styles make this more dangerous than in v1: a local rule silently
+  beats the global one in `src/app.css` and nothing warns you.
+- `npm run check:zoom` enforces this and must stay in CI.
+
+v1 hit this repeatedly — `.fmt-narrator-input` and `.search-input-main` each had to
+re-declare `font-size: 16px` after a smaller value crept in. Do not relearn it.
+
+Also keep `touch-action: manipulation` on tappable controls to kill the 300ms
+double-tap-zoom delay.
+
+### No monolith
+
+v1's entire UI was one 4,506-line `static/app.js` with 158 `innerHTML` assignments.
+Avoiding a repeat is a primary goal of the rewrite, not a nice-to-have.
+
+- **One route per file** under `src/routes/`, using SvelteKit's file-based routing.
+  Never a central router or dispatch table.
+- **Any component over ~200 lines is a smell** — extract sub-components. Route files
+  should mostly compose components and handle data loading.
+- **Shared UI goes in `src/lib/components/`** and is reused. If you find yourself
+  writing a second variant of an existing card/table/state component, extend the
+  existing one instead. v1 had three near-duplicate card renderers.
+- **API calls go through `src/lib/api/`**, one module per backend router, with typed
+  responses. Never call `fetch` directly from a component.
+- **Shared state goes in `src/lib/stores/`** using runes. Never module-level mutable
+  `let` bindings as de facto globals, which is how v1 handled auth state.
+
+---
+
 ## Progress Tracking
 
 `docs/PROGRESS.md` tracks build progress against the phases in `PLAN.md`.
@@ -180,5 +232,8 @@ Keep entries concise. The git log has the detail; PROGRESS.md is the at-a-glance
 
 ## Attribution
 
-This project is being developed with Claude Code (Claude Sonnet 4.6).
+This project is being developed with Claude Code, across successive Claude models.
+Per-commit attribution lives in the git log's co-author trailers, which is the
+authoritative record — this file does not name a specific model.
+
 The development process — including the original spec, adversarial review, and review-driven amendments — is documented in `docs/`.

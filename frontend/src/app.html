@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- class="light" matches v1's default and the stored preference in the common case,
+     so the theme store's init does not cause a flash of the wrong palette. -->
+<html lang="en" class="light">
+	<head>
+		<meta charset="utf-8" />
+		<!-- viewport-fit=cover for iOS safe areas. Deliberately NO user-scalable=no /
+		     maximum-scale: those stop focus-zoom by disabling pinch-zoom entirely,
+		     which breaks accessibility. Focus-zoom is prevented via font-size instead
+		     — see app.css and docs/V2_FRONTEND_PLAN.md §3. -->
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

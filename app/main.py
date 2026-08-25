@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from croniter import croniter
 from fastapi import Depends, FastAPI
@@ -35,7 +36,13 @@ app.include_router(books_router, dependencies=[Depends(require_auth)])
 app.include_router(requests_router, dependencies=[Depends(require_auth)])
 app.include_router(downloads_router, dependencies=[Depends(require_auth)])
 app.include_router(abs_proxy_router, dependencies=[Depends(require_auth)])
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# The SPA's assets are referenced from the web root as /_app/..., so they need their
+# own mount — without it the catch-all below answers every JS and CSS request with
+# index.html and the app never boots. There is no /static mount any more: it existed
+# for v1's app.js and style.css, and nothing in v2 refers to it. check_dir=False
+# because static/ is populated by the frontend build stage, so it is empty in a bare
+# checkout and when running the backend tests.
+app.mount("/_app", StaticFiles(directory="static/_app", check_dir=False), name="spa_assets")
 
 
 async def _wait_until_next(cron_expr: str):
@@ -327,4 +334,12 @@ async def api_status():
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_spa(full_path: str):
+    # The frontend build drops a few files at the web root rather than under /_app —
+    # robots.txt today, favicon.svg once it exists. Without this they would fall
+    # through to the SPA shell and be served as text/html.
+    if full_path and "/" not in full_path:
+        root_file = Path("static") / full_path
+        if root_file.is_file():
+            return FileResponse(root_file)
+
     return FileResponse("static/index.html", headers={"Cache-Control": "no-cache"})

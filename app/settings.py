@@ -10,7 +10,9 @@ DEFAULT_SETTINGS = {
     "prowlarr": {
         "url": "",
         "api_key": "",
-        "tags": [],
+        # Indexer tag names; indexers carrying any of them are searched. Empty
+        # means search every indexer.
+        "tags": ["books"],
     },
     "downloaders": [],
     "audiobookshelf": {

@@ -16,27 +16,56 @@ AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus", ".aac", ".
 
 # ── Prowlarr ───────────────────────────────────────────────────────────────────
 
-async def prowlarr_get_indexer_ids_for_tag(url: str, api_key: str, tag: str) -> list[int]:
-    """Return IDs of enabled indexers whose tags include the given tag name (case-insensitive)."""
+def prowlarr_configured_tags(settings: dict) -> list[str]:
+    """Tag names to filter indexers by.
+
+    `tags` (a list) is the current setting. `tag` (a single string) is the older
+    form and is still honoured so existing configs keep working — it was for a
+    long time the only one the backend actually read, even though both were
+    stored.
+    """
+    raw = settings.get("tags")
+    if isinstance(raw, str):
+        raw = [raw]
+    tags = [str(t).strip() for t in (raw or []) if str(t).strip()]
+    if tags:
+        return tags
+
+    legacy = str(settings.get("tag") or "").strip()
+    return [legacy] if legacy else []
+
+
+async def prowlarr_get_indexer_ids_for_tags(url: str, api_key: str, tags: list[str]) -> list[int]:
+    """IDs of enabled indexers carrying ANY of the given tag names (case-insensitive).
+
+    A union rather than an intersection: configuring "books, audiobooks" means
+    search both, which is what having several tags is for. Unknown tag names are
+    warned about and skipped, so one typo does not silently disable searching.
+    """
+    if not tags:
+        return []
+
+    wanted = {t.lower() for t in tags}
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        # Fetch all tags to build name→id map
+        # Prowlarr identifies tags by id, so resolve the names first.
         tags_resp = await client.get(f"{url}/api/v1/tag", headers={"X-Api-Key": api_key})
         tags_resp.raise_for_status()
-        tag_id = None
-        for t in tags_resp.json():
-            if t.get("label", "").lower() == tag.lower():
-                tag_id = t.get("id")
-                break
-        if tag_id is None:
-            logger.warning("Prowlarr tag %r not found", tag)
+
+        by_label = {t.get("label", "").lower(): t.get("id") for t in tags_resp.json()}
+        tag_ids = {by_label[name] for name in wanted if name in by_label}
+
+        missing = sorted(wanted - set(by_label))
+        if missing:
+            logger.warning("Prowlarr tags not found, ignoring: %s", missing)
+        if not tag_ids:
             return []
 
-        # Fetch all enabled indexers and filter by tag_id
         idx_resp = await client.get(f"{url}/api/v1/indexer", headers={"X-Api-Key": api_key})
         idx_resp.raise_for_status()
         return [
             i["id"] for i in idx_resp.json()
-            if i.get("enable") and tag_id in (i.get("tags") or [])
+            if i.get("enable") and tag_ids.intersection(i.get("tags") or [])
         ]
 
 
@@ -227,15 +256,15 @@ async def prowlarr_search(settings: dict, query: str, book_type: str = "", title
     if not url or not api_key:
         return []
 
-    tag = (settings.get("tag") or "").strip()
+    tags = prowlarr_configured_tags(settings)
     indexer_ids: list[int] = []
-    if tag:
+    if tags:
         try:
-            indexer_ids = await prowlarr_get_indexer_ids_for_tag(url, api_key, tag)
+            indexer_ids = await prowlarr_get_indexer_ids_for_tags(url, api_key, tags)
             if not indexer_ids:
-                logger.warning("Prowlarr tag %r matched no enabled indexers — returning empty results", tag)
+                logger.warning("Prowlarr tags %s matched no enabled indexers — returning empty results", tags)
                 return []
-            logger.info("Prowlarr tag %r → indexer IDs: %s", tag, indexer_ids)
+            logger.info("Prowlarr tags %s → indexer IDs: %s", tags, indexer_ids)
         except Exception as e:
             logger.warning("Prowlarr tag lookup failed, searching all indexers: %s", e)
 
