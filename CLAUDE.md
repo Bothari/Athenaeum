@@ -77,6 +77,26 @@ Tags follow semver (`major.minor.patch`) with `-beta.N` pre-release suffixes whi
 - `v1.0.0` — stable release
 - After stable: patch for bugfixes, minor for new features, major for breaking changes
 
+**The number describes the product, not the diff.** Size of the internal change is
+irrelevant — the frontend rewrite touched every line of the UI and is still a minor,
+because a user who upgrades sees the same app. Reserve a major for a release where
+the app visibly becomes a new thing, or where upgrading breaks something for the user.
+
+Do not let a project codename leak into the version. "v2" is the name of the frontend
+rewrite (`docs/V2_FRONTEND_PLAN.md`); it ships as `v1.1.0`.
+
+### Branching and releases
+
+`dev` is a long-lived integration branch; `main` is what production builds from.
+
+**Merge `dev` into `main` on every release, not only at majors.** A release is any
+coherent, shippable increment. Merging only at majors leaves `main` stale for months
+and turns each release into an enormous, unreviewable merge — the opposite of what
+you want after a large change, where the useful signal comes from running it.
+
+After a release, merge `main` back into `dev` so hotfixes committed straight to `main`
+do not accumulate as drift.
+
 ---
 
 ## Git Commits

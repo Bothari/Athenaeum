@@ -6,20 +6,25 @@ not in scope. This is a frontend replacement against a stable API.
 
 ---
 
-## Status — 2026-08-10
+## Status — 2026-08-11
 
-**The rewrite is complete. Only cutover (§8, item 9) remains.**
+**The rewrite is complete, and cutover is half done. What remains needs a merge.**
 
 Everything is on the long-lived `dev` branch, in the worktree
-`~/Projects/Athenaeum-dev`. 18 commits, working tree clean, nothing pushed.
+`~/Projects/Athenaeum-dev`. 21 commits, working tree clean, nothing pushed.
 Production has not been touched at any point.
 
 | | |
 |---|---|
 | Routes ported | all 14, plus home/search; no stubs remain |
 | Backend fixes | done (§8, item 8c) — user deletion, prowlarr tags, dead keys |
+| Build | done — Dockerfile builds the SPA in a `node:22` stage; runtime is Node-free |
+| v1 deleted | done — 6,158 lines: `app.js`, `style.css`, the v1 shell, `/dev/components` |
 | Checks | `svelte-check` 0/0, `npm run check:zoom` passes, 205 pytest tests pass |
-| Not done | cutover: Dockerfile build stage, delete v1 assets, merge to `main`, tag, rebuild prod |
+| Not done | merge to `main`, tag `v1.1.0-beta.1`, rebuild prod, post-deploy settings cleanup |
+
+**This ships as `v1.1.0`, not `v2.0.0`.** See §8 item 9. Task tracking has moved
+from this document to beads (`bd ready`); the epic is `ath-9v1`.
 
 **Where things run**
 
@@ -318,13 +323,13 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    Also wrap the delete so an `IntegrityError` returns a 4xx with a readable
    message rather than a 500. The bare 500 is what made a backend constraint look
    like a broken button.
-9. **Cutover** — released as **v2.0.0**, i.e. a `dev` → `main` merge.
+9. **Cutover** — released as **v1.1.0**, i.e. a `dev` → `main` merge.
 
    Steps:
    1. Add a Node build stage to the Dockerfile that runs `vite build` and copies
-      the output into `static/`.
+      the output into `static/`. DONE (2026-08-11).
    2. Delete `static/app.js` and `static/style.css` (~5,700 lines of v1) and the
-      `/dev/components` gallery.
+      `/dev/components` gallery. DONE (2026-08-11) — 6,158 lines.
    3. Merge `dev` into `main`, tag per the versioning rules in CLAUDE.md.
    4. Rebuild prod, which builds from `main`.
 
@@ -332,12 +337,19 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
 
    - **v1 is not kept runnable.** It is deleted at cutover and survives only in
      git history. No `/v1` route, no preserved assets.
+   - **This ships as `v1.1.0`, not `v2.0.0`** (decided 2026-08-11). "v2" is this
+     document's codename for the rewrite, and it should not leak into the version.
+     The port is a faithful visual port by explicit decision, so a user who
+     upgrades sees no new feature and no changed workflow — a minor by the rules in
+     CLAUDE.md, however large the internal change. `v2.0.0` is reserved for the
+     release where the app visibly becomes a new thing.
    - **`dev` is a long-lived integration branch**, not merged-and-deleted.
-     Releases are `dev` → `main` merges at major versions. The containers already
-     track this: prod builds from `~/Projects/Athenaeum` on `main`,
-     `athenaeum-dev` from the worktree `~/Projects/Athenaeum-dev` on `dev`.
-     After a release, merge `main` back into `dev` so hotfixes committed straight
-     to `main` do not cause drift.
+     Releases are `dev` → `main` merges **at every release, not only at majors** —
+     merging only at majors would leave `main` stale for months and turn each
+     release into an enormous merge. The containers already track this: prod builds
+     from `~/Projects/Athenaeum` on `main`, `athenaeum-dev` from the worktree
+     `~/Projects/Athenaeum-dev` on `dev`. After a release, merge `main` back into
+     `dev` so hotfixes committed straight to `main` do not cause drift.
    - **The Vite dev server stays indefinitely.** `athenaeum-dev-ui` is not retired
      at cutover — it is how UI iteration happens. Only production is Node-free,
      which is what `adapter-static` was chosen for.
@@ -369,5 +381,8 @@ None. Both are closed:
   not by a check — the table row heights, the mobile-only filter failures, square
   covers, and the Downloads tab all passed typechecking and the build. Worth
   deciding whether component tests (vitest) earn their place.
-- **STILL OPEN — release flavour.** Whether cutover ships as `v2.0.0` or
-  `v2.0.0-beta.1` with a soak period on production first.
+- **RESOLVED — release flavour** (2026-08-11). `v1.1.0-beta.1`, soak on production,
+  then `v1.1.0`. The beta earns its place despite the change being invisible to
+  users, precisely because it is enormous internally: v1 is deleted at cutover, so
+  rollback means reverting a merge rather than flipping a route. See §8 item 9 for
+  why the number is 1.1.0 and not 2.0.0.
