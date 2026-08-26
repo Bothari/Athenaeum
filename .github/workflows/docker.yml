@@ -41,12 +41,13 @@ jobs:
             # dogfood branch -> :testing. The only branch this workflow runs on,
             # so a branch ref can only be dogfood.
             type=raw,value=testing,enable=${{ github.ref_type == 'branch' }}
-            # v* tag -> :x.y.z, :x.y and :latest. Every tag is a real release now
-            # that the beta suffix is gone, so latest is unconditional on tags —
-            # but never on a branch push, or dogfood would claim it.
+            # v* tag -> :x.y.z and :x.y. metadata-action's default flavor
+            # (latest=auto) also tags :latest, but only for a non-prerelease semver
+            # tag on a tag ref — so a dogfood push cannot claim it, and a future
+            # -rc/-beta tag would not either. Do not add an explicit raw `latest`
+            # here: it pushes the tag a second time and overrides that guard.
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
