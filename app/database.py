@@ -177,6 +177,13 @@ async def get_db():
 
 
 async def _run_migrations(db):
+    # Migrations must run with FK enforcement OFF. Table rebuilds (CREATE new →
+    # copy → DROP old → RENAME) fail under foreign_keys=ON whenever another table
+    # holds references to the rebuilt one (e.g. requests.requested_by_user_id →
+    # users.id) — and only on POPULATED databases, so fresh-DB test runs never see
+    # it. Plain connections default to OFF, but get_db() turns it ON: pin it here
+    # so migrations stay correct no matter what connection they are handed.
+    await db.execute("PRAGMA foreign_keys=OFF")
     row = await (await db.execute("PRAGMA user_version")).fetchone()
     current = row[0]
 
@@ -377,6 +384,41 @@ async def _run_migrations(db):
         await db.execute("CREATE INDEX idx_request_events_request ON request_events(request_id)")
         await db.execute("CREATE INDEX idx_request_events_book    ON request_events(book_id)")
         await db.execute("PRAGMA user_version = 14")
+
+    if current < 15:
+        # OIDC identity is (issuer, subject), not subject alone: the same `sub` value
+        # can be minted by different issuers, so a bare UNIQUE(oidc_sub) would let one
+        # issuer's user collide with (and inherit the account of) another's. Add
+        # oidc_iss and rebuild the table so the identity key is the (oidc_iss, oidc_sub)
+        # pair — dropping the standalone UNIQUE(oidc_sub).
+        await db.execute("""
+            CREATE TABLE users_new (
+                id                    TEXT PRIMARY KEY,
+                username              TEXT NOT NULL UNIQUE,
+                email                 TEXT,
+                password_hash         TEXT,
+                role                  TEXT NOT NULL DEFAULT 'user',
+                oidc_sub              TEXT,
+                oidc_iss              TEXT,
+                force_password_change INTEGER NOT NULL DEFAULT 0,
+                created_at            TEXT NOT NULL,
+                updated_at            TEXT NOT NULL,
+                UNIQUE(oidc_iss, oidc_sub)
+            )
+        """)
+        await db.execute("""
+            INSERT INTO users_new
+                (id, username, email, password_hash, role, oidc_sub, oidc_iss,
+                 force_password_change, created_at, updated_at)
+            SELECT id, username, email, password_hash, role, oidc_sub, NULL,
+                   force_password_change, created_at, updated_at
+            FROM users
+        """)
+        await db.execute("DROP TABLE users")
+        await db.execute("ALTER TABLE users_new RENAME TO users")
+        await db.execute("CREATE INDEX idx_users_username ON users(username)")
+        await db.execute("CREATE INDEX idx_users_oidc ON users(oidc_iss, oidc_sub)")
+        await db.execute("PRAGMA user_version = 15")
 
     await db.commit()
 

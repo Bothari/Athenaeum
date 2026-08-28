@@ -201,7 +201,7 @@ async def list_requests(
         "type": "r.type",
     }[sort]
 
-    conditions = ["r.status != 'in_library'"]
+    conditions: list = []
     bind: list = []
 
     # Non-admins only see their own requests
@@ -210,8 +210,17 @@ async def list_requests(
         bind.append(auth["user_id"])
 
     if status:
-        conditions = ["r.status = ?"]
+        conditions.append("r.status = ?")
         bind.append(status)
+    else:
+        # in_library marks a book already present in the library, not a queue entry,
+        # so it is hidden by default — but an explicit ?status=in_library must still
+        # be able to select it, hence the exclusion only applies when no status is
+        # given. This must never REPLACE conditions: doing so dropped the non-admin
+        # ownership filter above while leaving its binding in `bind`, which both
+        # crashed the query (1 placeholder, 2 bindings) and, had the counts lined
+        # up, would have shown a non-admin everyone else's requests.
+        conditions.append("r.status != 'in_library'")
     if type:
         conditions.append("r.type = ?")
         bind.append(type)

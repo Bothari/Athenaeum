@@ -1,6 +1,13 @@
-# Docker does not honour .gitignore, so data/ — which holds real API keys and the
-# SQLite database — would otherwise be baked into the image by `COPY . .`.
+# Docker does not honour .gitignore, and the published image is PUBLIC
+# (ghcr.io/bothari/athenaeum, anonymous pull works). Anything `COPY . .` picks up
+# ships to the world on the next tag, so this list fails closed: it covers secrets
+# that are not present today but would be caught silently if someone created them.
 data/
+*.db
+.env
+.beads/
+CLAUDE.local.md
+.scratch/
 
 .git/
 .venv/

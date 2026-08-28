@@ -2,53 +2,53 @@
 
 ## Project Overview
 
-Athenaeum is a self-hosted book management app. Full specification is in `docs/PLAN.md`.
+Athenaeum is a self-hosted book management app. Full specification is in `docs/dev/PLAN.md`.
 Read it entirely before writing any code. It is the single source of truth.
 
 ---
 
 ## Build & Run
 
-The container is managed by a `docker-compose.yml` in the project root.
+The `athenaeum` container runs **released images** (`ghcr.io/bothari/athenaeum:latest`),
+not the working tree. Editing code and restarting it does nothing — a change reaches
+it only by being tagged and published.
 
 ```bash
-# Rebuild and restart after code changes
-docker compose up -d --build athenaeum
+# Update to the newest release
+docker compose pull athenaeum && docker compose up -d athenaeum
 
-# View logs
+# Logs / stop
 docker logs -f athenaeum
-
-# Stop
 docker compose stop athenaeum
-
-# Access the app
-open http://localhost:8741
 ```
 
-The app serves on port **8741**. Data persists in `./data/` (mounted as `/data` inside the container).
+The app serves on port **8741**. Data persists in the mounted data directory.
 
-**After any code change, always rebuild and restart the container before testing manually:**
-
-```bash
-docker compose up -d --build athenaeum
-```
+To pin or downgrade, set the tag explicitly (`:1.0.0`); `:testing` is the dogfood
+branch. See "Versioning and branches" below.
 
 ---
 
 ## Development Workflow
 
-- Edit code in the repo root, then rebuild with the command above
-- `./data/settings.yaml` contains real API keys — never commit the `data/` directory
-- `./data/athenaeum.db` is the SQLite database — inspect with `sqlite3 ./data/athenaeum.db`
-- Logs are the primary debugging tool: `docker logs -f athenaeum`
+- `settings.yaml` in the data directory holds real API keys — never commit `data/`
+- `athenaeum.db` is SQLite — inspect with `sqlite3 <data-dir>/athenaeum.db`
+- Logs are the primary debugging tool
 
-### After Making Changes
+### Testing a change
 
-**Claude is responsible for rebuilding the container after every code change.** Always run the rebuild before reporting a task as done or asking the user to test:
+Unreleased code is **never** tested by restarting the live container. In order of preference:
 
-```bash
-docker compose up -d --build athenaeum
-```
+1. **The test suite** — fastest, and required before pushing.
+2. **A throwaway container built from the working tree**, pointed at a *copy* of the
+   data directory. This is the only safe way to exercise a migration: clone the data
+   dir, run the new build against the clone, verify, then discard. Never point an
+   unreleased build at the live data directory.
+3. **`athenaeum-dev`**, which builds from a separate worktree with live-reload mounts.
+   Check which branch that worktree is on before assuming it reflects your change.
+
+Claude must not report a change as verified on the strength of a live-container
+restart — that only ever proves the last *release* still works.
 
 ### Running Tests
 
@@ -69,33 +69,47 @@ in the Dockerfile and is empty in a fresh checkout. Never edit anything in it.
 
 ---
 
-## Versioning
+## Versioning and branches
 
-Tags follow semver (`major.minor.patch`) with `-beta.N` pre-release suffixes while in beta:
+Tags follow semver (`major.minor.patch`). Every `v*` tag is a real release:
 
-- `v1.0.0-beta.N` — beta releases
-- `v1.0.0` — stable release
-- After stable: patch for bugfixes, minor for new features, major for breaking changes
+- patch (`v1.0.1`) — bugfixes
+- minor (`v1.1.0`) — new features
+- major (`v2.0.0`) — breaking changes
 
 **The number describes the product, not the diff.** Size of the internal change is
-irrelevant — the frontend rewrite touched every line of the UI and is still a minor,
-because a user who upgrades sees the same app. Reserve a major for a release where
-the app visibly becomes a new thing, or where upgrading breaks something for the user.
+irrelevant — the frontend rewrite replaced every line of the UI and still ships as a
+minor, because a user who upgrades sees the same app. Reserve a major for a release
+where the app visibly becomes a new thing, or where upgrading breaks something for
+the user.
 
 Do not let a project codename leak into the version. "v2" is the name of the frontend
 rewrite (`docs/V2_FRONTEND_PLAN.md`); it ships as `v1.1.0`.
 
-### Branching and releases
+### Branches
 
-`dev` is a long-lived integration branch; `main` is what production builds from.
+| branch | image tag | role |
+|--------|-----------|------|
+| `main` | `:latest`, `:x.y.z`, `:x.y` | always releasable; tag it to publish |
+| `topic/*` | — | one change each, however long it takes |
+| `dogfood` | `:testing` | throwaway integration branch |
 
-**Merge `dev` into `main` on every release, not only at majors.** A release is any
-coherent, shippable increment. Merging only at majors leaves `main` stale for months
-and turns each release into an enormous, unreviewable merge — the opposite of what
-you want after a large change, where the useful signal comes from running it.
+A topic branch graduates to `main` **on its own**, via PR, and is then tagged. It
+never reaches main by way of `dogfood`.
 
-After a release, merge `main` back into `dev` so hotfixes committed straight to `main`
-do not accumulate as drift.
+`dogfood` exists to answer "what do all the in-flight changes look like together".
+It is rebuilt, never merged into anything, and never branched off — which is what
+lets a risky topic sit for months without blocking releases, and why force-pushing
+it is safe:
+
+```bash
+scripts/rebuild-dogfood.sh          # main + every topic/* branch
+git push -f origin dogfood          # publishes :testing
+```
+
+Note that you dogfood the *combination* but ship the *individual* branch, so a
+topic is not proven in isolation by dogfooding. The PR's CI run against main is
+what covers that.
 
 ---
 
@@ -136,7 +150,7 @@ ABS runs locally on the same Docker network — treat it like a local database c
 
 ## Code Conventions
 
-These are defined in `docs/PLAN.md` and must be followed precisely:
+These are defined in `docs/dev/PLAN.md` and must be followed precisely:
 
 - **Services** are instantiated per-request (not singletons). Read current settings at call time.
 - **Database** access goes through `get_db()` only — never open connections directly.
@@ -150,7 +164,7 @@ These are defined in `docs/PLAN.md` and must be followed precisely:
 
 ## Schema Changes
 
-Never use bare `CREATE TABLE IF NOT EXISTS`. All schema changes go through the migration system in `app/database.py` (PRAGMA user_version blocks). See `docs/PLAN.md` → Database section.
+Never use bare `CREATE TABLE IF NOT EXISTS`. All schema changes go through the migration system in `app/database.py` (PRAGMA user_version blocks). See `docs/dev/PLAN.md` → Database section.
 
 ---
 
@@ -214,7 +228,7 @@ Avoiding a repeat is a primary goal of the rewrite, not a nice-to-have.
 
 ## Progress Tracking
 
-`docs/PROGRESS.md` tracks build progress against the phases in `PLAN.md`.
+`docs/dev/PROGRESS.md` tracks build progress against the phases in `PLAN.md`.
 
 **Update it whenever:**
 - A phase or sub-task is completed — check the box and add a completion date
@@ -232,3 +246,59 @@ Per-commit attribution lives in the git log's co-author trailers, which is the
 authoritative record — this file does not name a specific model.
 
 The development process — including the original spec, adversarial review, and review-driven amendments — is documented in `docs/`.
+
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+## Agent Context Profiles
+
+The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+
+- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
+- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+
+## Session Completion
+
+This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
+
+1. **File issues for remaining work** - Create beads for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **Handle git/sync by active profile**:
+   ```bash
+   # Conservative/minimal/default: report status and proposed commands; wait for approval.
+   git status
+
+   # Team-maintainer opt-in only, unless current instructions forbid it:
+   git pull --rebase
+   git push
+   git status
+   ```
+5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
+
+**Critical rules:**
+- Explicit user or orchestrator instructions override this Beads block.
+- Do not commit or push without clear authority from the active profile or the current user request.
+- If a required sync or push is blocked, stop and report the exact command and error.
+<!-- END BEADS INTEGRATION -->

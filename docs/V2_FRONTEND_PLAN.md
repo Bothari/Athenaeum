@@ -6,13 +6,15 @@ not in scope. This is a frontend replacement against a stable API.
 
 ---
 
-## Status — 2026-08-11
+## Status — 2026-08-28
 
-**The rewrite is complete, and cutover is half done. What remains needs a merge.**
+**The rewrite is complete, and cutover is half done. What remains is a PR.**
 
-Everything is on the long-lived `dev` branch, in the worktree
-`~/Projects/Athenaeum-dev`. 21 commits, working tree clean, nothing pushed.
-Production has not been touched at any point.
+Everything is on `topic/new-ui`, in the worktree `~/Projects/Athenaeum-dev`.
+The branch was called `dev` while this document was being written; it was renamed
+when the repo adopted the `main`/`topic/*`/`dogfood` model, and `main` has since
+been merged into it. Nothing here has been pushed. Production has not been touched
+at any point — it runs published images, so it could not have been.
 
 | | |
 |---|---|
@@ -323,15 +325,17 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    Also wrap the delete so an `IntegrityError` returns a 4xx with a readable
    message rather than a 500. The bare 500 is what made a backend constraint look
    like a broken button.
-9. **Cutover** — released as **v1.1.0**, i.e. a `dev` → `main` merge.
+9. **Cutover** — released as **v1.1.0**, i.e. `topic/new-ui` graduating to `main`.
 
    Steps:
    1. Add a Node build stage to the Dockerfile that runs `vite build` and copies
       the output into `static/`. DONE (2026-08-11).
    2. Delete `static/app.js` and `static/style.css` (~5,700 lines of v1) and the
       `/dev/components` gallery. DONE (2026-08-11) — 6,158 lines.
-   3. Merge `dev` into `main`, tag per the versioning rules in CLAUDE.md.
-   4. Rebuild prod, which builds from `main`.
+   3. Open a PR for `topic/new-ui` against `main` and let CI run it. Merge, then
+      tag per the versioning rules in CLAUDE.md.
+   4. Tagging publishes the image; the live container is updated with
+      `docker compose pull athenaeum && docker compose up -d athenaeum`.
 
    **Decisions made, so they are not reopened:**
 
@@ -343,13 +347,14 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
      upgrades sees no new feature and no changed workflow — a minor by the rules in
      CLAUDE.md, however large the internal change. `v2.0.0` is reserved for the
      release where the app visibly becomes a new thing.
-   - **`dev` is a long-lived integration branch**, not merged-and-deleted.
-     Releases are `dev` → `main` merges **at every release, not only at majors** —
-     merging only at majors would leave `main` stale for months and turn each
-     release into an enormous merge. The containers already track this: prod builds
-     from `~/Projects/Athenaeum` on `main`, `athenaeum-dev` from the worktree
-     `~/Projects/Athenaeum-dev` on `dev`. After a release, merge `main` back into
-     `dev` so hotfixes committed straight to `main` do not cause drift.
+   - **This is one topic branch and it graduates on its own.** The repo's branch
+     model is in CLAUDE.md → "Versioning and branches": `main` is always
+     releasable, each `topic/*` carries one change, and `dogfood` (`:testing`) is a
+     throwaway integration branch that is never merged into anything. A topic
+     reaches `main` by PR, never by way of `dogfood`. Merge `main` into this branch
+     often — it sat 15 commits behind once, and the CLAUDE.md conflict that
+     produced was silent, auto-merging into a file that described two incompatible
+     branch models at the same time.
    - **The Vite dev server stays indefinitely.** `athenaeum-dev-ui` is not retired
      at cutover — it is how UI iteration happens. Only production is Node-free,
      which is what `adapter-static` was chosen for.
