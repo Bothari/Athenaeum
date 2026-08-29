@@ -1,14 +1,12 @@
 """Auto-search: find the best Prowlarr result for a request and snatch it."""
 import logging
 import re
-import uuid
 from datetime import date, datetime, timezone
 
 from ..database import get_db
 from ..settings import get_settings
 from ..services.download_clients import (
-    prowlarr_search, build_prowlarr_query,
-    get_torrent_client, get_usenet_client, _detect_format, _score_result,
+    prowlarr_search, build_prowlarr_query, _detect_format, _score_result,
 )
 from ..services.request_events import log_request_event, set_request_status
 
@@ -228,15 +226,12 @@ async def auto_search_request(request_id: str) -> bool:
     if not download_url:
         return False
 
-    if protocol == "torrent":
-        client, client_name = get_torrent_client(settings)
-    elif protocol == "usenet":
-        client, client_name = get_usenet_client(settings)
-    else:
-        return False
+    from .downloads import NoClientConfigured, create_download, select_client
 
-    if not client:
-        logger.warning("auto_search: no %s client configured for %s", protocol, request_id)
+    try:
+        client, client_name = select_client(settings, protocol)
+    except NoClientConfigured as e:
+        logger.warning("auto_search: %s for %s", e, request_id)
         return False
 
     try:
@@ -249,17 +244,11 @@ async def auto_search_request(request_id: str) -> bool:
             await db.commit()
         return False
 
-    dl_id = str(uuid.uuid4())
     now = _now()
     async with get_db() as db:
-        await db.execute(
-            """INSERT OR IGNORE INTO downloads
-               (id, request_id, title, indexer, guid, info_url, protocol,
-                size, download_client, download_id, status, grabbed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?)""",
-            (dl_id, request_id, best.get("title"), best.get("indexer"),
-             best.get("guid"), best.get("infoUrl"), protocol,
-             best.get("size"), client_name, download_id, now),
+        await create_download(
+            db, release=best, download_client=client_name,
+            download_id=download_id, request_id=request_id,
         )
         await log_request_event(db, request_id, "auto_search_snatched", {
             "title": best.get("title"),

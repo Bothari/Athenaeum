@@ -102,7 +102,8 @@ async def _download_monitor_tick():
                 """SELECT d.id as dl_id, d.download_id, d.download_client, d.request_id,
                           r.status as req_status
                    FROM downloads d JOIN requests r ON r.id = d.request_id
-                   WHERE r.status IN ('snatched', 'downloading')
+                   WHERE d.kind = 'request'
+                   AND r.status IN ('snatched', 'downloading')
                    AND d.download_client IS NOT NULL
                    AND d.download_id IS NOT NULL"""
             )
@@ -164,8 +165,9 @@ async def _download_monitor_tick():
         sd_rows = await (
             await db.execute(
                 """SELECT id, download_id, download_client, status
-                   FROM series_downloads
-                   WHERE status IN ('snatched', 'downloading')
+                   FROM downloads
+                   WHERE kind = 'series_pack'
+                   AND status IN ('snatched', 'downloading')
                    AND download_client IS NOT NULL
                    AND download_id IS NOT NULL"""
             )
@@ -184,14 +186,14 @@ async def _download_monitor_tick():
             async with get_db() as db:
                 if status == "downloading" and row["status"] == "snatched":
                     await db.execute(
-                        "UPDATE series_downloads SET status='downloading', updated_at=? WHERE id=?",
+                        "UPDATE downloads SET status='downloading', updated_at=? WHERE id=?",
                         (now, row["id"]),
                     )
                     await db.commit()
                 elif status == "completed":
                     path = info.get("path") or ""
                     await db.execute(
-                        "UPDATE series_downloads SET status='downloaded', download_path=?, updated_at=? WHERE id=?",
+                        "UPDATE downloads SET status='completed', download_path=?, updated_at=? WHERE id=?",
                         (path, now, row["id"]),
                     )
                     await db.commit()
@@ -204,13 +206,13 @@ async def _download_monitor_tick():
                             logger.warning("SABnzbd remove completed failed for %s: %s", row["download_id"], rm_err)
                 elif status == "failed":
                     await db.execute(
-                        "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                        "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                         (now, row["id"]),
                     )
                     await db.commit()
 
         except Exception as e:
-            logger.warning("download_monitor_tick: error for series_download %s: %s", row["id"], e)
+            logger.warning("download_monitor_tick: error for series pack download %s: %s", row["id"], e)
 
 
 async def _download_monitor():
@@ -247,11 +249,13 @@ async def startup():
     async with get_db() as db:
         stale_packs = await (
             await db.execute(
-                "SELECT id, status FROM series_downloads WHERE status IN ('downloaded', 'organizing')"
+                "SELECT id, status FROM downloads WHERE kind = 'series_pack' AND status IN ('completed', 'organizing')"
             )
         ).fetchall()
     for row in stale_packs:
-        if row["status"] == "downloaded":
+        # 'completed' here means the download finished and still needs mapping.
+        # A fully organised pack is 'organized' and is excluded by the query above.
+        if row["status"] == "completed":
             logger.info("Re-queuing stale series pack mapping compute for %s", row["id"])
             asyncio.create_task(compute_series_pack_mappings(row["id"]))
         else:
