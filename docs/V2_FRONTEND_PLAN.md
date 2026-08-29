@@ -23,10 +23,11 @@ at any point — it runs published images, so it could not have been.
 | Build | done — Dockerfile builds the SPA in a `node:22` stage; runtime is Node-free |
 | v1 deleted | done — 6,158 lines: `app.js`, `style.css`, the v1 shell, `/dev/components` |
 | Checks | `svelte-check` 0/0, `npm run check:zoom` passes, 205 pytest tests pass |
-| Not done | PR to `main`, tag `v1.1.0`, update the live container, post-deploy settings cleanup |
+| Not done | PR to `main`, tag the release, update the live container, post-deploy settings cleanup |
 
-**This ships as `v1.1.0`, not `v2.0.0`.** See §8 item 9. Task tracking has moved
-from this document to beads (`bd ready`); the epic is `ath-9v1`.
+**This ships as a minor, not a major** — see §8 item 9. The digits are picked when
+the branch merges, not here. Task tracking has moved from this document to beads
+(`bd ready`); the epic is `ath-9v1`.
 
 **Where things run**
 
@@ -325,7 +326,7 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
    Also wrap the delete so an `IntegrityError` returns a 4xx with a readable
    message rather than a 500. The bare 500 is what made a backend constraint look
    like a broken button.
-9. **Cutover** — released as **v1.1.0**, i.e. `topic/new-ui` graduating to `main`.
+9. **Cutover** — released as a **minor**, i.e. `topic/new-ui` graduating to `main`.
 
    Steps:
    1. Add a Node build stage to the Dockerfile that runs `vite build` and copies
@@ -341,12 +342,15 @@ Each phase ends with something runnable at `athenaeum-dev.bothari.com`.
 
    - **v1 is not kept runnable.** It is deleted at cutover and survives only in
      git history. No `/v1` route, no preserved assets.
-   - **This ships as `v1.1.0`, not `v2.0.0`** (decided 2026-08-11). "v2" is this
-     document's codename for the rewrite, and it should not leak into the version.
-     The port is a faithful visual port by explicit decision, so a user who
-     upgrades sees no new feature and no changed workflow — a minor by the rules in
-     CLAUDE.md, however large the internal change. `v2.0.0` is reserved for the
-     release where the app visibly becomes a new thing.
+   - **This is a minor, not a major** (decided 2026-08-11). "v2" is this document's
+     codename for the rewrite, and it should not leak into the version. The port is
+     a faithful visual port by explicit decision, so a user who upgrades sees no new
+     feature and no changed workflow — a minor by the rules in CLAUDE.md, however
+     large the internal change. A major is reserved for the release where the app
+     visibly becomes a new thing.
+
+     The exact digits are chosen when the branch merges, not written down here.
+     `main` moves, and a sibling topic may take the next number first.
    - **This is one topic branch and it graduates on its own.** The repo's branch
      model is in CLAUDE.md → "Versioning and branches": `main` is always
      releasable, each `topic/*` carries one change, and `dogfood` (`:testing`) is a
@@ -386,9 +390,9 @@ None. Both are closed:
   not by a check — the table row heights, the mobile-only filter failures, square
   covers, and the Downloads tab all passed typechecking and the build. Worth
   deciding whether component tests (vitest) earn their place.
-- **RESOLVED — release flavour** (2026-08-28). Straight `v1.1.0`. No beta: every
-  `v*` tag is a real release, and pre-release exposure already has a channel in
+- **RESOLVED — release flavour** (2026-08-28). Ship straight, no beta: every `v*`
+  tag is a real release, and pre-release exposure already has a channel in
   `dogfood`/`:testing`, so a beta tag would duplicate it. Rolling back is pinning
   the previous image tag, which is cheap — that is what makes shipping direct
-  reasonable despite v1 being deleted. See §8 item 9 for why the number is 1.1.0
-  and not 2.0.0.
+  reasonable despite v1 being deleted. See §8 item 9 for why it is a minor rather
+  than a major.

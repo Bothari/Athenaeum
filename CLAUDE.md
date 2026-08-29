@@ -83,8 +83,13 @@ minor, because a user who upgrades sees the same app. Reserve a major for a rele
 where the app visibly becomes a new thing, or where upgrading breaks something for
 the user.
 
-Do not let a project codename leak into the version. "v2" is the name of the frontend
-rewrite (`docs/V2_FRONTEND_PLAN.md`); it ships as `v1.1.0`.
+**Pick the number at merge, not while the branch is in flight.** A topic branch
+decides whether it is a patch, minor or major; it does not name the digits. `main`
+moves underneath it and another topic may take the next number first, so a version
+written into a branch's docs is stale from the moment a sibling merges.
+
+Do not let a project codename leak into the version either. "v2" is the name of the
+frontend rewrite (`docs/V2_FRONTEND_PLAN.md`); it is a minor.
 
 ### Branches
 
