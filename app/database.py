@@ -420,6 +420,84 @@ async def _run_migrations(db):
         await db.execute("CREATE INDEX idx_users_oidc ON users(oidc_iss, oidc_sub)")
         await db.execute("PRAGMA user_version = 15")
 
+    if current < 16:
+        # Unify `downloads` and `series_downloads`. They were near-identical tables
+        # that had already drifted: separate poller loops, separate organizer entry
+        # points, and two different words for "done" ('completed' vs 'downloaded').
+        # One table with a `kind` discriminator means every later fix is written once.
+        #
+        # Uniqueness moves from a global UNIQUE(guid) to per-scope pairs. The global
+        # constraint could not survive the merge (a guid present in both tables would
+        # collide) and was wrong anyway: it stopped the same release ever being
+        # recorded against two different requests. SQLite treats NULLs as distinct in
+        # a UNIQUE, so series rows (request_id NULL) do not constrain request rows,
+        # and vice versa.
+        await db.execute("""
+            CREATE TABLE downloads_new (
+                id                TEXT PRIMARY KEY,
+                kind              TEXT NOT NULL DEFAULT 'request',
+                request_id        TEXT REFERENCES requests(id) ON DELETE CASCADE,
+                series_id         TEXT REFERENCES series(id),
+                type              TEXT,
+                title             TEXT,
+                indexer           TEXT,
+                guid              TEXT,
+                info_url          TEXT,
+                protocol          TEXT,
+                size              INTEGER,
+                download_client   TEXT,
+                download_id       TEXT,
+                download_path     TEXT,
+                proposed_mappings TEXT,
+                status            TEXT,
+                grabbed_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                UNIQUE(request_id, guid),
+                UNIQUE(series_id, guid)
+            )
+        """)
+        await db.execute("""
+            INSERT INTO downloads_new
+                (id, kind, request_id, series_id, type, title, indexer, guid,
+                 info_url, protocol, size, download_client, download_id,
+                 download_path, proposed_mappings, status, grabbed_at, updated_at)
+            SELECT id, 'request', request_id, NULL, NULL, title, indexer, guid,
+                   info_url, protocol, size, download_client, download_id,
+                   download_path, NULL, status, grabbed_at, grabbed_at
+            FROM downloads
+        """)
+        # The two tables used 'completed' for different things: a finished
+        # DOWNLOAD in `downloads`, but a fully ORGANISED pack in series_downloads,
+        # which called a finished download 'downloaded'. Mapping downloaded ->
+        # completed alone would collapse the series terminal state into a
+        # mid-pipeline one, and the startup sweep would re-organise finished packs.
+        # So rename both: downloaded -> completed (download finished, matching
+        # `downloads`) and completed -> organized (the pack terminal state).
+        # A single CASE is safe because SQL evaluates it against the source value.
+        await db.execute("""
+            INSERT INTO downloads_new
+                (id, kind, request_id, series_id, type, title, indexer, guid,
+                 info_url, protocol, size, download_client, download_id,
+                 download_path, proposed_mappings, status, grabbed_at, updated_at)
+            SELECT id, 'series_pack', NULL, series_id, type, title, indexer, guid,
+                   info_url, protocol, size, download_client, download_id,
+                   download_path, proposed_mappings,
+                   CASE status
+                       WHEN 'downloaded' THEN 'completed'
+                       WHEN 'completed' THEN 'organized'
+                       ELSE status
+                   END,
+                   grabbed_at, updated_at
+            FROM series_downloads
+        """)
+        await db.execute("DROP TABLE downloads")
+        await db.execute("DROP TABLE series_downloads")
+        await db.execute("ALTER TABLE downloads_new RENAME TO downloads")
+        await db.execute("CREATE INDEX idx_downloads_request ON downloads(request_id)")
+        await db.execute("CREATE INDEX idx_downloads_series  ON downloads(series_id)")
+        await db.execute("CREATE INDEX idx_downloads_status  ON downloads(status)")
+        await db.execute("PRAGMA user_version = 16")
+
     await db.commit()
 
 

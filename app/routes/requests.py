@@ -707,18 +707,12 @@ async def trigger_download(request_id: str, body: DownloadBody):
 
     settings = await get_settings()
 
-    from ..services.download_clients import get_torrent_client, get_usenet_client
+    from ..services.downloads import NoClientConfigured, create_download, select_client
 
-    if body.protocol == "torrent":
-        client, client_name = get_torrent_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No torrent downloader configured")
-    elif body.protocol == "usenet":
-        client, client_name = get_usenet_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No usenet downloader configured")
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown protocol: {body.protocol}")
+    try:
+        client, client_name = select_client(settings, body.protocol)
+    except NoClientConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         download_id = await client.add(body.download_url)
@@ -726,15 +720,10 @@ async def trigger_download(request_id: str, body: DownloadBody):
         raise HTTPException(status_code=502, detail=f"Download client error: {e}")
 
     now = _now()
-    dl_id = str(uuid.uuid4())
     async with get_db() as db:
-        await db.execute(
-            """INSERT OR IGNORE INTO downloads
-               (id, request_id, title, indexer, guid, info_url, protocol,
-                size, download_client, download_id, status, grabbed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?)""",
-            (dl_id, request_id, body.title, body.indexer, body.guid,
-             body.info_url, body.protocol, body.size, client_name, download_id, now),
+        dl_id = await create_download(
+            db, release=body.model_dump(), download_client=client_name,
+            download_id=download_id, request_id=request_id,
         )
         await log_request_event(db, request_id, "grabbed", {
             "title": body.title, "indexer": body.indexer,

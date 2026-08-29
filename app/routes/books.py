@@ -835,8 +835,8 @@ async def list_series_downloads(series_id: str, auth: dict = Depends(require_adm
         rows = await (
             await db.execute(
                 """SELECT id, status, type, title, protocol, size, grabbed_at, updated_at, proposed_mappings
-                   FROM series_downloads
-                   WHERE series_id = ? AND status NOT IN ('completed', 'failed')
+                   FROM downloads
+                   WHERE series_id = ? AND status NOT IN ('organized', 'failed')
                    ORDER BY grabbed_at DESC LIMIT 1""",
                 (series_id,),
             )
@@ -870,7 +870,7 @@ async def confirm_series_pack(
     async with get_db() as db:
         row = await (
             await db.execute(
-                "SELECT id, status FROM series_downloads WHERE id = ? AND series_id = ?",
+                "SELECT id, status FROM downloads WHERE id = ? AND series_id = ?",
                 (sdl_id, series_id),
             )
         ).fetchone()
@@ -886,7 +886,7 @@ async def confirm_series_pack(
         ]
         now = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "UPDATE series_downloads SET status='organizing', proposed_mappings=?, updated_at=? WHERE id=?",
+            "UPDATE downloads SET status='organizing', proposed_mappings=?, updated_at=? WHERE id=?",
             (json.dumps(confirmed), now, sdl_id),
         )
         await db.commit()
@@ -902,7 +902,7 @@ async def rescan_series_pack(series_id: str, sdl_id: str, auth: dict = Depends(r
     async with get_db() as db:
         row = await (
             await db.execute(
-                "SELECT id, status FROM series_downloads WHERE id = ? AND series_id = ?",
+                "SELECT id, status FROM downloads WHERE id = ? AND series_id = ?",
                 (sdl_id, series_id),
             )
         ).fetchone()
@@ -912,7 +912,7 @@ async def rescan_series_pack(series_id: str, sdl_id: str, auth: dict = Depends(r
             raise HTTPException(status_code=400, detail=f"Status is {row['status']}, not awaiting_review")
         now = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "UPDATE series_downloads SET status='rescanning', updated_at=? WHERE id=?",
+            "UPDATE downloads SET status='rescanning', updated_at=? WHERE id=?",
             (now, sdl_id),
         )
         await db.commit()
@@ -1007,34 +1007,22 @@ async def trigger_series_pack_download(
 
     settings = await get_settings()
 
-    from ..services.download_clients import get_torrent_client, get_usenet_client
+    from ..services.downloads import NoClientConfigured, create_download, select_client
 
-    if body.protocol == "torrent":
-        client, client_name = get_torrent_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No torrent downloader configured")
-    elif body.protocol == "usenet":
-        client, client_name = get_usenet_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No usenet downloader configured")
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown protocol: {body.protocol}")
+    try:
+        client, client_name = select_client(settings, body.protocol)
+    except NoClientConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         download_id = await client.add(body.download_url)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Download client error: {e}")
 
-    now = datetime.now(timezone.utc).isoformat()
-    sdl_id = str(uuid.uuid4())
     async with get_db() as db:
-        await db.execute(
-            """INSERT OR IGNORE INTO series_downloads
-               (id, series_id, type, title, indexer, guid, info_url, protocol,
-                size, download_client, download_id, status, grabbed_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?, ?)""",
-            (sdl_id, series_id, body.type, body.title, body.indexer, body.guid,
-             body.info_url, body.protocol, body.size, client_name, download_id, now, now),
+        sdl_id = await create_download(
+            db, release=body.model_dump(), download_client=client_name,
+            download_id=download_id, series_id=series_id, type=body.type,
         )
         await db.commit()
 

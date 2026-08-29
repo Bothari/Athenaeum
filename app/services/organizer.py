@@ -784,7 +784,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
     try:
         async with get_db() as db:
             sdl_row = await (
-                await db.execute("SELECT * FROM series_downloads WHERE id = ?", (series_dl_id,))
+                await db.execute("SELECT * FROM downloads WHERE id = ?", (series_dl_id,))
             ).fetchone()
         if not sdl_row:
             logger.error("compute_series_pack_mappings: record %s not found", series_dl_id)
@@ -798,7 +798,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
             logger.error("compute_series_pack_mappings: no download_path for %s", series_dl_id)
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -828,7 +828,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
             logger.error("compute_series_pack_mappings: invalid source %s", src)
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -917,7 +917,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
 
         async with get_db() as db:
             await db.execute(
-                "UPDATE series_downloads SET status='awaiting_review', proposed_mappings=?, updated_at=? WHERE id=?",
+                "UPDATE downloads SET status='awaiting_review', proposed_mappings=?, updated_at=? WHERE id=?",
                 (json.dumps(mappings_data), _now(), series_dl_id),
             )
             await db.commit()
@@ -934,7 +934,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
             from ..database import get_db
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (datetime.now(timezone.utc).isoformat(), series_dl_id),
                 )
                 await db.commit()
@@ -959,7 +959,7 @@ async def auto_organize_series_pack(series_dl_id: str):
 
         async with get_db() as db:
             sdl_row = await (
-                await db.execute("SELECT * FROM series_downloads WHERE id = ?", (series_dl_id,))
+                await db.execute("SELECT * FROM downloads WHERE id = ?", (series_dl_id,))
             ).fetchone()
         if not sdl_row:
             logger.error("auto_organize_series_pack: record %s not found", series_dl_id)
@@ -974,7 +974,7 @@ async def auto_organize_series_pack(series_dl_id: str):
             logger.error("auto_organize_series_pack: no proposed_mappings for %s", series_dl_id)
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -986,7 +986,7 @@ async def auto_organize_series_pack(series_dl_id: str):
         if not to_place:
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='organized', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -1068,7 +1068,7 @@ async def auto_organize_series_pack(series_dl_id: str):
         if not placed:
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='organized', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -1178,7 +1178,7 @@ async def auto_organize_series_pack(series_dl_id: str):
 
         async with get_db() as db:
             await db.execute(
-                "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                "UPDATE downloads SET status='organized', updated_at=? WHERE id=?",
                 (_now(), series_dl_id),
             )
             await db.commit()
@@ -1191,7 +1191,7 @@ async def auto_organize_series_pack(series_dl_id: str):
             from ..database import get_db
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (datetime.now(timezone.utc).isoformat(), series_dl_id),
                 )
                 await db.commit()
