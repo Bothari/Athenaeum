@@ -23,7 +23,7 @@ at any point — it runs published images, so it could not have been.
 | Build | done — Dockerfile builds the SPA in a `node:22` stage; runtime is Node-free |
 | v1 deleted | done — 6,158 lines: `app.js`, `style.css`, the v1 shell, `/dev/components` |
 | Checks | `svelte-check` 0/0, `npm run check:zoom` passes, 205 pytest tests pass |
-| Not done | merge to `main`, tag `v1.1.0-beta.1`, rebuild prod, post-deploy settings cleanup |
+| Not done | PR to `main`, tag `v1.1.0`, update the live container, post-deploy settings cleanup |
 
 **This ships as `v1.1.0`, not `v2.0.0`.** See §8 item 9. Task tracking has moved
 from this document to beads (`bd ready`); the epic is `ath-9v1`.
@@ -386,8 +386,9 @@ None. Both are closed:
   not by a check — the table row heights, the mobile-only filter failures, square
   covers, and the Downloads tab all passed typechecking and the build. Worth
   deciding whether component tests (vitest) earn their place.
-- **RESOLVED — release flavour** (2026-08-11). `v1.1.0-beta.1`, soak on production,
-  then `v1.1.0`. The beta earns its place despite the change being invisible to
-  users, precisely because it is enormous internally: v1 is deleted at cutover, so
-  rollback means reverting a merge rather than flipping a route. See §8 item 9 for
-  why the number is 1.1.0 and not 2.0.0.
+- **RESOLVED — release flavour** (2026-08-28). Straight `v1.1.0`. No beta: every
+  `v*` tag is a real release, and pre-release exposure already has a channel in
+  `dogfood`/`:testing`, so a beta tag would duplicate it. Rolling back is pinning
+  the previous image tag, which is cheap — that is what makes shipping direct
+  reasonable despite v1 being deleted. See §8 item 9 for why the number is 1.1.0
+  and not 2.0.0.
