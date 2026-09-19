@@ -17,18 +17,25 @@
 	let items = $state<SearchResult[]>([]);
 	let loading = $state(true);
 	let failed = $state(false);
+	/** Why it failed, when the backend told us. */
+	let failureReason = $state('');
 
 	$effect(() => {
 		const id = authorId;
 		let cancelled = false;
 		loading = true;
 		failed = false;
+		failureReason = '';
 
 		getAlsoBy(id)
 			.then((data) => {
 				if (cancelled) return;
-				if (data.error) failed = true;
-				else items = data.items ?? [];
+				// Keep the reason: "rate limited" and "could not be reached" are
+				// different problems, and a bare boolean throws that away.
+				if (data.error) {
+					failed = true;
+					failureReason = data.error;
+				} else items = data.items ?? [];
 			})
 			.catch(() => {
 				if (!cancelled) failed = true;
@@ -50,8 +57,8 @@
 {#if loading}
 	<p class="dim">Checking Hardcover…</p>
 {:else if failed}
-	<!-- v1's wording, kept. -->
-	<p class="dim">Could not reach Hardcover to check for more books.</p>
+	<!-- v1's wording as the fallback; the backend's reason when it gave one. -->
+	<p class="dim">{failureReason || 'Could not reach Hardcover to check for more books.'}</p>
 {:else if items.length === 0}
 	<p class="dim">You already have everything. True super fan status achieved.</p>
 {:else}

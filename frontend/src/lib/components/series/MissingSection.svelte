@@ -122,9 +122,11 @@
 	<div class="heading-row"><span class="heading">Missing from Series</span></div>
 	<LoadingState compact />
 {:else if failed || data?.error}
-	<!-- v1 silently blanked this section on failure; saying so is more useful. -->
+	<!-- v1 silently blanked this section on failure; saying so is more useful.
+	     The backend sends a reason ("rate limited" vs "could not be reached"),
+	     so prefer it over the generic sentence. -->
 	<div class="heading-row"><span class="heading">Missing from Series</span></div>
-	<p class="dim">Could not reach Hardcover to check for missing books.</p>
+	<p class="dim">{data?.error || 'Could not reach Hardcover to check for missing books.'}</p>
 {:else if (data?.items?.length ?? 0) === 0}
 	<div class="heading-row">
 		<span class="heading">Missing from Series</span>
