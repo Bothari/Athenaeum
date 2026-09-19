@@ -3,6 +3,13 @@ import type { SearchResult } from '$lib/types/search';
 
 interface SearchResponse {
 	results?: SearchResult[];
+	/**
+	 * Set when Hardcover could not be reached or refused the request. The call
+	 * still resolves 200, so this must be checked before rendering `results`:
+	 * treating it as an empty list is what made two rate-limit outages read as
+	 * "no results found" for hours.
+	 */
+	error?: string;
 }
 
 /** Quick title search. */
