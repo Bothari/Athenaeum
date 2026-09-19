@@ -237,6 +237,169 @@ async def _get_or_create_series(db, name: str, abs_series_id: str = "", hc_serie
     return series_id
 
 
+# ── Hardcover rate limiting ───────────────────────────────────────────────────
+#
+# Hardcover publishes its budget on every response:
+#   ratelimit-policy: "Free (JWT)";q=60;w=60;burst=5, "daily";q=5000;w=86400
+# i.e. 60 requests per minute and 5000 per day, with the remaining allowance in
+# x-ratelimit-remaining and x-ratelimit-daily-remaining.
+#
+# Two rules follow, and both exist because a retry storm once consumed the whole
+# daily quota and took interactive search down with it until the window reset:
+#
+#  1. A 429 is a STOP, not a retry. The daily window resets hours later, so no
+#     amount of in-run retrying can succeed, and a rejected request still counts
+#     against the quota — retrying digs the hole deeper the longer it runs.
+#  2. Background work yields before the quota is gone. Linking and metadata
+#     refresh are never urgent; a user typing in the search box is. Background
+#     stages stop once the daily allowance falls to HC_DAILY_RESERVE, leaving
+#     that much for interactive search until the window resets.
+
+HC_API_URL = "https://api.hardcover.app/v1/graphql"
+
+# Requests held back from background work so interactive search keeps working
+# until the daily window resets.
+HC_DAILY_RESERVE = 500
+
+# Minimum spacing between individual Hardcover REQUESTS, enforced globally in
+# hc_post. The per-minute allowance is 60, so 1.0s sits exactly on the limit and
+# 1.2s (50/min) leaves room for an interactive search sharing the budget.
+#
+# This has to be per-request, not per-item: one "item" in the linking loop is a
+# _hc_book_search, which fans out to four requests (three pages plus a
+# title+author query). Pacing per item ran at roughly 200 requests/min against a
+# 60/min ceiling, so it sat permanently in per-minute throttling — burning quota
+# on rejected requests while making almost no progress.
+HC_MIN_REQUEST_INTERVAL = 1.2
+
+# A 429 whose retry-after is under this is the per-minute window, which is worth
+# waiting out. Anything longer is the daily quota, which resets hours later and
+# must end the cycle instead.
+HC_SHORT_WAIT_MAX = 90.0
+
+# How many times one item may be re-attempted after a short throttle before it is
+# abandoned. Each attempt costs that item's whole request fan-out, so this is a
+# quota guard, not just a liveness guard.
+HC_MAX_THROTTLE_RETRIES = 3
+
+# Budget for the metadata top-up at the end of library_sync. Small on purpose:
+# the bulk of that work belongs to cache_refresh, which has its own hour.
+SYNC_META_BUDGET = 300.0
+
+# Last daily allowance Hardcover reported, shared across every call site in this
+# module. None means nothing has been observed yet this process.
+_hc_daily_remaining: int | None = None
+
+# Serialises request pacing across every concurrent caller in this process.
+_hc_pace_lock: asyncio.Lock | None = None
+_hc_last_request: float = 0.0
+
+
+async def _hc_pace() -> None:
+    """Block until HC_MIN_REQUEST_INTERVAL has passed since the previous request.
+
+    The lock is built lazily so importing this module needs no running event loop.
+    """
+    global _hc_pace_lock, _hc_last_request
+    if _hc_pace_lock is None:
+        _hc_pace_lock = asyncio.Lock()
+    async with _hc_pace_lock:
+        wait = _hc_last_request + HC_MIN_REQUEST_INTERVAL - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _hc_last_request = time.monotonic()
+
+
+class HardcoverRateLimited(Exception):
+    """Hardcover refused the request, or background work has spent its share of
+    the daily quota. Always aborts the current cache_refresh cycle."""
+
+    def __init__(self, message: str, retry_after: float = 0.0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+async def _hc_wait_or_abort(exc: "HardcoverRateLimited", deadline: float) -> None:
+    """Sleep out a brief per-minute throttle, or re-raise to end the cycle.
+
+    The two Hardcover limits need opposite responses: the per-minute one clears in
+    seconds and is worth waiting for, while the daily one resets hours later, so
+    retrying it only burns more of a quota that is already gone.
+    """
+    wait = exc.retry_after
+    if wait <= 0 or wait > HC_SHORT_WAIT_MAX or time.monotonic() + wait >= deadline:
+        raise exc
+    logger.info("HC throttled for %.0fs (per-minute window), waiting it out", wait)
+    await asyncio.sleep(wait)
+
+
+def hc_daily_remaining() -> int | None:
+    """Daily allowance as of the last response, for callers that want to report it."""
+    return _hc_daily_remaining
+
+
+def _hc_note_headers(resp: httpx.Response) -> None:
+    global _hc_daily_remaining
+    raw = resp.headers.get("x-ratelimit-daily-remaining")
+    if raw is None:
+        return
+    try:
+        _hc_daily_remaining = int(raw)
+    except (TypeError, ValueError):
+        pass
+
+
+def _hc_retry_after(resp: httpx.Response) -> float:
+    try:
+        return float(resp.headers.get("retry-after") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def hc_post(
+    gql: str,
+    variables: dict,
+    api_key: str,
+    *,
+    background: bool = True,
+    timeout: float = 10.0,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """POST a GraphQL query to Hardcover, honouring the published rate limits.
+
+    Raises HardcoverRateLimited on a 429, and — when background is True — before
+    sending at all if the daily allowance has fallen to the reserve. Callers in
+    background stages must let that exception propagate so the cycle ends;
+    swallowing it reinstates the retry storm this exists to prevent.
+    """
+    if background and _hc_daily_remaining is not None and _hc_daily_remaining <= HC_DAILY_RESERVE:
+        raise HardcoverRateLimited(
+            f"daily quota down to {_hc_daily_remaining}, holding the last "
+            f"{HC_DAILY_RESERVE} for interactive search"
+        )
+
+    async def _send(c: httpx.AsyncClient) -> dict:
+        await _hc_pace()
+        resp = await c.post(
+            HC_API_URL,
+            json={"query": gql, "variables": variables},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
+        _hc_note_headers(resp)
+        if resp.status_code == 429:
+            raise HardcoverRateLimited(
+                f"Hardcover rate limit reached ({resp.headers.get('ratelimit', 'no policy header')})",
+                retry_after=_hc_retry_after(resp),
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    if client is not None:
+        return await _send(client)
+    async with httpx.AsyncClient(timeout=timeout) as c:
+        return await _send(c)
+
+
 async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int = 3) -> list:
     """Fetch HC book search results for both title-only and title+author queries concurrently.
 
@@ -245,7 +408,6 @@ async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int
     the scorer sees them, but final ordering is left to the caller).
     """
     gql = 'query Search($q: String!, $page: Int!) { search(query: $q, query_type: "Book", per_page: 25, page: $page) { results } }'
-    headers = {"Authorization": f"Bearer {api_key}"}
 
     # Title-only: paginate broadly. Title+author: single page — it's targeted enough.
     fetches: list[tuple[str, int]] = [(title.strip(), p) for p in range(1, pages + 1)]
@@ -253,21 +415,21 @@ async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int
         fetches.append((f"{title.strip()} {author.strip()}", 1))
 
     async def fetch_page(client: httpx.AsyncClient, query: str, page: int) -> list:
-        resp = await client.post(
-            "https://api.hardcover.app/v1/graphql",
-            json={"query": gql, "variables": {"q": query, "page": page}},
-            headers=headers,
-        )
-        if resp.status_code == 429:
-            resp.raise_for_status()
-        resp.raise_for_status()
-        return resp.json()["data"]["search"]["results"].get("hits", [])
+        payload = await hc_post(gql, {"q": query, "page": page}, api_key, client=client)
+        return payload["data"]["search"]["results"].get("hits", [])
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         results = await asyncio.gather(
             *[fetch_page(client, q, p) for q, p in fetches],
             return_exceptions=True,
         )
+
+    # A rate limit must not be quietly dropped here: gather(return_exceptions=True)
+    # would otherwise turn "Hardcover refused us" into "this book has no matches",
+    # and the caller would move on to burn the next book's requests the same way.
+    for r in results:
+        if isinstance(r, HardcoverRateLimited):
+            raise r
 
     seen: set = set()
     deduped: list = []
@@ -284,29 +446,20 @@ async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int
     return sorted(deduped, key=lambda h: h.get("document", {}).get("users_count") or 0, reverse=True)
 
 
-async def _fetch_hc_book_meta(hc_book_id: int, api_key: str, _retry: int = 0) -> dict:
+async def _fetch_hc_book_meta(hc_book_id: int, api_key: str) -> dict:
     """Fetch title, slug, release_date, and canonical_id for a single HC book.
     If the book has a canonical_id, follows it once and returns the canonical book's
     data with 'canonical_id' set so callers can update stored HC IDs.
-    Retries up to 4 times with exponential backoff on 429."""
+
+    A rate limit propagates as HardcoverRateLimited so the caller can end the run.
+    This used to retry a 429 four times with backoff, which multiplied every book
+    into five rejected-but-still-counted requests once the daily quota was gone."""
     gql = "query Meta($id: Int!) { books_by_pk(id: $id) { title slug release_date canonical_id } }"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={"query": gql, "variables": {"id": hc_book_id}},
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            )
-            resp.raise_for_status()
-        book = (resp.json().get("data") or {}).get("books_by_pk") or {}
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429 and _retry < 4:
-            backoff = min(2 ** _retry * 3, 30)
-            logger.warning("_fetch_hc_book_meta(%s) 429, retrying in %ss", hc_book_id, backoff)
-            await asyncio.sleep(backoff)
-            return await _fetch_hc_book_meta(hc_book_id, api_key, _retry + 1)
-        logger.warning("_fetch_hc_book_meta(%s) failed: %s", hc_book_id, e)
-        return {}
+        payload = await hc_post(gql, {"id": hc_book_id}, api_key)
+        book = (payload.get("data") or {}).get("books_by_pk") or {}
+    except HardcoverRateLimited:
+        raise
     except Exception as e:
         logger.warning("_fetch_hc_book_meta(%s) failed: %s", hc_book_id, e)
         return {}
@@ -323,15 +476,11 @@ async def _fetch_hc_release_date(hc_book_id: int, api_key: str) -> str:
     """Fetch release_date for a single HC book. Returns ISO date string or ''."""
     gql = "query ReleaseDate($id: Int!) { books_by_pk(id: $id) { release_date } }"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={"query": gql, "variables": {"id": hc_book_id}},
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-        book = (resp.json().get("data") or {}).get("books_by_pk") or {}
+        payload = await hc_post(gql, {"id": hc_book_id}, api_key)
+        book = (payload.get("data") or {}).get("books_by_pk") or {}
         return book.get("release_date") or ""
+    except HardcoverRateLimited:
+        raise
     except Exception as e:
         logger.warning("_fetch_hc_release_date(%s) failed: %s", hc_book_id, e)
         return ""
@@ -354,19 +503,15 @@ async def _hc_series_for_book(hc_book_id: str, api_key: str) -> list:
     }
     """
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={"query": gql, "variables": {"id": int(hc_book_id)}},
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-        book = resp.json().get("data", {}).get("books_by_pk") or {}
+        payload = await hc_post(gql, {"id": int(hc_book_id)}, api_key, timeout=15.0)
+        book = payload.get("data", {}).get("books_by_pk") or {}
         return [
             entry["series"]
             for entry in (book.get("book_series") or [])
             if entry.get("series") and (entry["series"].get("books_count") or 0) > 0
         ]
+    except HardcoverRateLimited:
+        raise
     except Exception as e:
         logger.debug(f"HC series lookup for book {hc_book_id} failed: {e}")
         return []
@@ -418,7 +563,9 @@ async def _link_to_hardcover(book_id: str, settings: dict) -> bool:
 
     try:
         hits = await _hc_book_search(title, api_key, author=author)
-    except httpx.HTTPStatusError:
+    except (HardcoverRateLimited, httpx.HTTPStatusError):
+        # Must not become a per-book failure: the book is fine, the quota is not,
+        # and marking it failed both loses the retry and hides why the run stopped.
         raise
     except Exception as e:
         logger.warning(f"HC link search failed for book {book_id}: {e}")
@@ -590,40 +737,52 @@ async def _upsert_task_state(task: str, running: bool, last_result: str = None):
 async def _hc_rate_limited_loop(
     items: list, fn, deadline: float, on_progress=None, progress_interval: float = 4.0
 ) -> dict:
-    """Run fn(item) for each item, retrying 429s up to MAX_RETRIES times.
+    """Run fn(item) for each item until the work, the deadline or the quota runs out.
+
+    A HardcoverRateLimited propagates to the caller: the remaining items are counted
+    as skipped and the cycle ends. It is deliberately not retried here — the daily
+    window resets hours later, so a retry cannot succeed within a run, and each
+    rejected request still counts against the quota.
 
     on_progress(linked, failed, remaining) is called roughly every progress_interval seconds.
     """
-    MAX_RETRIES = 5
     counters = {"linked": 0, "failed": 0, "skipped": 0}
-    queue = [[item, 0] for item in items]  # [item, retry_count]
-    backoff = 0.0
+    queue = [[item, 0] for item in items]  # [item, short-throttle attempts]
     last_progress = time.monotonic() - progress_interval  # fire immediately on first item
     while queue:
         if time.monotonic() >= deadline:
             counters["skipped"] += len(queue)
+            logger.info("HC loop stopping: deadline reached, %d item(s) left", len(queue))
             break
-        item, retries = queue.pop(0)
-        await asyncio.sleep(backoff if backoff else 1.0)
+        item, attempts = queue.pop(0)
         try:
             if await fn(item):
                 counters["linked"] += 1
-                backoff = 0.0
             else:
                 counters["failed"] += 1
+        except HardcoverRateLimited as e:
+            try:
+                await _hc_wait_or_abort(e, deadline)
+            except HardcoverRateLimited:
+                counters["skipped"] += len(queue) + 1
+                if on_progress:
+                    await on_progress(counters["linked"], counters["failed"], 0)
+                raise
+            # Short throttle: the item never ran, so put it back — but bounded.
+            # An unbounded re-queue is how this loop once fired ~170 attempts at
+            # three books: every attempt re-runs the item's full request fan-out,
+            # so a permanently throttled item burns quota forever without moving.
+            if attempts + 1 >= HC_MAX_THROTTLE_RETRIES:
+                logger.warning(
+                    "HC item still throttled after %d attempts, giving up on it",
+                    attempts + 1,
+                )
+                counters["failed"] += 1
+            else:
+                queue.insert(0, [item, attempts + 1])
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                backoff = min((backoff or 2.0) * 2, 60.0)
-                if retries < MAX_RETRIES:
-                    queue.append([item, retries + 1])
-                    logger.warning(f"HC rate limited, backing off {backoff:.0f}s (retry {retries+1}/{MAX_RETRIES})")
-                else:
-                    logger.warning(f"HC rate limited, max retries exceeded for item")
-                    counters["failed"] += 1
-            else:
-                logger.warning(f"HC HTTP error: {e}")
-                backoff = 0.0
-                counters["failed"] += 1
+            logger.warning(f"HC HTTP error: {e}")
+            counters["failed"] += 1
 
         now = time.monotonic()
         if on_progress and (now - last_progress) >= progress_interval:
@@ -671,21 +830,11 @@ async def _hc_catchup_authors(settings: dict, deadline: float, on_progress=None)
 
     async def link_author(row) -> bool:
         author_id, name, existing_hc_id = row["author_id"], row["name"], row["hardcover_author_id"]
+        gql = 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 15) { results } }'
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    "https://api.hardcover.app/v1/graphql",
-                    json={
-                        "query": 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 15) { results } }',
-                        "variables": {"q": name},
-                    },
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                if resp.status_code == 429:
-                    resp.raise_for_status()
-                resp.raise_for_status()
-                hits = resp.json()["data"]["search"]["results"].get("hits", [])
-        except httpx.HTTPStatusError:
+            payload = await hc_post(gql, {"q": name}, api_key, timeout=15.0)
+            hits = payload["data"]["search"]["results"].get("hits", [])
+        except (HardcoverRateLimited, httpx.HTTPStatusError):
             raise
         except Exception as e:
             logger.warning(f"HC author search failed for '{name}': {e}")
@@ -753,21 +902,11 @@ async def _hc_catchup_series(settings: dict, deadline: float, on_progress=None) 
 
     async def link_series(row) -> bool:
         series_id, name, existing_hc_id = row["series_id"], row["name"], row["hardcover_series_id"]
+        gql = 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 15) { results } }'
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    "https://api.hardcover.app/v1/graphql",
-                    json={
-                        "query": 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 15) { results } }',
-                        "variables": {"q": name},
-                    },
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                if resp.status_code == 429:
-                    resp.raise_for_status()
-                resp.raise_for_status()
-                hits = resp.json()["data"]["search"]["results"].get("hits", [])
-        except httpx.HTTPStatusError:
+            payload = await hc_post(gql, {"q": name}, api_key, timeout=15.0)
+            hits = payload["data"]["search"]["results"].get("hits", [])
+        except (HardcoverRateLimited, httpx.HTTPStatusError):
             raise
         except Exception as e:
             logger.warning(f"HC series search failed for '{name}': {e}")
@@ -819,8 +958,46 @@ async def _hc_catchup_series(settings: dict, deadline: float, on_progress=None) 
     return await _hc_rate_limited_loop(list(rows), link_series, deadline, on_progress=on_progress)
 
 
-async def _hc_refresh_meta(api_key: str) -> int:
-    """Fetch and store slug + release_date for HC-linked books missing either, or with a future date. Returns count updated."""
+async def _adopt_canonical_hc_id(db, book_id: str, canonical_id) -> bool:
+    """Point a book at Hardcover's canonical id for it, unless another book holds it.
+
+    book_links.hardcover_id is UNIQUE, so a blind UPDATE raises IntegrityError the
+    moment two local books resolve to one canonical Hardcover book — which aborted
+    every cache_refresh run for months.
+
+    Colliding does NOT mean the two local books are duplicates. Observed cases:
+    Hardcover holds two placeholder "Untitled" rows for one unannounced book and
+    canonicalises one onto the other, while locally they are legitimately distinct
+    series entries (Empyrean #4 and #5, Threads of Power #2 and #3). Merging those
+    would destroy real rows. So this skips and reports, exactly as the equivalent
+    guard in _link_to_hardcover already does; sorting out a true duplicate is a
+    human decision, not something to infer from a canonical_id.
+
+    Returns True if the id was adopted.
+    """
+    canonical_id = str(canonical_id)
+    row = await (
+        await db.execute("SELECT book_id FROM book_links WHERE hardcover_id = ?", (canonical_id,))
+    ).fetchone()
+    if row and row[0] != book_id:
+        logger.warning(
+            "HC canonical id %s for book %s is already held by book %s — leaving the "
+            "link alone; these may be distinct books that Hardcover has merged upstream",
+            canonical_id, book_id, row[0],
+        )
+        return False
+    await db.execute(
+        "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?", (canonical_id, book_id)
+    )
+    return True
+
+
+async def _hc_refresh_meta(api_key: str, deadline: float) -> int:
+    """Fetch and store slug + release_date for HC-linked books missing either, or with a future date. Returns count updated.
+
+    Takes the same deadline as every other cache_refresh stage. It previously took
+    none, which is how a one-hour job was still running eleven hours later.
+    """
     if not api_key:
         return 0
     today = datetime.now(timezone.utc).date().isoformat()
@@ -840,54 +1017,59 @@ async def _hc_refresh_meta(api_key: str) -> int:
         ).fetchall()
     if not stale_rows:
         return 0
-    sem = asyncio.Semaphore(1)
     updated = 0
 
     async def _refresh_one(book_id: str, hc_id: str) -> None:
         nonlocal updated
-        async with sem:
-            await asyncio.sleep(1.0)
-            meta = await _fetch_hc_book_meta(int(hc_id), api_key)
-            if not meta:
-                return
-            now_iso = datetime.now(timezone.utc).isoformat()
-            async with get_db() as db:
-                if meta.get("title"):
-                    await db.execute(
-                        "UPDATE books SET title = ?, metadata_refreshed_at = ? WHERE id = ?",
-                        (meta["title"], now_iso, book_id),
-                    )
-                else:
-                    await db.execute(
-                        "UPDATE books SET metadata_refreshed_at = ? WHERE id = ?",
-                        (now_iso, book_id),
-                    )
-                if meta.get("release_date"):
-                    await db.execute(
-                        "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ?",
-                        (meta["release_date"], book_id),
-                    )
-                else:
-                    # HC confirmed no date — mark as fetched so auto-search knows to skip
-                    await db.execute(
-                        "UPDATE books SET release_date_fetched = 1 WHERE id = ?",
-                        (book_id,),
-                    )
-                if meta.get("slug"):
-                    await db.execute(
-                        "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
-                        (meta["slug"], book_id),
-                    )
-                if meta.get("canonical_id"):
-                    await db.execute(
-                        "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?",
-                        (meta["canonical_id"], book_id),
-                    )
-                    logger.info("_refresh_one: corrected hardcover_id for %s to canonical %s", book_id, meta["canonical_id"])
-                await db.commit()
-            updated += 1
+        meta = await _fetch_hc_book_meta(int(hc_id), api_key)
+        if not meta:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with get_db() as db:
+            if meta.get("title"):
+                await db.execute(
+                    "UPDATE books SET title = ?, metadata_refreshed_at = ? WHERE id = ?",
+                    (meta["title"], now_iso, book_id),
+                )
+            else:
+                await db.execute(
+                    "UPDATE books SET metadata_refreshed_at = ? WHERE id = ?",
+                    (now_iso, book_id),
+                )
+            if meta.get("release_date"):
+                await db.execute(
+                    "UPDATE books SET release_date = ?, release_date_fetched = 1 WHERE id = ?",
+                    (meta["release_date"], book_id),
+                )
+            else:
+                # HC confirmed no date — mark as fetched so auto-search knows to skip
+                await db.execute(
+                    "UPDATE books SET release_date_fetched = 1 WHERE id = ?",
+                    (book_id,),
+                )
+            if meta.get("slug"):
+                await db.execute(
+                    "UPDATE book_links SET hardcover_slug = ? WHERE book_id = ? AND (hardcover_slug IS NULL OR hardcover_slug = '')",
+                    (meta["slug"], book_id),
+                )
+            if meta.get("canonical_id"):
+                await _adopt_canonical_hc_id(db, book_id, meta["canonical_id"])
+            await db.commit()
+        updated += 1
 
-    await asyncio.gather(*[_refresh_one(r[0], r[1]) for r in stale_rows])
+    # Sequential on purpose. This was a gather over a Semaphore(1), so it never
+    # ran in parallel anyway, but gather() without return_exceptions leaves the
+    # remaining coroutines running after the first failure — on a rate limit they
+    # would carry on spending the quota the exception was raised to protect.
+    for row in stale_rows:
+        if time.monotonic() >= deadline:
+            logger.info("_hc_refresh_meta stopping: deadline reached")
+            break
+        try:
+            await _refresh_one(row[0], row[1])
+        except HardcoverRateLimited as e:
+            await _hc_wait_or_abort(e, deadline)   # re-raises on the daily quota
+            await _refresh_one(row[0], row[1])
     return updated
 
 
@@ -1087,10 +1269,11 @@ async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
                 await db.commit()
 
             updated += 1
+        except HardcoverRateLimited:
+            raise
         except Exception as e:
             logger.warning("_hc_refresh_series_cache(%s): %s", hc_series_id, e)
 
-        await asyncio.sleep(1)
 
     return {"updated": updated, "skipped": skipped}
 
@@ -1126,7 +1309,6 @@ async def _hc_refresh_book_titles(api_key: str, deadline: float) -> int:
         if time.monotonic() > deadline:
             return
         async with sem:
-            await asyncio.sleep(1.0)
             meta = await _fetch_hc_book_meta(int(hc_id), api_key)
             if not meta:
                 return
@@ -1153,14 +1335,22 @@ async def _hc_refresh_book_titles(api_key: str, deadline: float) -> int:
                         (meta["slug"], book_id),
                     )
                 if meta.get("canonical_id"):
-                    await db.execute(
-                        "UPDATE book_links SET hardcover_id = ? WHERE book_id = ?",
-                        (meta["canonical_id"], book_id),
-                    )
+                    await _adopt_canonical_hc_id(db, book_id, meta["canonical_id"])
                 await db.commit()
             updated += 1
 
-    await asyncio.gather(*[_update_one(r["id"], r["hardcover_id"]) for r in rows])
+    # Sequential for the same reason as _hc_refresh_meta: the Semaphore(1) meant
+    # this never ran in parallel, and a bare gather() keeps the rest of the batch
+    # running after the first failure.
+    for r in rows:
+        if time.monotonic() > deadline:
+            logger.info("_hc_refresh_book_titles stopping: deadline reached")
+            break
+        try:
+            await _update_one(r["id"], r["hardcover_id"])
+        except HardcoverRateLimited as e:
+            await _hc_wait_or_abort(e, deadline)   # re-raises on the daily quota
+            await _update_one(r["id"], r["hardcover_id"])
     return updated
 
 
@@ -1201,7 +1391,7 @@ async def cache_refresh() -> dict:
         done["series"] = s
         api_key = settings.get("hardcover", {}).get("api_key", "")
         await _upsert_task_state("cache_refresh", running=True, last_result=_fmt_done() + "\nrefreshing metadata...")
-        meta_updated = await _hc_refresh_meta(api_key)
+        meta_updated = await _hc_refresh_meta(api_key, deadline)
         await _upsert_task_state("cache_refresh", running=True, last_result=_fmt_done() + "\nrefreshing series cache...")
         sc = await _hc_refresh_series_cache(settings, deadline)
         await _upsert_task_state("cache_refresh", running=True, last_result=_fmt_done() + "\nrefreshing titles...")
@@ -1217,6 +1407,19 @@ async def cache_refresh() -> dict:
         logger.info(f"cache_refresh complete: {result}")
         await _upsert_task_state("cache_refresh", running=False, last_result=result)
         return {"books": b, "authors": a, "series": s, "meta_updated": meta_updated, "series_cache": sc, "titles_updated": titles_updated}
+    except HardcoverRateLimited as e:
+        # Not an error: the quota is a shared resource and we yielded it. Stop the
+        # cycle, say so plainly, and let the next scheduled run pick up where this
+        # one left off — the work is idempotent and nothing has been lost.
+        remaining = hc_daily_remaining()
+        detail = f"stopped: {e}"
+        if e.retry_after:
+            detail += f" (resets in {int(e.retry_after // 60)} min)"
+        if remaining is not None:
+            detail += f" [daily remaining: {remaining}]"
+        logger.warning("cache_refresh %s", detail)
+        await _upsert_task_state("cache_refresh", running=False, last_result=_fmt_done() + "\n" + detail)
+        return {"stopped": "rate_limited", "retry_after": e.retry_after, "daily_remaining": remaining}
     except Exception as e:
         logger.error(f"cache_refresh failed: {e}", exc_info=True)
         await _upsert_task_state("cache_refresh", running=False, last_result=f"error: {e}")
@@ -1403,18 +1606,12 @@ async def try_link_author(author_id: str, settings: dict) -> dict:
         "result": None,
     }
 
+    gql = 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 15) { results } }'
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={
-                    "query": 'query Search($q: String!) { search(query: $q, query_type: "author", per_page: 15) { results } }',
-                    "variables": {"q": name},
-                },
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            hits = resp.json()["data"]["search"]["results"].get("hits", [])
+        # background=False: this runs because someone clicked, so it is allowed to
+        # spend from the reserve that background stages hold back.
+        payload = await hc_post(gql, {"q": name}, api_key, background=False, timeout=15.0)
+        hits = payload["data"]["search"]["results"].get("hits", [])
     except Exception as e:
         log["result"] = "error"
         log["error"] = str(e)
@@ -1504,17 +1701,9 @@ async def try_link_series(series_id: str, settings: dict) -> dict:
 
     # Run name search and first-book series lookup concurrently
     async def _name_search() -> list:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={
-                    "query": 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 15) { results } }',
-                    "variables": {"q": name},
-                },
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            return resp.json()["data"]["search"]["results"].get("hits", [])
+        gql = 'query Search($q: String!) { search(query: $q, query_type: "series", per_page: 15) { results } }'
+        payload = await hc_post(gql, {"q": name}, api_key, background=False, timeout=15.0)
+        return payload["data"]["search"]["results"].get("hits", [])
 
     try:
         if first_book_hc_id:
@@ -1682,10 +1871,21 @@ async def sync_library() -> dict:
 
     # Refresh slug/release_date for HC-linked books that are missing either,
     # or where release_date is still in the future (it may have changed).
+    #
+    # This is a tail-end nicety, not part of the sync proper, so it gets a small
+    # budget and is never allowed to fail the sync: a rate limit here means the
+    # next run picks the work up. It previously ran with no deadline, which made
+    # library_sync a second uncapped Hardcover consumer independent of
+    # cache_refresh — pausing cache_refresh alone did not stop the quota drain.
     api_key = settings.get("hardcover", {}).get("api_key", "")
-    await _hc_refresh_meta(api_key)
+    result = "ok"
+    try:
+        await _hc_refresh_meta(api_key, time.monotonic() + SYNC_META_BUDGET)
+    except HardcoverRateLimited as e:
+        logger.warning("sync_library: metadata refresh stopped, %s", e)
+        result = "ok (metadata refresh deferred: Hardcover rate limited)"
 
-    await _upsert_task_state("library_sync", running=False, last_result="ok")
+    await _upsert_task_state("library_sync", running=False, last_result=result)
     return counters
 
 
