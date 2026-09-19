@@ -11,6 +11,7 @@ import time
 import httpx
 import pytest
 
+from app.services import hardcover as hc
 from app.services import library_sync as ls
 
 
@@ -30,15 +31,15 @@ def _resp(status: int, *, daily_remaining=None, retry_after=None, json_body=None
         headers["retry-after"] = str(retry_after)
     return httpx.Response(
         status, headers=headers, json=json_body if json_body is not None else {"data": {}},
-        request=httpx.Request("POST", ls.HC_API_URL),
+        request=httpx.Request("POST", hc.HC_API_URL),
     )
 
 
 @pytest.fixture(autouse=True)
 def _reset_quota():
-    ls._hc_daily_remaining = None
+    hc._hc_daily_remaining = None
     yield
-    ls._hc_daily_remaining = None
+    hc._hc_daily_remaining = None
 
 
 class TestHcPost:
@@ -187,8 +188,8 @@ class TestRequestPacing:
         async def fake_sleep(s):
             waits.append(s)
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-        monkeypatch.setattr(ls, "_hc_last_request", 0.0)
-        monkeypatch.setattr(ls, "_hc_pace_lock", None)
+        monkeypatch.setattr(hc, "_hc_last_request", 0.0)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
 
         async def fake_post(self, url, **kw):
             return _resp(200, daily_remaining=4000)
@@ -201,8 +202,8 @@ class TestRequestPacing:
     @pytest.mark.asyncio
     async def test_concurrent_requests_are_serialised(self, monkeypatch):
         """The four-page fan-out must not all leave at once."""
-        monkeypatch.setattr(ls, "_hc_last_request", 0.0)
-        monkeypatch.setattr(ls, "_hc_pace_lock", None)
+        monkeypatch.setattr(hc, "_hc_last_request", 0.0)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
         in_flight = {"now": 0, "max": 0}
 
         async def fake_post(self, url, **kw):

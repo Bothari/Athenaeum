@@ -199,6 +199,13 @@ function renderLoading(container) {
   container.innerHTML = `<div class="state-loading">${ICON_SPINNER}</div>`;
 }
 
+// An upstream failure ("Hardcover is rate limited") must not render as
+// "No results found" — that reads as a missing book and hides a real outage.
+function renderUpstreamError(container, message, retryFn) {
+  container.innerHTML = `<div class="state-error">${escapeHtml(message)} <a href="#" class="retry" style="color:var(--accent)">Retry</a></div>`;
+  container.querySelector('.retry').onclick = (e) => { e.preventDefault(); retryFn(); };
+}
+
 function renderError(container, retryFn) {
   container.innerHTML = `<div class="state-error">Failed to load. <a href="#" class="retry" style="color:var(--accent)">Retry</a></div>`;
   container.querySelector('.retry').onclick = (e) => { e.preventDefault(); retryFn(); };
@@ -1306,6 +1313,10 @@ route('/', async (params, qp) => {
         data = await api('/search/advanced?' + qStr.toString());
       } else {
         data = await api('/search/metadata?q=' + encodeURIComponent(qVal));
+      }
+      if (data.error) {
+        renderUpstreamError(resultsDiv, data.error, runSearch);
+        return;
       }
       renderSearchResults(resultsDiv, data.results);
     } catch (err) {

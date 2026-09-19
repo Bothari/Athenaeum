@@ -5,7 +5,17 @@ import re
 
 import httpx
 
+from .hardcover import HardcoverRateLimited, hc_post
+
 logger = logging.getLogger(__name__)
+
+
+class HardcoverUnavailable(Exception):
+    """Hardcover could not be reached or returned an error.
+
+    Distinct from "no results": callers must surface this, never render it as an
+    empty result list.
+    """
 
 _SEARCH_GQL = (
     'query Search($q: String!, $page: Int!) {'
@@ -130,13 +140,13 @@ def normalize_hit(doc: dict, context_hc_series_id: str = "") -> dict:
 # ── Search ─────────────────────────────────────────────────────────────────────
 
 async def _fetch_page(client: httpx.AsyncClient, query: str, page: int, api_key: str) -> list:
-    resp = await client.post(
-        "https://api.hardcover.app/v1/graphql",
-        json={"query": _SEARCH_GQL, "variables": {"q": query, "page": page}},
-        headers={"Authorization": f"Bearer {api_key}"},
+    # background=False: a person is waiting on this, so it may spend the reserve
+    # that background linking holds back.
+    payload = await hc_post(
+        _SEARCH_GQL, {"q": query, "page": page}, api_key,
+        background=False, client=client,
     )
-    resp.raise_for_status()
-    return resp.json()["data"]["search"]["results"].get("hits", [])
+    return payload["data"]["search"]["results"].get("hits", [])
 
 
 async def search_books(
@@ -154,6 +164,20 @@ async def search_books(
             *[_fetch_page(client, query, p, api_key) for p in range(1, pages + 1)],
             return_exceptions=True,
         )
+
+    # Every page failing means Hardcover is unavailable, not that the book does
+    # not exist. Reporting that as an empty list is what made two outages look
+    # like "no matches" for hours: the server logged nothing and answered 200.
+    failures = [r for r in results if isinstance(r, BaseException)]
+    if len(failures) == len(results):
+        first = failures[0]
+        if isinstance(first, HardcoverRateLimited):
+            logger.warning("search %r: Hardcover rate limited: %s", query, first)
+            raise first
+        logger.warning("search %r: every Hardcover page failed: %r", query, first)
+        raise HardcoverUnavailable(str(first)) from first
+    for f in failures:
+        logger.warning("search %r: one page failed (others succeeded): %r", query, f)
 
     seen: set = set()
     docs: list = []
@@ -273,17 +297,14 @@ async def get_hc_series_books(hc_series_id: str, api_key: str) -> list[dict]:
     Deduplication, merged-book filtering, and partial-edition filtering all happen server-side.
     """
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={"query": _SERIES_GQL, "variables": {"id": int(hc_series_id)}},
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        data = await hc_post(
+            _SERIES_GQL, {"id": int(hc_series_id)}, api_key, background=False, timeout=15.0
+        )
+    except HardcoverRateLimited:
+        raise
     except Exception as e:
         logger.warning("get_hc_series_books(%s) failed: %s", hc_series_id, e)
-        return []
+        raise HardcoverUnavailable(str(e)) from e
 
     series = (data.get("data") or {}).get("series_by_pk") or {}
     series_name = series.get("name") or ""
@@ -430,17 +451,14 @@ query GetAuthorBooks($id: Int!) {
 async def get_hc_author_books(hc_author_id: str, api_key: str) -> list[dict]:
     """Fetch books by HC author ID. Returns normalised results sorted by popularity."""
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.hardcover.app/v1/graphql",
-                json={"query": _AUTHOR_GQL, "variables": {"id": int(hc_author_id)}},
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        data = await hc_post(
+            _AUTHOR_GQL, {"id": int(hc_author_id)}, api_key, background=False, timeout=15.0
+        )
+    except HardcoverRateLimited:
+        raise
     except Exception as e:
         logger.warning("get_hc_author_books(%s) failed: %s", hc_author_id, e)
-        return []
+        raise HardcoverUnavailable(str(e)) from e
 
     author_data = (data.get("data") or {}).get("authors_by_pk") or {}
     results = []
