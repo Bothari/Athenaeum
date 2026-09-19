@@ -307,7 +307,15 @@ async def get_author_also_by(author_id: str):
         if cache_row:
             all_books = json.loads(cache_row["results_json"])
         else:
-            all_books = await _book_search.get_hc_author_books(hc_author_id, api_key)
+            all_books, hc_error = await _hc_results_or_error(
+                _book_search.get_hc_author_books(hc_author_id, api_key)
+            )
+            if hc_error:
+                # Never cache a failure: this row lives for 14 days, so writing an
+                # empty list here turns a momentary outage into a fortnight of
+                # "this series has no books".
+                logger.warning("get_hc_author_books(%s): %s — not caching", hc_author_id, hc_error)
+                return {"items": [], "error": hc_error}
             expires_iso = (now_dt + timedelta(days=14)).isoformat()
             await db.execute(
                 """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
@@ -674,7 +682,15 @@ async def get_series_missing(series_id: str):
         if cache_row:
             all_books = json.loads(cache_row["results_json"])
         else:
-            all_books = await _book_search.get_hc_series_books(hc_series_id, api_key)
+            all_books, hc_error = await _hc_results_or_error(
+                _book_search.get_hc_series_books(hc_series_id, api_key)
+            )
+            if hc_error:
+                # Never cache a failure: this row lives for 14 days, so writing an
+                # empty list here turns a momentary outage into a fortnight of
+                # "this series has no books".
+                logger.warning("get_hc_series_books(%s): %s — not caching", hc_series_id, hc_error)
+                return {"items": [], "error": hc_error}
             expires_iso = (now_dt + timedelta(days=14)).isoformat()
             await db.execute(
                 """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
@@ -1191,6 +1207,23 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
 
 # ── Search endpoints ───────────────────────────────────────────────────────────
 
+async def _hc_results_or_error(coro) -> tuple[list, str | None]:
+    """Run a Hardcover lookup, returning (results, error).
+
+    An upstream failure must never reach the caller as an empty result list:
+    that is indistinguishable from "this book does not exist", and is exactly
+    what made two rate-limit outages look like an empty library for hours.
+    """
+    from ..services.book_search import HardcoverUnavailable
+    from ..services.hardcover import HardcoverRateLimited
+    try:
+        return await coro, None
+    except HardcoverRateLimited:
+        return [], "Hardcover is rate limited right now — please try again shortly."
+    except HardcoverUnavailable:
+        return [], "Hardcover could not be reached — please try again shortly."
+
+
 @router.get("/search/metadata")
 async def search_metadata(
     q: str = Query(default=""),
@@ -1218,7 +1251,11 @@ async def search_metadata(
             context_hc_series_id = sl_row["hardcover_series_id"] or ""
 
     from ..services.book_search import search_books
-    results = await search_books(q.strip(), api_key, context_hc_series_id=context_hc_series_id)
+    results, error = await _hc_results_or_error(
+        search_books(q.strip(), api_key, context_hc_series_id=context_hc_series_id)
+    )
+    if error:
+        return {"results": [], "error": error}
 
     async with get_db() as db:
         results = await _annotate_results(results, db)
@@ -1242,14 +1279,18 @@ async def search_advanced(
 
     if author_id:
         from ..services.book_search import get_hc_author_books
-        results = await get_hc_author_books(author_id, api_key)
+        results, error = await _hc_results_or_error(get_hc_author_books(author_id, api_key))
+        if error:
+            return {"results": [], "error": error}
         async with get_db() as db:
             results = await _annotate_results(results, db)
         return {"results": results}
 
     if hc_series_id:
         from ..services.book_search import get_hc_series_books
-        results = await get_hc_series_books(hc_series_id, api_key)
+        results, error = await _hc_results_or_error(get_hc_series_books(hc_series_id, api_key))
+        if error:
+            return {"results": [], "error": error}
         async with get_db() as db:
             results = await _annotate_results(results, db)
         return {"results": results}
@@ -1270,10 +1311,12 @@ async def search_advanced(
             context_hc_series_id = sl_row["hardcover_series_id"] or ""
 
     from ..services.book_search import advanced_search_books
-    results = await advanced_search_books(
+    results, error = await _hc_results_or_error(advanced_search_books(
         title=title, author=author, series=series,
         api_key=api_key, context_hc_series_id=context_hc_series_id,
-    )
+    ))
+    if error:
+        return {"results": [], "error": error}
 
     async with get_db() as db:
         results = await _annotate_results(results, db)
