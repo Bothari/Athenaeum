@@ -215,6 +215,26 @@ def build_prowlarr_query(title: str, author: str = "") -> str:
     return f"{main} {surname}".strip() if surname else main
 
 
+_APOSTROPHE_RE = re.compile(r"['‘’ʼ`]")
+
+
+def drop_apostrophe_words(query: str) -> str | None:
+    """Return the query without the words that contain an apostrophe, or None.
+
+    Indexers match every word, and a contraction only matches when the indexer
+    stored it the same way. MyAnonamouse lists "You’re the One That I Haunt"
+    with a curly apostrophe and "We Have Always Lived in the Castle" spelled
+    out, so "You're ..." and "We've ..." both find nothing, while the rest of
+    the title finds the book. Returns None when no word would be dropped or
+    fewer than two words would remain, so there is nothing worth retrying.
+    """
+    words = query.split()
+    kept = [w for w in words if not _APOSTROPHE_RE.search(w)]
+    if len(kept) == len(words) or len(kept) < 2:
+        return None
+    return " ".join(kept)
+
+
 async def prowlarr_search(settings: dict, query: str, book_type: str = "", title: str = "", author: str = "", allowed_formats: list | None = None) -> list[dict]:
     """Search Prowlarr indexers. Filtered to configured tag if set.
 
@@ -240,20 +260,26 @@ async def prowlarr_search(settings: dict, query: str, book_type: str = "", title
             logger.warning("Prowlarr tag lookup failed, searching all indexers: %s", e)
 
     # Build params as list of tuples so we can repeat indexerIds/categories for each value
-    params: list[tuple] = [("query", query), ("type", "search"), ("limit", "50")]
+    params: list[tuple] = [("type", "search"), ("limit", "50")]
     for iid in indexer_ids:
         params.append(("indexerIds", str(iid)))
     for cat in PROWLARR_CATEGORIES.get(book_type, []):
         params.append(("categories", str(cat)))
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{url}/api/v1/search",
-            params=params,
-            headers={"X-Api-Key": api_key},
-        )
-        resp.raise_for_status()
-        results = resp.json()
+        async def fetch(q: str) -> list[dict]:
+            resp = await client.get(
+                f"{url}/api/v1/search",
+                params=[("query", q)] + params,
+                headers={"X-Api-Key": api_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        results = await fetch(query)
+        if not results and (fallback := drop_apostrophe_words(query)):
+            logger.info("Prowlarr: no results for %r, retrying as %r", query, fallback)
+            results = await fetch(fallback)
 
     if title and results:
         results = sorted(
