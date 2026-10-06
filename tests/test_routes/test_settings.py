@@ -241,6 +241,35 @@ class TestTestQbittorrentDownloader:
         )
         assert resp.status_code == 502
 
+    async def test_success_with_qbittorrent_5_2_empty_204(self, client, httpx_mock: HTTPXMock):
+        # qBittorrent 5.2.0 changed a successful login to 204 with no body
+        httpx_mock.add_response(
+            url="http://qbit.local:8116/api/v2/auth/login",
+            status_code=204,
+            headers={"Set-Cookie": "SID=abc123; HttpOnly; path=/"},
+        )
+        httpx_mock.add_response(
+            url="http://qbit.local:8116/api/v2/app/version",
+            text="v5.2.3",
+        )
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "qbittorrent", "id": "q1", "url": "http://qbit.local:8116"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["version"] == "v5.2.3"
+
+    async def test_qbittorrent_5_2_rejected_login_returns_502(self, client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="http://qbit.local:8116/api/v2/auth/login",
+            status_code=401,
+        )
+        resp = await client.post(
+            "/api/settings/test/downloader",
+            json={"type": "qbittorrent", "id": "q1", "url": "http://qbit.local:8116"},
+        )
+        assert resp.status_code == 502
+
 
 class TestTestDelugeDownloader:
     async def test_not_configured_returns_400(self, client):

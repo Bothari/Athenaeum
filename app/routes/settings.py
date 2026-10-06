@@ -155,7 +155,9 @@ async def test_downloader(body: dict = None):
                     f"{url}/api/v2/auth/login",
                     data={"username": cfg.get("username", ""), "password": cfg.get("password", "")},
                 )
-                if login_resp.text.strip().lower() != "ok.":
+                # qBittorrent 5.2+ answers a good login with 204 and an empty body;
+                # older versions send 200 with "Ok."
+                if login_resp.status_code != 204 and login_resp.text.strip().lower() != "ok.":
                     raise Exception("Login failed — check username and password")
                 version_resp = await client.get(f"{url}/api/v2/app/version")
                 version_resp.raise_for_status()
