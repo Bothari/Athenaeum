@@ -577,8 +577,21 @@ async def search_indexers(request_id: str):
         logger.warning("Prowlarr search failed: %s", e)
         return {"results": [], "error": str(e)}
 
-    # Apply ranking for sort order only — no hard filters (user picks manually)
+    # Apply ranking for sort order only — no hard filters, since the user picks from
+    # this list and should see everything, series packs included.
     ranked = rank_results(raw_results, ranking, allowed_formats, min_seeders=0, filter_series_packs=False)
+
+    # Relevance decides the order the user reads; the ranking stack decides quality
+    # order within one relevance band. Sorting the already-ranked list is stable, so
+    # both apply. Without this the stack alone led — and "size prefer larger" put a
+    # series omnibus above the exact match, so asking for "Pines" listed the Wayward
+    # Pines 1-3 pack first. That is the same fault auto-search had, where it was
+    # worse because nothing was shown at all.
+    scored = [
+        (_score_result(r.get("title", ""), row["title"], row["author"] or ""), r)
+        for r in ranked
+    ]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
 
     results = [
         {
@@ -592,9 +605,9 @@ async def search_indexers(request_id: str):
             "seeders": r.get("seeders"),
             "leechers": r.get("leechers"),
             "age": r.get("age"),
-            "score": _score_result(r.get("title", ""), row["title"], row["author"] or ""),
+            "score": score,
         }
-        for r in ranked
+        for score, r in scored
     ]
     async with get_db() as db:
         await log_request_event(db, request_id, "searched", {"query": query, "results": len(results)})
