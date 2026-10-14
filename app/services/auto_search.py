@@ -12,6 +12,12 @@ from ..services.request_events import log_request_event, set_request_status
 
 logger = logging.getLogger(__name__)
 
+# How closely a release title must match the requested book before auto-search will
+# grab it. 100 is an exact title+author match; a different book in the same series
+# scores around 55, which is what keeps omnibus packs from being grabbed for a
+# single-title request. Override per-install with auto_search.min_relevance.
+DEFAULT_MIN_RELEVANCE = 60
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -25,7 +31,13 @@ _SERIES_PACK_RE = re.compile(
     r'|omnibus'
     r'|books?\s+\d+[-–—]\d+'
     r'|\d+[\s-]books?\b'
-    r'|the\s+complete\b',
+    r'|the\s+complete\b'
+    # A bare number range is how most packs are actually named — "Wayward Pines 1-3"
+    # never says "book". Capped at two digits so a year range in a history title
+    # ("1939-1945") is not mistaken for one.
+    r'|\b\d{1,2}\s*[-–—]\s*\d{1,2}\b'
+    # And the collective nouns, which the pattern missed entirely.
+    r'|\b(duology|trilogy|tetralogy|quartet|quintet)\b',
     re.IGNORECASE,
 )
 
@@ -176,6 +188,9 @@ async def auto_search_request(request_id: str) -> bool:
     allowed_formats = general.get(fmt_key) or []
     min_seeders = int(auto_cfg.get("min_seeders", 1))
     ranking = auto_cfg.get("ranking") or []
+    # Every other knob here is configurable; this one was a literal 60 buried in the
+    # middle of the function.
+    min_relevance = int(auto_cfg.get("min_relevance") or DEFAULT_MIN_RELEVANCE)
 
     book_id = row["book_id"]
 
@@ -195,31 +210,51 @@ async def auto_search_request(request_id: str) -> bool:
             await db.commit()
         return False
 
-    ranked = rank_results(results, ranking, allowed_formats, min_seeders)
+    # Relevance filters the candidates; it is not a veto on whatever quality ranking
+    # happened to put first. rank_results sorts by format, indexer priority, seeders,
+    # age and size, so for any book in a series an omnibus wins on size and lands at
+    # position 0 — scoring only that one made the request look unmatchable while the
+    # standalone release sat directly beneath it. Requesting "Pines" found a 3-book
+    # pack at relevance 55 and gave up, with two exact matches at 100 in the list.
+    scored = [
+        (_score_result(r.get("title", ""), row["title"], row["author"] or ""), r)
+        for r in results
+    ]
+    relevant = [r for score, r in scored if score >= min_relevance]
 
-    if not ranked:
-        logger.info("auto_search: no usable results for %s (%s)", request_id, row["title"])
-        async with get_db() as db:
-            await log_request_event(db, request_id, "auto_search_no_results",
-                                    {"query": query, "total_results": len(results)}, book_id=book_id)
-            await db.commit()
-        return False
-
-    best = ranked[0]
-
-    best_score = _score_result(best.get("title", ""), row["title"], row["author"] or "")
-    if best_score < 60:
+    if not relevant:
+        best_score, best = max(scored, key=lambda sr: sr[0], default=(0, {}))
         logger.info(
-            "auto_search: skipping %s — best result score too low (%d): %r",
-            request_id, best_score, best.get("title"),
+            "auto_search: skipping %s — nothing scored %d or better (best %d): %r",
+            request_id, min_relevance, best_score, best.get("title"),
         )
         async with get_db() as db:
             await log_request_event(db, request_id, "auto_search_no_results",
                                     {"query": query, "total_results": len(results),
-                                     "filtered": len(ranked), "best_score": best_score,
+                                     "relevant": 0, "min_relevance": min_relevance,
+                                     "best_score": best_score,
                                      "best_title": best.get("title")}, book_id=book_id)
             await db.commit()
         return False
+
+    ranked = rank_results(relevant, ranking, allowed_formats, min_seeders)
+
+    if not ranked:
+        logger.info(
+            "auto_search: %d relevant result(s) for %s but none survived the format "
+            "and seeder filters", len(relevant), request_id,
+        )
+        async with get_db() as db:
+            await log_request_event(db, request_id, "auto_search_no_results",
+                                    {"query": query, "total_results": len(results),
+                                     "relevant": len(relevant), "filtered": 0,
+                                     "reason": "no relevant result passed the format and seeder filters"},
+                                    book_id=book_id)
+            await db.commit()
+        return False
+
+    best = ranked[0]
+    best_score = _score_result(best.get("title", ""), row["title"], row["author"] or "")
 
     protocol = best.get("protocol")
     download_url = best.get("downloadUrl") or ""
