@@ -33,7 +33,8 @@ _HITS = {"data": {"search": {"results": {"hits": []}}}}
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     monkeypatch.setattr(hc, "_hc_daily_remaining", None)
-    monkeypatch.setattr(hc, "_hc_last_request", 0.0)
+    monkeypatch.setattr(hc, "_hc_tokens", hc.HC_BURST)
+    monkeypatch.setattr(hc, "_hc_refilled", None)
     monkeypatch.setattr(hc, "_hc_pace_lock", None)
     real = asyncio.sleep
     async def instant(_s): await real(0)

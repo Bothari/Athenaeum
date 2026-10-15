@@ -243,7 +243,6 @@ from .hardcover import (  # noqa: E402
     HC_API_URL,
     HC_DAILY_RESERVE,
     HC_MAX_THROTTLE_RETRIES,
-    HC_MIN_REQUEST_INTERVAL,
     HC_SHORT_WAIT_MAX,
     HardcoverRateLimited,
     _hc_wait_or_abort,
