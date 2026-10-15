@@ -174,36 +174,56 @@ class TestRateLimitedLoop:
 
 
 class TestRequestPacing:
-    """Pacing must be per REQUEST, not per item.
+    """Pacing is a token bucket matching the shape Hardcover publishes:
+    ratelimit-policy: "Free (JWT)";q=60;w=60;burst=5.
 
-    One linking item fans out to four requests, so pacing per item ran at roughly
-    200 requests/min against a 60/min ceiling — it sat permanently in per-minute
-    throttling, burning quota on rejections while barely progressing.
+    It replaced a fixed 1.2s delay that was wrong in both directions — a 3-page
+    search paid ~3.6s of pure waiting, and it still collected per-minute 429s,
+    because a delay cannot model a burst allowance.
     """
 
-    @pytest.mark.asyncio
-    async def test_hc_post_paces_every_request(self, monkeypatch):
+    @pytest.fixture
+    def bucket(self, monkeypatch):
+        """A full bucket on a clock the test drives, so waits are exact."""
+        clock = {"t": 1000.0}
         waits = []
 
-        async def fake_sleep(s):
-            waits.append(s)
+        async def fake_sleep(d):
+            waits.append(d)
+            clock["t"] += d
+            await _real_sleep(0)
+
+        monkeypatch.setattr(hc.time, "monotonic", lambda: clock["t"])
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-        monkeypatch.setattr(hc, "_hc_last_request", 0.0)
+        monkeypatch.setattr(hc, "_hc_tokens", hc.HC_BURST)
+        monkeypatch.setattr(hc, "_hc_refilled", None)
         monkeypatch.setattr(hc, "_hc_pace_lock", None)
-
-        async def fake_post(self, url, **kw):
-            return _resp(200, daily_remaining=4000)
-        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
-
-        await ls.hc_post("q", {}, "k")
-        await ls.hc_post("q", {}, "k")   # immediately after: must be made to wait
-        assert any(w > 0 for w in waits), "second request was not paced"
+        return clock, waits
 
     @pytest.mark.asyncio
-    async def test_concurrent_requests_are_serialised(self, monkeypatch):
-        """The four-page fan-out must not all leave at once."""
-        monkeypatch.setattr(hc, "_hc_last_request", 0.0)
-        monkeypatch.setattr(hc, "_hc_pace_lock", None)
+    async def test_a_page_fan_out_does_not_wait(self, bucket):
+        """The regression this fixed: a search's pages must leave immediately."""
+        _, waits = bucket
+        await asyncio.gather(*[hc._hc_pace() for _ in range(3)])
+        assert waits == [], f"a 3-page fan-out waited {waits}"
+
+    @pytest.mark.asyncio
+    async def test_the_whole_burst_is_free_then_requests_wait(self, bucket):
+        _, waits = bucket
+        for _ in range(int(hc.HC_BURST)):
+            await hc._hc_pace()
+        assert waits == [], f"the burst of {hc.HC_BURST} should be free, waited {waits}"
+
+        await hc._hc_pace()
+        assert len(waits) == 1
+        expected = 1.0 / hc.HC_PER_SECOND
+        assert expected * 0.9 < waits[0] < expected * 1.1, waits
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_are_not_serialised(self, bucket, monkeypatch):
+        """The fixed-delay version slept while holding the lock, so everything
+        queued. Sleeping outside the lock is what makes the burst usable."""
+        _, _waits = bucket
         in_flight = {"now": 0, "max": 0}
 
         async def fake_post(self, url, **kw):
@@ -212,11 +232,91 @@ class TestRequestPacing:
             await _real_sleep(0)
             in_flight["now"] -= 1
             return _resp(200, daily_remaining=4000)
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        await asyncio.gather(*[hc.hc_post("q", {}, "k") for _ in range(4)])
+        assert in_flight["max"] > 1, "the fan-out was serialised again"
+
+    @pytest.mark.asyncio
+    async def test_the_burst_comes_back_after_idling(self, bucket):
+        clock, waits = bucket
+        for _ in range(int(hc.HC_BURST) + 2):
+            await hc._hc_pace()
+        clock["t"] += 60
+        waits.clear()
+        for _ in range(int(hc.HC_BURST)):
+            await hc._hc_pace()
+        assert waits == [], f"burst did not refill while idle, waited {waits}"
+
+    @pytest.mark.asyncio
+    async def test_sustained_rate_stays_under_their_limit(self, bucket):
+        """Equal burst with a slower refill means our stream is always a subset of
+        what they allow, so their limiter cannot be tripped."""
+        clock, _ = bucket
+        start = clock["t"]
+        for _ in range(60):
+            await hc._hc_pace()
+        elapsed = clock["t"] - start
+        allowed_by_them = hc.HC_BURST + elapsed * 1.0   # their q=60/w=60 refill
+        assert 60 <= allowed_by_them, (
+            f"60 requests in {elapsed:.1f}s exceeds the {allowed_by_them:.1f} they permit"
+        )
+
+
+class TestBucketSyncsFromHeaders:
+    """The limit is on the account, not this process. Our bucket starts full and
+    cannot know what another process or a stray probe has already spent, so it
+    trusts Hardcover's reported burst over its own count.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_low_reported_burst_clamps_our_count(self, monkeypatch):
+        monkeypatch.setattr(hc, "_hc_tokens", hc.HC_BURST)
+        monkeypatch.setattr(hc, "_hc_refilled", None)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
+
+        async def fake_post(self, url, **kw):
+            r = _resp(200, daily_remaining=4000)
+            r.headers["x-ratelimit-remaining"] = "0"   # account burst is spent
+            return r
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
 
-        await asyncio.gather(*[ls.hc_post("q", {}, "k") for _ in range(4)])
-        assert in_flight["max"] == 1, "requests must be serialised by the pacer"
+        await hc.hc_post("q", {}, "k")
+        assert hc._hc_tokens <= 0.0, (
+            f"tokens {hc._hc_tokens} — a full local bucket ignored the server saying 0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_it_never_raises_our_count(self, monkeypatch):
+        """Raising from a header would be unsafe with requests in flight."""
+        monkeypatch.setattr(hc, "_hc_tokens", 1.0)
+        monkeypatch.setattr(hc, "_hc_refilled", None)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
+
+        async def fake_post(self, url, **kw):
+            r = _resp(200, daily_remaining=4000)
+            r.headers["x-ratelimit-remaining"] = "5"   # server claims plenty
+            return r
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+        await hc.hc_post("q", {}, "k")
+        assert hc._hc_tokens <= 1.0, f"tokens were raised to {hc._hc_tokens}"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_header_leaves_the_bucket_alone(self, monkeypatch):
+        monkeypatch.setattr(hc, "_hc_tokens", hc.HC_BURST)
+        monkeypatch.setattr(hc, "_hc_refilled", None)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
+
+        async def fake_post(self, url, **kw):
+            return _resp(200)   # no rate-limit headers at all
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+        await hc.hc_post("q", {}, "k")
+        assert hc._hc_tokens == hc.HC_BURST - 1.0
 
 
 class TestThrottleRetryCap:
