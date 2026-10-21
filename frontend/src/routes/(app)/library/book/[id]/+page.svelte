@@ -197,6 +197,7 @@
 		{#each formatRows as fmtRow (fmtRow.key)}
 			<FormatRow
 				{bookId}
+				bookTitle={book.title}
 				type={fmtRow.type}
 				status={fmtRow.status}
 				narrator={fmtRow.narrator}
