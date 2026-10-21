@@ -94,3 +94,34 @@ export function deleteBookFormat(
 		method: 'DELETE'
 	});
 }
+
+export interface DeleteBookResult {
+	formats_deleted: FormatType[];
+	files_removed: string[];
+	files_failed: { path: string; error: string }[];
+	requests_deleted: number;
+	/** True when nothing was left and the book entry itself was removed. */
+	entry_deleted: boolean;
+}
+
+/**
+ * Deletes a book, or just some of its formats.
+ *
+ * An empty `formats` means everything the book holds. Removing the last format
+ * removes the entry too, so a deleted book stops leaving an empty detail page
+ * behind. Only the library copy of a file is touched — a torrent's own copy is
+ * left to keep seeding.
+ */
+export function deleteBook(
+	bookId: string,
+	formats: FormatType[],
+	deleteFiles: boolean
+): Promise<DeleteBookResult> {
+	const q = new URLSearchParams();
+	if (formats.length > 0) q.set('formats', formats.join(','));
+	if (deleteFiles) q.set('delete_files', 'true');
+	const qs = q.toString();
+	return request<DeleteBookResult>(`/books/${bookId}${qs ? `?${qs}` : ''}`, {
+		method: 'DELETE'
+	});
+}

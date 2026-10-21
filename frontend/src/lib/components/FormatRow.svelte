@@ -1,6 +1,5 @@
 <script lang="ts">
 	import Badge from './Badge.svelte';
-	import DeleteFormatDialog from './DeleteFormatDialog.svelte';
 	import type { BadgeVariant } from './Badge.svelte';
 	import FormatHistory from './FormatHistory.svelte';
 	import Icon from './Icon.svelte';
@@ -23,8 +22,6 @@
 	 */
 	interface Props {
 		bookId: string;
-		/** For the delete dialog, which names the book it is about to remove. */
-		bookTitle: string;
 		type: FormatType;
 		status: 'in_library' | 'missing' | string;
 		narrator?: string | null;
@@ -33,8 +30,7 @@
 		onrefresh: () => void;
 	}
 
-	let { bookId, bookTitle, type, status, narrator, format, request, onrefresh }: Props =
-		$props();
+	let { bookId, type, status, narrator, format, request, onrefresh }: Props = $props();
 
 	let open = $state(false);
 	let busy = $state(false);
@@ -43,7 +39,6 @@
 	let searchError = $state('');
 	let activeRequestId = $state<string | null>(null);
 	let narratorInput = $state('');
-	let deleting = $state(false);
 
 	const isAudio = $derived(type === 'audiobook');
 	const typeLabel = $derived(isAudio ? 'Audiobook' : 'Ebook');
@@ -163,16 +158,6 @@
 		<span class="chevron" class:open><Icon name="chevron-down" size={14} /></span>
 	</button>
 
-	{#if deleting}
-		<DeleteFormatDialog
-			{bookId}
-			{type}
-			title={bookTitle}
-			onclose={() => (deleting = false)}
-			ondeleted={onrefresh}
-		/>
-	{/if}
-
 	{#if open}
 		<div class="content">
 			{#if status === 'in_library' && format}
@@ -189,11 +174,6 @@
 						{/if}
 						<button type="button" onclick={searchReplacement} disabled={searching}>
 							{searching ? 'Searching…' : 'Search Prowlarr'}
-						</button>
-						<!-- Until now a held format could not be removed at all: cancelling the
-						     request was the only route, and it is gone once the request succeeds. -->
-						<button type="button" class="danger" onclick={() => (deleting = true)}>
-							Delete {typeLabel.toLowerCase()}
 						</button>
 					</div>
 				{/if}
@@ -329,11 +309,6 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		white-space: nowrap;
-	}
-
-	.actions button.danger {
-		border-color: var(--color-error, crimson);
-		color: var(--color-error, crimson);
 	}
 
 	.actions button.primary {

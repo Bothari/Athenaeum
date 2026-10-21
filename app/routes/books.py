@@ -1025,6 +1025,146 @@ async def preview_format_files(
     }
 
 
+async def _remove_format(db, settings, book_id: str, format_type: str, delete_files: bool) -> dict:
+    """Delete one format's row, its requests, and optionally its files.
+
+    Does not commit and does not touch the book itself — the caller decides whether
+    the book is left standing, because that depends on what else it still holds.
+    """
+    from ..services.organizer import delete_format_files
+
+    file_result = {"removed": [], "failed": [], "dir_removed": False, "dir": None}
+
+    # Capture the provenance before it goes. downloads.request_id is ON DELETE
+    # CASCADE, so deleting the request takes the download row with it (ath-b9k.1);
+    # request_events has no FK and is keyed by book_id, so it outlives both.
+    grabbed = await (
+        await db.execute(
+            """SELECT d.title, d.indexer, d.protocol, d.guid, d.info_url
+               FROM downloads d JOIN requests r ON r.id = d.request_id
+               WHERE r.book_id = ? AND r.type = ?
+               ORDER BY d.grabbed_at DESC LIMIT 1""",
+            (book_id, format_type),
+        )
+    ).fetchone()
+
+    if delete_files:
+        file_result = await delete_format_files(settings, db, book_id, format_type)
+
+    req_ids = [
+        r["id"]
+        for r in await (
+            await db.execute(
+                "SELECT id FROM requests WHERE book_id = ? AND type = ?", (book_id, format_type)
+            )
+        ).fetchall()
+    ]
+
+    detail = {
+        "type": format_type,
+        "files_removed": len(file_result["removed"]),
+        "dir": file_result["dir"],
+    }
+    if grabbed:
+        detail["grabbed"] = {k: grabbed[k] for k in grabbed.keys()}
+    await log_request_event(
+        db, req_ids[0] if req_ids else "", "format_deleted", detail, book_id=book_id
+    )
+
+    await db.execute(
+        "DELETE FROM book_formats WHERE book_id = ? AND type = ?", (book_id, format_type)
+    )
+    await db.execute(
+        "DELETE FROM requests WHERE book_id = ? AND type = ?", (book_id, format_type)
+    )
+    return {"files": file_result, "requests_deleted": len(req_ids)}
+
+
+async def _book_is_bare(db, book_id: str) -> bool:
+    """True when nothing is held or wanted for this book any more."""
+    has_formats = await (
+        await db.execute("SELECT 1 FROM book_formats WHERE book_id = ? LIMIT 1", (book_id,))
+    ).fetchone()
+    has_requests = await (
+        await db.execute("SELECT 1 FROM requests WHERE book_id = ? LIMIT 1", (book_id,))
+    ).fetchone()
+    return not has_formats and not has_requests
+
+
+@router.delete("/books/{book_id}")
+async def delete_book(
+    book_id: str,
+    formats: str = Query(default=""),
+    delete_files: bool = Query(default=False),
+    auth: dict = Depends(require_admin),
+):
+    """Delete a book, or just some of its formats.
+
+    `formats` is a comma-separated subset; empty means everything the book holds.
+    Removing the last format removes the book entry too — leaving the row behind is
+    what made a deleted book keep its detail page with nothing on it.
+
+    Only the library copy of a file is ever removed. A torrent grab was copied
+    rather than moved, so the downloader still has its own and may be seeding.
+    """
+    settings = await get_settings()
+
+    async with get_db() as db:
+        book = await (
+            await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+        ).fetchone()
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+
+        held = [
+            r["type"]
+            for r in await (
+                await db.execute("SELECT type FROM book_formats WHERE book_id = ?", (book_id,))
+            ).fetchall()
+        ]
+        wanted = [f.strip() for f in formats.split(",") if f.strip()] if formats else list(held)
+        unknown = [f for f in wanted if f not in ("ebook", "audiobook")]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown format(s): {', '.join(unknown)}")
+
+        removed_files: list[str] = []
+        failed_files: list[dict] = []
+        requests_deleted = 0
+        for fmt in wanted:
+            result = await _remove_format(db, settings, book_id, fmt, delete_files)
+            removed_files += result["files"]["removed"]
+            failed_files += result["files"]["failed"]
+            requests_deleted += result["requests_deleted"]
+
+        # Asking for a subset can still empty the book, and an already-empty book
+        # (nothing held, nothing requested) is removable on its own — which is how
+        # one orphaned by an earlier per-format delete gets cleared.
+        entry_deleted = await _book_is_bare(db, book_id)
+        if entry_deleted:
+            await db.execute("DELETE FROM book_series WHERE book_id = ?", (book_id,))
+            await db.execute("DELETE FROM book_authors WHERE book_id = ?", (book_id,))
+            await db.execute("DELETE FROM book_links WHERE book_id = ?", (book_id,))
+            await db.execute("DELETE FROM books WHERE id = ?", (book_id,))
+            # request_events are deliberately kept: keyed by book_id with no FK, they
+            # are the only surviving record of what was ever grabbed for this book.
+
+        await db.commit()
+
+    logger.info(
+        "delete_book: %s — formats %s, %d file(s), %d request(s)%s",
+        book["title"], wanted or "(none)", len(removed_files), requests_deleted,
+        ", entry deleted" if entry_deleted else "",
+    )
+    return {
+        "ok": True,
+        "formats_deleted": wanted,
+        "files_removed": removed_files,
+        "files_failed": failed_files,
+        "requests_deleted": requests_deleted,
+        "entry_deleted": entry_deleted,
+    }
+
+
 @router.delete("/books/{book_id}/formats/{format_type}")
 async def delete_book_format(
     book_id: str,
@@ -1032,20 +1172,12 @@ async def delete_book_format(
     delete_files: bool = Query(default=False),
     auth: dict = Depends(require_admin),
 ):
-    """Remove one format of a book, and optionally its organized files.
-
-    Only ever removes the organized copy. A torrent grab was copied rather than
-    moved, so the downloader still holds the original and may be seeding it;
-    deleting that is not on offer here.
-    """
+    """Delete a single format. Kept for callers that address one format directly;
+    DELETE /books/{id} covers the same ground and can take a subset."""
     if format_type not in ("ebook", "audiobook"):
         raise HTTPException(status_code=400, detail=f"Unknown format: {format_type}")
 
-    from ..services.organizer import delete_format_files
-
     settings = await get_settings()
-    file_result: dict = {"removed": [], "failed": [], "dir_removed": False, "dir": None}
-
     async with get_db() as db:
         book = await (
             await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
@@ -1054,85 +1186,33 @@ async def delete_book_format(
             raise HTTPException(status_code=404, detail="Book not found")
         fmt = await (
             await db.execute(
-                "SELECT id, abs_id FROM book_formats WHERE book_id = ? AND type = ?",
-                (book_id, format_type),
+                "SELECT 1 FROM book_formats WHERE book_id = ? AND type = ?", (book_id, format_type)
             )
         ).fetchone()
         if not fmt:
             raise HTTPException(status_code=404, detail="Book has no such format")
 
-        # Capture what we are about to lose. downloads.request_id is ON DELETE
-        # CASCADE, so deleting the request takes the download row with it — see
-        # ath-b9k.1. request_events is keyed by book_id and has no FK, so it
-        # outlives both; recording the provenance here keeps a readable trace of
-        # what was grabbed even once the download row is gone.
-        grabbed = await (
-            await db.execute(
-                """SELECT d.title, d.indexer, d.protocol, d.guid, d.info_url
-                   FROM downloads d JOIN requests r ON r.id = d.request_id
-                   WHERE r.book_id = ? AND r.type = ?
-                   ORDER BY d.grabbed_at DESC LIMIT 1""",
-                (book_id, format_type),
-            )
-        ).fetchone()
+        result = await _remove_format(db, settings, book_id, format_type, delete_files)
 
-        if delete_files:
-            file_result = await delete_format_files(settings, db, book_id, format_type)
-
-        req_ids = [
-            r["id"]
-            for r in await (
-                await db.execute(
-                    "SELECT id FROM requests WHERE book_id = ? AND type = ?",
-                    (book_id, format_type),
-                )
-            ).fetchall()
-        ]
-
-        detail = {
-            "type": format_type,
-            "files_removed": len(file_result["removed"]),
-            "dir": file_result["dir"],
-        }
-        if grabbed:
-            detail["grabbed"] = {k: grabbed[k] for k in grabbed.keys()}
-        await log_request_event(
-            db, req_ids[0] if req_ids else "", "format_deleted", detail, book_id=book_id
-        )
-
-        await db.execute(
-            "DELETE FROM book_formats WHERE book_id = ? AND type = ?", (book_id, format_type)
-        )
-        await db.execute(
-            "DELETE FROM requests WHERE book_id = ? AND type = ?", (book_id, format_type)
-        )
-
-        # A book with no formats and no requests left only existed because of them;
-        # drop it from book_series so it shows up as missing again, matching what
-        # cancelling the last request already does.
-        has_formats = await (
-            await db.execute("SELECT 1 FROM book_formats WHERE book_id = ? LIMIT 1", (book_id,))
-        ).fetchone()
-        has_requests = await (
-            await db.execute("SELECT 1 FROM requests WHERE book_id = ? LIMIT 1", (book_id,))
-        ).fetchone()
-        orphaned = not has_formats and not has_requests
+        # Unlike delete_book this leaves the entry standing, so a caller deleting one
+        # format of two does not lose the book. book_series is still cleared when
+        # nothing is left, matching what cancelling the last request does.
+        orphaned = await _book_is_bare(db, book_id)
         if orphaned:
             await db.execute("DELETE FROM book_series WHERE book_id = ?", (book_id,))
-
         await db.commit()
 
     logger.info(
-        "delete_book_format: %s (%s) — %d file(s) removed, %d request(s) deleted%s",
-        book["title"], format_type, len(file_result["removed"]), len(req_ids),
-        ", book orphaned" if orphaned else "",
+        "delete_book_format: %s (%s) — %d file(s), %d request(s)%s",
+        book["title"], format_type, len(result["files"]["removed"]),
+        result["requests_deleted"], ", book orphaned" if orphaned else "",
     )
     return {
         "ok": True,
-        "files_removed": file_result["removed"],
-        "files_failed": file_result["failed"],
-        "dir_removed": file_result["dir_removed"],
-        "requests_deleted": len(req_ids),
+        "files_removed": result["files"]["removed"],
+        "files_failed": result["files"]["failed"],
+        "dir_removed": result["files"]["dir_removed"],
+        "requests_deleted": result["requests_deleted"],
         "book_orphaned": orphaned,
     }
 

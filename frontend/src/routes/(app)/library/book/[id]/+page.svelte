@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import Badge from '$lib/components/Badge.svelte';
+	import DeleteBookDialog from '$lib/components/DeleteBookDialog.svelte';
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import FormatRow from '$lib/components/FormatRow.svelte';
 	import HardcoverCard from '$lib/components/HardcoverCard.svelte';
@@ -8,6 +10,7 @@
 	import LoadingState from '$lib/components/LoadingState.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { getBook, hardcoverUrl } from '$lib/api/books';
+	import { auth } from '$lib/stores/auth.svelte';
 	import type { FormatType } from '$lib/types/library';
 	import type {
 		BookDetail,
@@ -20,6 +23,20 @@
 
 	let book = $state<BookDetail | null>(null);
 	let failed = $state(false);
+	let deleting = $state(false);
+
+	const heldFormats = $derived<FormatType[]>((book?.formats ?? []).map((f) => f.type));
+
+	/** Deleting the last format removes the book itself, so there is no page left to
+	 *  show — go back to the library rather than reload into a 404. */
+	async function afterDelete() {
+		if (heldFormats.length === 0) {
+			await goto('/library/books');
+			return;
+		}
+		await load();
+		if (book === null) await goto('/library/books');
+	}
 
 	async function load() {
 		failed = false;
@@ -125,7 +142,23 @@
 {:else if !book}
 	<LoadingState />
 {:else}
-	<PageHeader title={book.title} icon="ebook" />
+	<PageHeader title={book.title} icon="ebook">
+		{#snippet actions()}
+			{#if auth.isAdmin}
+				<button type="button" class="delete" onclick={() => (deleting = true)}>Delete</button>
+			{/if}
+		{/snippet}
+	</PageHeader>
+
+	{#if deleting}
+		<DeleteBookDialog
+			{bookId}
+			title={book.title}
+			{heldFormats}
+			onclose={() => (deleting = false)}
+			ondeleted={afterDelete}
+		/>
+	{/if}
 
 	<div class="card">
 		<div class="detail">
@@ -197,7 +230,6 @@
 		{#each formatRows as fmtRow (fmtRow.key)}
 			<FormatRow
 				{bookId}
-				bookTitle={book.title}
 				type={fmtRow.type}
 				status={fmtRow.status}
 				narrator={fmtRow.narrator}
@@ -293,6 +325,15 @@
 		letter-spacing: 0.06em;
 		color: var(--text-dim);
 		margin: 1.5rem 0 0.5rem;
+	}
+
+	.delete {
+		padding: 0.3rem 0.7rem;
+		background: transparent;
+		color: var(--color-error, crimson);
+		border: 1px solid var(--color-error, crimson);
+		border-radius: var(--radius);
+		cursor: pointer;
 	}
 
 	.formats {

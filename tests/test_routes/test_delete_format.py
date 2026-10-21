@@ -187,3 +187,103 @@ class TestDelete:
     @pytest.mark.asyncio
     async def test_unknown_book_is_404(self, client, library):
         assert (await client.request("DELETE", "/api/books/nope/formats/ebook")).status_code == 404
+
+
+class TestDeleteWholeBook:
+    """DELETE /books/{id} — one control, optional format subset.
+
+    The per-format delete left the books row standing, so a book with nothing held
+    and nothing requested kept its detail page with an empty shell on it. Observed
+    on the dev instance: Wayward Pines ended up with 0 formats, 0 requests and 0
+    series, and was still reachable.
+    """
+
+    @pytest.mark.asyncio
+    async def test_deleting_everything_removes_the_entry(self, client, library):
+        from app.database import get_db
+        resp = await client.request("DELETE", "/api/books/b1")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["entry_deleted"] is True
+        assert sorted(body["formats_deleted"]) == ["audiobook", "ebook"]
+
+        async with get_db() as db:
+            for table, col in (("books", "id"), ("book_formats", "book_id"),
+                               ("book_authors", "book_id"), ("book_links", "book_id"),
+                               ("book_series", "book_id")):
+                rows = await (await db.execute(
+                    f"SELECT 1 FROM {table} WHERE {col}='b1'")).fetchall()
+                assert rows == [], f"{table} still references the deleted book"
+
+    @pytest.mark.asyncio
+    async def test_a_subset_leaves_the_book_standing(self, client, library):
+        from app.database import get_db
+        body = (await client.request("DELETE", "/api/books/b1?formats=ebook")).json()
+        assert body["formats_deleted"] == ["ebook"]
+        assert body["entry_deleted"] is False
+        async with get_db() as db:
+            left = await (await db.execute("SELECT type FROM book_formats WHERE book_id='b1'")).fetchall()
+            book = await (await db.execute("SELECT 1 FROM books WHERE id='b1'")).fetchone()
+        assert [r["type"] for r in left] == ["audiobook"]
+        assert book is not None
+
+    @pytest.mark.asyncio
+    async def test_a_subset_that_empties_the_book_removes_the_entry(self, client, library):
+        from app.database import get_db
+        await client.request("DELETE", "/api/books/b1?formats=ebook")
+        body = (await client.request("DELETE", "/api/books/b1?formats=audiobook")).json()
+        assert body["entry_deleted"] is True
+        async with get_db() as db:
+            assert await (await db.execute("SELECT 1 FROM books WHERE id='b1'")).fetchone() is None
+
+    @pytest.mark.asyncio
+    async def test_an_already_orphaned_book_can_be_cleared(self, client, library):
+        """The state the per-format delete used to leave behind, and the reason this
+        endpoint treats an empty book as deletable rather than a no-op."""
+        from app.database import get_db
+        async with get_db() as db:
+            await db.execute("DELETE FROM book_formats WHERE book_id='b1'")
+            await db.commit()
+        body = (await client.request("DELETE", "/api/books/b1")).json()
+        assert body["formats_deleted"] == []
+        assert body["entry_deleted"] is True
+        async with get_db() as db:
+            assert await (await db.execute("SELECT 1 FROM books WHERE id='b1'")).fetchone() is None
+
+    @pytest.mark.asyncio
+    async def test_files_go_for_every_selected_format(self, client, library):
+        resp = await client.request("DELETE", "/api/books/b1?delete_files=true")
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()["files_removed"]) == 4   # two media, two metadata.opf
+        assert not library["ebook_dir"].exists()
+        assert not library["audio_dir"].exists()
+
+    @pytest.mark.asyncio
+    async def test_the_seeding_copy_survives_a_whole_book_delete(self, client, library):
+        await client.request("DELETE", "/api/books/b1?delete_files=true")
+        assert library["seeding"].exists(), "deleted the downloader's copy"
+
+    @pytest.mark.asyncio
+    async def test_history_outlives_the_book(self, client, library):
+        """request_events has no FK and is keyed by book_id, so the record of what
+        was grabbed survives even once the book itself is gone — ath-b9k.1."""
+        from app.database import get_db
+        await client.request("DELETE", "/api/books/b1?delete_files=true")
+        async with get_db() as db:
+            events = await (await db.execute(
+                "SELECT event_type FROM request_events WHERE book_id='b1'")).fetchall()
+        assert any(e["event_type"] == "format_deleted" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_unknown_format_in_the_subset_is_rejected(self, client, library):
+        from app.database import get_db
+        resp = await client.request("DELETE", "/api/books/b1?formats=ebook,paperback")
+        assert resp.status_code == 400
+        # and nothing was removed on the way to failing
+        async with get_db() as db:
+            left = await (await db.execute("SELECT type FROM book_formats WHERE book_id='b1'")).fetchall()
+        assert len(left) == 2
+
+    @pytest.mark.asyncio
+    async def test_unknown_book_is_404(self, client, library):
+        assert (await client.request("DELETE", "/api/books/nope")).status_code == 404
