@@ -291,6 +291,8 @@ _Completed 2026-05-25_
 
 ## Future Work / Backlog
 
-- **Author deduplication on HC conflict**: when two local authors match the same HC author ID, merge the duplicate — re-point all `book_authors` rows, delete the duplicate author and `author_links` row.
+Tracked in beads, not here — run `bd ready` / `bd list --status=open`.
 
-- **Multiple narrators per audiobook**: deferred — not needed for typical single-narrator libraries.
+The two items that previously sat in this section were migrated on 2026-08-26:
+author deduplication on Hardcover ID conflict (`ath-2lt`) and multiple narrators
+per audiobook (`ath-mt9`).

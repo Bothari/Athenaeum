@@ -13,7 +13,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # contents: write is for creating the GitHub Release below, not for pushing
+      # code — nothing in this workflow commits.
+      contents: write
       packages: write
 
     steps:
@@ -59,3 +61,19 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # A tag publishes an image but does not, on its own, create a GitHub
+      # Release — they are separate objects. Without this the Releases page
+      # silently stops tracking what is actually deployed: v1.0.1 and v1.0.2
+      # shipped as images while the page still advertised v1.0.0 as Latest.
+      #
+      # Runs only for tags, so a dogfood push cannot create one. generate_release_notes
+      # builds the changelog from commits since the previous tag; prerelease is
+      # driven by the tag carrying a suffix (v1.2.3-rc.1), matching the image
+      # tagging rules above so :latest and "Latest release" agree.
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

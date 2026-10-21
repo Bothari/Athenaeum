@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ..auth import require_admin, require_auth
 from ..database import get_db
 from ..services import book_search as _book_search
+from ..services.request_events import log_request_event
 from ..settings import get_settings
 
 logger = __import__("logging").getLogger(__name__)
@@ -307,7 +308,15 @@ async def get_author_also_by(author_id: str):
         if cache_row:
             all_books = json.loads(cache_row["results_json"])
         else:
-            all_books = await _book_search.get_hc_author_books(hc_author_id, api_key)
+            all_books, hc_error = await _hc_results_or_error(
+                _book_search.get_hc_author_books(hc_author_id, api_key)
+            )
+            if hc_error:
+                # Never cache a failure: this row lives for 14 days, so writing an
+                # empty list here turns a momentary outage into a fortnight of
+                # "this series has no books".
+                logger.warning("get_hc_author_books(%s): %s — not caching", hc_author_id, hc_error)
+                return {"items": [], "error": hc_error}
             expires_iso = (now_dt + timedelta(days=14)).isoformat()
             await db.execute(
                 """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
@@ -674,7 +683,15 @@ async def get_series_missing(series_id: str):
         if cache_row:
             all_books = json.loads(cache_row["results_json"])
         else:
-            all_books = await _book_search.get_hc_series_books(hc_series_id, api_key)
+            all_books, hc_error = await _hc_results_or_error(
+                _book_search.get_hc_series_books(hc_series_id, api_key)
+            )
+            if hc_error:
+                # Never cache a failure: this row lives for 14 days, so writing an
+                # empty list here turns a momentary outage into a fortnight of
+                # "this series has no books".
+                logger.warning("get_hc_series_books(%s): %s — not caching", hc_series_id, hc_error)
+                return {"items": [], "error": hc_error}
             expires_iso = (now_dt + timedelta(days=14)).isoformat()
             await db.execute(
                 """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
@@ -819,8 +836,8 @@ async def list_series_downloads(series_id: str, auth: dict = Depends(require_adm
         rows = await (
             await db.execute(
                 """SELECT id, status, type, title, protocol, size, grabbed_at, updated_at, proposed_mappings
-                   FROM series_downloads
-                   WHERE series_id = ? AND status NOT IN ('completed', 'failed')
+                   FROM downloads
+                   WHERE series_id = ? AND status NOT IN ('organized', 'failed')
                    ORDER BY grabbed_at DESC LIMIT 1""",
                 (series_id,),
             )
@@ -854,7 +871,7 @@ async def confirm_series_pack(
     async with get_db() as db:
         row = await (
             await db.execute(
-                "SELECT id, status FROM series_downloads WHERE id = ? AND series_id = ?",
+                "SELECT id, status FROM downloads WHERE id = ? AND series_id = ?",
                 (sdl_id, series_id),
             )
         ).fetchone()
@@ -870,7 +887,7 @@ async def confirm_series_pack(
         ]
         now = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "UPDATE series_downloads SET status='organizing', proposed_mappings=?, updated_at=? WHERE id=?",
+            "UPDATE downloads SET status='organizing', proposed_mappings=?, updated_at=? WHERE id=?",
             (json.dumps(confirmed), now, sdl_id),
         )
         await db.commit()
@@ -886,7 +903,7 @@ async def rescan_series_pack(series_id: str, sdl_id: str, auth: dict = Depends(r
     async with get_db() as db:
         row = await (
             await db.execute(
-                "SELECT id, status FROM series_downloads WHERE id = ? AND series_id = ?",
+                "SELECT id, status FROM downloads WHERE id = ? AND series_id = ?",
                 (sdl_id, series_id),
             )
         ).fetchone()
@@ -896,7 +913,7 @@ async def rescan_series_pack(series_id: str, sdl_id: str, auth: dict = Depends(r
             raise HTTPException(status_code=400, detail=f"Status is {row['status']}, not awaiting_review")
         now = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "UPDATE series_downloads SET status='rescanning', updated_at=? WHERE id=?",
+            "UPDATE downloads SET status='rescanning', updated_at=? WHERE id=?",
             (now, sdl_id),
         )
         await db.commit()
@@ -966,6 +983,160 @@ async def search_series_pack(series_id: str, auth: dict = Depends(require_admin)
     return {"results": results}
 
 
+# ── Deleting a format ──────────────────────────────────────────────────────────
+#
+# Cancelling a request was the only way to get rid of a book, and it stops being
+# available the moment the request is fulfilled — so a book in the library could
+# not be removed at all. These two endpoints are the pair: one says what would be
+# deleted, the other does it. The preview exists because the file location is
+# re-derived rather than recorded, so the caller has to be able to show the user
+# the actual paths before anything is removed.
+
+
+@router.get("/books/{book_id}/formats/{format_type}/files")
+async def preview_format_files(
+    book_id: str, format_type: str, auth: dict = Depends(require_admin)
+):
+    """Report the organized files that deleting this format would remove."""
+    if format_type not in ("ebook", "audiobook"):
+        raise HTTPException(status_code=400, detail=f"Unknown format: {format_type}")
+
+    from ..services.organizer import resolve_format_files
+
+    settings = await get_settings()
+    async with get_db() as db:
+        fmt = await (
+            await db.execute(
+                "SELECT 1 FROM book_formats WHERE book_id = ? AND type = ?",
+                (book_id, format_type),
+            )
+        ).fetchone()
+        if not fmt:
+            raise HTTPException(status_code=404, detail="Book has no such format")
+        found = await resolve_format_files(settings, db, book_id, format_type)
+
+    media = [f for f in found["files"] if f["kind"] == "media"]
+    return {
+        "dir": found["dir"],
+        "files": found["files"],
+        # False when the derivation found no book file. The caller should disable the
+        # delete-files option rather than offer something that will quietly do nothing.
+        "locatable": bool(media),
+    }
+
+
+@router.delete("/books/{book_id}/formats/{format_type}")
+async def delete_book_format(
+    book_id: str,
+    format_type: str,
+    delete_files: bool = Query(default=False),
+    auth: dict = Depends(require_admin),
+):
+    """Remove one format of a book, and optionally its organized files.
+
+    Only ever removes the organized copy. A torrent grab was copied rather than
+    moved, so the downloader still holds the original and may be seeding it;
+    deleting that is not on offer here.
+    """
+    if format_type not in ("ebook", "audiobook"):
+        raise HTTPException(status_code=400, detail=f"Unknown format: {format_type}")
+
+    from ..services.organizer import delete_format_files
+
+    settings = await get_settings()
+    file_result: dict = {"removed": [], "failed": [], "dir_removed": False, "dir": None}
+
+    async with get_db() as db:
+        book = await (
+            await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+        ).fetchone()
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+        fmt = await (
+            await db.execute(
+                "SELECT id, abs_id FROM book_formats WHERE book_id = ? AND type = ?",
+                (book_id, format_type),
+            )
+        ).fetchone()
+        if not fmt:
+            raise HTTPException(status_code=404, detail="Book has no such format")
+
+        # Capture what we are about to lose. downloads.request_id is ON DELETE
+        # CASCADE, so deleting the request takes the download row with it — see
+        # ath-b9k.1. request_events is keyed by book_id and has no FK, so it
+        # outlives both; recording the provenance here keeps a readable trace of
+        # what was grabbed even once the download row is gone.
+        grabbed = await (
+            await db.execute(
+                """SELECT d.title, d.indexer, d.protocol, d.guid, d.info_url
+                   FROM downloads d JOIN requests r ON r.id = d.request_id
+                   WHERE r.book_id = ? AND r.type = ?
+                   ORDER BY d.grabbed_at DESC LIMIT 1""",
+                (book_id, format_type),
+            )
+        ).fetchone()
+
+        if delete_files:
+            file_result = await delete_format_files(settings, db, book_id, format_type)
+
+        req_ids = [
+            r["id"]
+            for r in await (
+                await db.execute(
+                    "SELECT id FROM requests WHERE book_id = ? AND type = ?",
+                    (book_id, format_type),
+                )
+            ).fetchall()
+        ]
+
+        detail = {
+            "type": format_type,
+            "files_removed": len(file_result["removed"]),
+            "dir": file_result["dir"],
+        }
+        if grabbed:
+            detail["grabbed"] = {k: grabbed[k] for k in grabbed.keys()}
+        await log_request_event(
+            db, req_ids[0] if req_ids else "", "format_deleted", detail, book_id=book_id
+        )
+
+        await db.execute(
+            "DELETE FROM book_formats WHERE book_id = ? AND type = ?", (book_id, format_type)
+        )
+        await db.execute(
+            "DELETE FROM requests WHERE book_id = ? AND type = ?", (book_id, format_type)
+        )
+
+        # A book with no formats and no requests left only existed because of them;
+        # drop it from book_series so it shows up as missing again, matching what
+        # cancelling the last request already does.
+        has_formats = await (
+            await db.execute("SELECT 1 FROM book_formats WHERE book_id = ? LIMIT 1", (book_id,))
+        ).fetchone()
+        has_requests = await (
+            await db.execute("SELECT 1 FROM requests WHERE book_id = ? LIMIT 1", (book_id,))
+        ).fetchone()
+        orphaned = not has_formats and not has_requests
+        if orphaned:
+            await db.execute("DELETE FROM book_series WHERE book_id = ?", (book_id,))
+
+        await db.commit()
+
+    logger.info(
+        "delete_book_format: %s (%s) — %d file(s) removed, %d request(s) deleted%s",
+        book["title"], format_type, len(file_result["removed"]), len(req_ids),
+        ", book orphaned" if orphaned else "",
+    )
+    return {
+        "ok": True,
+        "files_removed": file_result["removed"],
+        "files_failed": file_result["failed"],
+        "dir_removed": file_result["dir_removed"],
+        "requests_deleted": len(req_ids),
+        "book_orphaned": orphaned,
+    }
+
+
 class SeriesPackDownloadBody(BaseModel):
     download_url: str
     protocol: str
@@ -991,34 +1162,22 @@ async def trigger_series_pack_download(
 
     settings = await get_settings()
 
-    from ..services.download_clients import get_torrent_client, get_usenet_client
+    from ..services.downloads import NoClientConfigured, create_download, select_client
 
-    if body.protocol == "torrent":
-        client, client_name = get_torrent_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No torrent downloader configured")
-    elif body.protocol == "usenet":
-        client, client_name = get_usenet_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No usenet downloader configured")
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown protocol: {body.protocol}")
+    try:
+        client, client_name = select_client(settings, body.protocol)
+    except NoClientConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         download_id = await client.add(body.download_url)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Download client error: {e}")
 
-    now = datetime.now(timezone.utc).isoformat()
-    sdl_id = str(uuid.uuid4())
     async with get_db() as db:
-        await db.execute(
-            """INSERT OR IGNORE INTO series_downloads
-               (id, series_id, type, title, indexer, guid, info_url, protocol,
-                size, download_client, download_id, status, grabbed_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?, ?)""",
-            (sdl_id, series_id, body.type, body.title, body.indexer, body.guid,
-             body.info_url, body.protocol, body.size, client_name, download_id, now, now),
+        sdl_id = await create_download(
+            db, release=body.model_dump(), download_client=client_name,
+            download_id=download_id, series_id=series_id, type=body.type,
         )
         await db.commit()
 
@@ -1191,6 +1350,23 @@ async def _annotate_results(results: list[dict], db) -> list[dict]:
 
 # ── Search endpoints ───────────────────────────────────────────────────────────
 
+async def _hc_results_or_error(coro) -> tuple[list, str | None]:
+    """Run a Hardcover lookup, returning (results, error).
+
+    An upstream failure must never reach the caller as an empty result list:
+    that is indistinguishable from "this book does not exist", and is exactly
+    what made two rate-limit outages look like an empty library for hours.
+    """
+    from ..services.book_search import HardcoverUnavailable
+    from ..services.hardcover import HardcoverRateLimited
+    try:
+        return await coro, None
+    except HardcoverRateLimited:
+        return [], "Hardcover is rate limited right now — please try again shortly."
+    except HardcoverUnavailable:
+        return [], "Hardcover could not be reached — please try again shortly."
+
+
 @router.get("/search/metadata")
 async def search_metadata(
     q: str = Query(default=""),
@@ -1218,7 +1394,11 @@ async def search_metadata(
             context_hc_series_id = sl_row["hardcover_series_id"] or ""
 
     from ..services.book_search import search_books
-    results = await search_books(q.strip(), api_key, context_hc_series_id=context_hc_series_id)
+    results, error = await _hc_results_or_error(
+        search_books(q.strip(), api_key, context_hc_series_id=context_hc_series_id)
+    )
+    if error:
+        return {"results": [], "error": error}
 
     async with get_db() as db:
         results = await _annotate_results(results, db)
@@ -1242,14 +1422,18 @@ async def search_advanced(
 
     if author_id:
         from ..services.book_search import get_hc_author_books
-        results = await get_hc_author_books(author_id, api_key)
+        results, error = await _hc_results_or_error(get_hc_author_books(author_id, api_key))
+        if error:
+            return {"results": [], "error": error}
         async with get_db() as db:
             results = await _annotate_results(results, db)
         return {"results": results}
 
     if hc_series_id:
         from ..services.book_search import get_hc_series_books
-        results = await get_hc_series_books(hc_series_id, api_key)
+        results, error = await _hc_results_or_error(get_hc_series_books(hc_series_id, api_key))
+        if error:
+            return {"results": [], "error": error}
         async with get_db() as db:
             results = await _annotate_results(results, db)
         return {"results": results}
@@ -1270,10 +1454,12 @@ async def search_advanced(
             context_hc_series_id = sl_row["hardcover_series_id"] or ""
 
     from ..services.book_search import advanced_search_books
-    results = await advanced_search_books(
+    results, error = await _hc_results_or_error(advanced_search_books(
         title=title, author=author, series=series,
         api_key=api_key, context_hc_series_id=context_hc_series_id,
-    )
+    ))
+    if error:
+        return {"results": [], "error": error}
 
     async with get_db() as db:
         results = await _annotate_results(results, db)

@@ -577,8 +577,21 @@ async def search_indexers(request_id: str):
         logger.warning("Prowlarr search failed: %s", e)
         return {"results": [], "error": str(e)}
 
-    # Apply ranking for sort order only — no hard filters (user picks manually)
+    # Apply ranking for sort order only — no hard filters, since the user picks from
+    # this list and should see everything, series packs included.
     ranked = rank_results(raw_results, ranking, allowed_formats, min_seeders=0, filter_series_packs=False)
+
+    # Relevance decides the order the user reads; the ranking stack decides quality
+    # order within one relevance band. Sorting the already-ranked list is stable, so
+    # both apply. Without this the stack alone led — and "size prefer larger" put a
+    # series omnibus above the exact match, so asking for "Pines" listed the Wayward
+    # Pines 1-3 pack first. That is the same fault auto-search had, where it was
+    # worse because nothing was shown at all.
+    scored = [
+        (_score_result(r.get("title", ""), row["title"], row["author"] or ""), r)
+        for r in ranked
+    ]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
 
     results = [
         {
@@ -592,9 +605,9 @@ async def search_indexers(request_id: str):
             "seeders": r.get("seeders"),
             "leechers": r.get("leechers"),
             "age": r.get("age"),
-            "score": _score_result(r.get("title", ""), row["title"], row["author"] or ""),
+            "score": score,
         }
-        for r in ranked
+        for score, r in scored
     ]
     async with get_db() as db:
         await log_request_event(db, request_id, "searched", {"query": query, "results": len(results)})
@@ -707,18 +720,12 @@ async def trigger_download(request_id: str, body: DownloadBody):
 
     settings = await get_settings()
 
-    from ..services.download_clients import get_torrent_client, get_usenet_client
+    from ..services.downloads import NoClientConfigured, create_download, select_client
 
-    if body.protocol == "torrent":
-        client, client_name = get_torrent_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No torrent downloader configured")
-    elif body.protocol == "usenet":
-        client, client_name = get_usenet_client(settings)
-        if not client:
-            raise HTTPException(status_code=400, detail="No usenet downloader configured")
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown protocol: {body.protocol}")
+    try:
+        client, client_name = select_client(settings, body.protocol)
+    except NoClientConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         download_id = await client.add(body.download_url)
@@ -726,15 +733,10 @@ async def trigger_download(request_id: str, body: DownloadBody):
         raise HTTPException(status_code=502, detail=f"Download client error: {e}")
 
     now = _now()
-    dl_id = str(uuid.uuid4())
     async with get_db() as db:
-        await db.execute(
-            """INSERT OR IGNORE INTO downloads
-               (id, request_id, title, indexer, guid, info_url, protocol,
-                size, download_client, download_id, status, grabbed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snatched', ?)""",
-            (dl_id, request_id, body.title, body.indexer, body.guid,
-             body.info_url, body.protocol, body.size, client_name, download_id, now),
+        dl_id = await create_download(
+            db, release=body.model_dump(), download_client=client_name,
+            download_id=download_id, request_id=request_id,
         )
         await log_request_event(db, request_id, "grabbed", {
             "title": body.title, "indexer": body.indexer,

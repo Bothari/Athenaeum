@@ -127,9 +127,9 @@ the commit:
 Co-Authored-By: <model name> <noreply@anthropic.com>
 ```
 
-For example `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`. Use your own
-model name — do not copy a name from an older commit, and never attribute work to a
-model that did not write it.
+For example `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`. The history
+contains several different models. Use your own name — do not copy the trailer from
+the previous commit, and never attribute work to a model that did not write it.
 
 Commit messages should be concise and describe *why*, not just *what*.
 Use present tense. Example: "Add WAL mode to prevent database locking under load"
@@ -233,14 +233,48 @@ Avoiding a repeat is a primary goal of the rewrite, not a nice-to-have.
 
 ## Progress Tracking
 
-`docs/dev/PROGRESS.md` tracks build progress against the phases in `PLAN.md`.
+**Live work is tracked in beads, not in a markdown file.** Use `bd ready` to see
+what is actionable, `bd list --status=open` for everything outstanding, and
+`bd create` to file new work. Do not maintain a backlog or TODO list in markdown.
 
-**Update it whenever:**
-- A phase or sub-task is completed — check the box and add a completion date
-- A phase is started — note it as in progress
-- Post-phase polish or fixes are done — add them as a named block (as with "Mobile UI polish")
+`docs/dev/PROGRESS.md` is a **historical record** of the phased initial build
+(Phases 0 through Auto-Search, completed 2026-05-25). It is a narrative of what
+was built and when, useful for orientation — it is not the current state of play
+and is not the place to add new work.
 
-Keep entries concise. The git log has the detail; PROGRESS.md is the at-a-glance view.
+Append to it only when finishing something that is genuinely a *phase* of the
+original `PLAN.md` build. Everything else — bugs, features, polish, follow-ups —
+is a bead.
+
+---
+
+## Project Knowledge
+
+Durable knowledge about this project — decisions, gotchas, environment facts that
+outlive a session — lives in the beads memory store, not in a `MEMORY.md` file.
+
+```bash
+bd memories                   # list everything stored
+bd memories <keyword>         # search
+bd remember "insight"         # store (key auto-generated)
+bd remember "insight" --key <slug>   # store or update in place
+bd forget <slug>              # remove
+```
+
+`bd prime` injects all memories at session start, so anything stored here is in
+context for every future session without being loaded manually.
+
+Do not create `MEMORY.md` files, and do not write to Claude Code's per-project
+memory directory under `~/.claude/projects/*/memory/`. That store is per-account
+and invisible to other tools, so knowledge written there silently diverges from
+what `bd prime` reports. The five memories that had accumulated there were
+migrated into beads on 2026-08-26 and the directory emptied.
+
+Memories are **local only** — see "Data stays local" in `~/Projects/CLAUDE.md`.
+There is no Dolt remote; never add one and never run `bd dolt push`.
+
+Prefer a memory over a new line in this file when the fact is situational
+(a stale-trap, a one-off environment quirk). Keep `CLAUDE.md` for standing rules.
 
 ---
 

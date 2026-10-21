@@ -83,6 +83,117 @@ def _build_dest_dir(settings: dict, book_type: str, author: str, title: str) -> 
     return Path(*parts)
 
 
+# Extensions that belong to each format, used to decide which files in an
+# organized directory are the book itself rather than something that merely lives
+# alongside it.
+_FORMAT_EXTS = {
+    "ebook": {".epub", ".mobi", ".azw3", ".azw", ".pdf", ".cbz", ".cbr"},
+    "audiobook": {".m4b", ".m4a", ".mp3", ".ogg", ".opus", ".flac"},
+}
+
+# Written by us or by ABS next to the book. Safe to remove with the book, but never
+# on their own — a directory holding only these is not evidence the book was here.
+_SIDECAR_NAMES = {"metadata.opf", "metadata.json", "desc.txt", "reader.txt"}
+_SIDECAR_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".nfo"}
+
+
+async def resolve_format_files(settings: dict, db, book_id: str, book_type: str) -> dict:
+    """Locate the organized files for one format of one book.
+
+    The organized destination is not recorded anywhere — it is re-derived from the
+    book's author and title the same way auto_organize built it. That is only a
+    guess, because the title can change after the fact (_hc_refresh_book_titles
+    rewrites it from Hardcover), so nothing here is trusted: the directory and the
+    files are checked to exist, and a caller must show the result before acting on
+    it. ABS cannot answer this instead — it reports paths in its own mount
+    namespace, a union of the ebook and audiobook trees, which do not exist under
+    those names here.
+
+    Returns {"dir": str|None, "files": [{"path","size","kind"}], "derived": bool}.
+    """
+    row = await (
+        await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+    ).fetchone()
+    if not row:
+        return {"dir": None, "files": [], "derived": False}
+
+    author_row = await (
+        await db.execute(
+            """SELECT a.name FROM authors a
+               JOIN book_authors ba ON ba.author_id = a.id
+               WHERE ba.book_id = ? ORDER BY ba.author_position LIMIT 1""",
+            (book_id,),
+        )
+    ).fetchone()
+
+    dest_dir = _build_dest_dir(
+        settings, book_type, (author_row["name"] if author_row else "Unknown"), row["title"]
+    )
+    if not dest_dir.is_dir():
+        return {"dir": str(dest_dir), "files": [], "derived": True}
+
+    media_exts = _FORMAT_EXTS.get(book_type, set())
+    files: list[dict] = []
+    for entry in sorted(dest_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        ext = entry.suffix.lower()
+        if ext in media_exts:
+            kind = "media"
+        elif entry.name.lower() in _SIDECAR_NAMES or ext in _SIDECAR_EXTS:
+            kind = "sidecar"
+        else:
+            kind = "other"
+        files.append({"path": str(entry), "size": entry.stat().st_size, "kind": kind})
+
+    return {"dir": str(dest_dir), "files": files, "derived": True}
+
+
+async def delete_format_files(settings: dict, db, book_id: str, book_type: str) -> dict:
+    """Remove the organized files for one format. Returns what was removed.
+
+    Deletes only files resolve_format_files identified, and only removes the
+    directory when nothing is left in it — so an unexpected file keeps its folder
+    rather than being swept up with the book.
+
+    Deliberately does NOT touch the downloader's copy. A torrent grab is copied
+    rather than moved (see use_copy in auto_organize), so the original is still in
+    the download directory and may still be seeding; removing it would break the
+    torrent and cost ratio on a private tracker.
+    """
+    found = await resolve_format_files(settings, db, book_id, book_type)
+    removed, failed = [], []
+
+    if not any(f["kind"] == "media" for f in found["files"]):
+        # Nothing recognisable as the book itself: the derivation missed, or it was
+        # already gone. Removing sidecars alone would destroy evidence for nothing.
+        return {"removed": [], "failed": [], "dir_removed": False, "dir": found["dir"]}
+
+    for f in found["files"]:
+        if f["kind"] == "other":
+            continue
+        try:
+            await asyncio.to_thread(os.unlink, f["path"])
+            removed.append(f["path"])
+        except OSError as e:
+            logger.warning("delete_format_files: %s: %s", f["path"], e)
+            failed.append({"path": f["path"], "error": str(e)})
+
+    dir_removed = False
+    if found["dir"]:
+        try:
+            await asyncio.to_thread(os.rmdir, found["dir"])
+            dir_removed = True
+        except OSError:
+            pass   # not empty, or gone already — either is fine
+
+    logger.info(
+        "delete_format_files: book %s %s — removed %d file(s)%s",
+        book_id, book_type, len(removed), ", dir removed" if dir_removed else "",
+    )
+    return {"removed": removed, "failed": failed, "dir_removed": dir_removed, "dir": found["dir"]}
+
+
 def _dedup_dest(dest: Path) -> Path:
     if not dest.exists():
         return dest
@@ -784,7 +895,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
     try:
         async with get_db() as db:
             sdl_row = await (
-                await db.execute("SELECT * FROM series_downloads WHERE id = ?", (series_dl_id,))
+                await db.execute("SELECT * FROM downloads WHERE id = ?", (series_dl_id,))
             ).fetchone()
         if not sdl_row:
             logger.error("compute_series_pack_mappings: record %s not found", series_dl_id)
@@ -798,7 +909,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
             logger.error("compute_series_pack_mappings: no download_path for %s", series_dl_id)
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -828,7 +939,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
             logger.error("compute_series_pack_mappings: invalid source %s", src)
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -917,7 +1028,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
 
         async with get_db() as db:
             await db.execute(
-                "UPDATE series_downloads SET status='awaiting_review', proposed_mappings=?, updated_at=? WHERE id=?",
+                "UPDATE downloads SET status='awaiting_review', proposed_mappings=?, updated_at=? WHERE id=?",
                 (json.dumps(mappings_data), _now(), series_dl_id),
             )
             await db.commit()
@@ -934,7 +1045,7 @@ async def compute_series_pack_mappings(series_dl_id: str):
             from ..database import get_db
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (datetime.now(timezone.utc).isoformat(), series_dl_id),
                 )
                 await db.commit()
@@ -959,7 +1070,7 @@ async def auto_organize_series_pack(series_dl_id: str):
 
         async with get_db() as db:
             sdl_row = await (
-                await db.execute("SELECT * FROM series_downloads WHERE id = ?", (series_dl_id,))
+                await db.execute("SELECT * FROM downloads WHERE id = ?", (series_dl_id,))
             ).fetchone()
         if not sdl_row:
             logger.error("auto_organize_series_pack: record %s not found", series_dl_id)
@@ -974,7 +1085,7 @@ async def auto_organize_series_pack(series_dl_id: str):
             logger.error("auto_organize_series_pack: no proposed_mappings for %s", series_dl_id)
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -986,7 +1097,7 @@ async def auto_organize_series_pack(series_dl_id: str):
         if not to_place:
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='organized', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -1068,7 +1179,7 @@ async def auto_organize_series_pack(series_dl_id: str):
         if not placed:
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='organized', updated_at=? WHERE id=?",
                     (_now(), series_dl_id),
                 )
                 await db.commit()
@@ -1178,7 +1289,7 @@ async def auto_organize_series_pack(series_dl_id: str):
 
         async with get_db() as db:
             await db.execute(
-                "UPDATE series_downloads SET status='completed', updated_at=? WHERE id=?",
+                "UPDATE downloads SET status='organized', updated_at=? WHERE id=?",
                 (_now(), series_dl_id),
             )
             await db.commit()
@@ -1191,7 +1302,7 @@ async def auto_organize_series_pack(series_dl_id: str):
             from ..database import get_db
             async with get_db() as db:
                 await db.execute(
-                    "UPDATE series_downloads SET status='failed', updated_at=? WHERE id=?",
+                    "UPDATE downloads SET status='failed', updated_at=? WHERE id=?",
                     (datetime.now(timezone.utc).isoformat(), series_dl_id),
                 )
                 await db.commit()
