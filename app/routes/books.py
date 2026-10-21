@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ..auth import require_admin, require_auth
 from ..database import get_db
 from ..services import book_search as _book_search
+from ..services.request_events import log_request_event
 from ..settings import get_settings
 
 logger = __import__("logging").getLogger(__name__)
@@ -980,6 +981,160 @@ async def search_series_pack(series_id: str, auth: dict = Depends(require_admin)
         for r in raw_results
     ]
     return {"results": results}
+
+
+# ── Deleting a format ──────────────────────────────────────────────────────────
+#
+# Cancelling a request was the only way to get rid of a book, and it stops being
+# available the moment the request is fulfilled — so a book in the library could
+# not be removed at all. These two endpoints are the pair: one says what would be
+# deleted, the other does it. The preview exists because the file location is
+# re-derived rather than recorded, so the caller has to be able to show the user
+# the actual paths before anything is removed.
+
+
+@router.get("/books/{book_id}/formats/{format_type}/files")
+async def preview_format_files(
+    book_id: str, format_type: str, auth: dict = Depends(require_admin)
+):
+    """Report the organized files that deleting this format would remove."""
+    if format_type not in ("ebook", "audiobook"):
+        raise HTTPException(status_code=400, detail=f"Unknown format: {format_type}")
+
+    from ..services.organizer import resolve_format_files
+
+    settings = await get_settings()
+    async with get_db() as db:
+        fmt = await (
+            await db.execute(
+                "SELECT 1 FROM book_formats WHERE book_id = ? AND type = ?",
+                (book_id, format_type),
+            )
+        ).fetchone()
+        if not fmt:
+            raise HTTPException(status_code=404, detail="Book has no such format")
+        found = await resolve_format_files(settings, db, book_id, format_type)
+
+    media = [f for f in found["files"] if f["kind"] == "media"]
+    return {
+        "dir": found["dir"],
+        "files": found["files"],
+        # False when the derivation found no book file. The caller should disable the
+        # delete-files option rather than offer something that will quietly do nothing.
+        "locatable": bool(media),
+    }
+
+
+@router.delete("/books/{book_id}/formats/{format_type}")
+async def delete_book_format(
+    book_id: str,
+    format_type: str,
+    delete_files: bool = Query(default=False),
+    auth: dict = Depends(require_admin),
+):
+    """Remove one format of a book, and optionally its organized files.
+
+    Only ever removes the organized copy. A torrent grab was copied rather than
+    moved, so the downloader still holds the original and may be seeding it;
+    deleting that is not on offer here.
+    """
+    if format_type not in ("ebook", "audiobook"):
+        raise HTTPException(status_code=400, detail=f"Unknown format: {format_type}")
+
+    from ..services.organizer import delete_format_files
+
+    settings = await get_settings()
+    file_result: dict = {"removed": [], "failed": [], "dir_removed": False, "dir": None}
+
+    async with get_db() as db:
+        book = await (
+            await db.execute("SELECT title FROM books WHERE id = ?", (book_id,))
+        ).fetchone()
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+        fmt = await (
+            await db.execute(
+                "SELECT id, abs_id FROM book_formats WHERE book_id = ? AND type = ?",
+                (book_id, format_type),
+            )
+        ).fetchone()
+        if not fmt:
+            raise HTTPException(status_code=404, detail="Book has no such format")
+
+        # Capture what we are about to lose. downloads.request_id is ON DELETE
+        # CASCADE, so deleting the request takes the download row with it — see
+        # ath-b9k.1. request_events is keyed by book_id and has no FK, so it
+        # outlives both; recording the provenance here keeps a readable trace of
+        # what was grabbed even once the download row is gone.
+        grabbed = await (
+            await db.execute(
+                """SELECT d.title, d.indexer, d.protocol, d.guid, d.info_url
+                   FROM downloads d JOIN requests r ON r.id = d.request_id
+                   WHERE r.book_id = ? AND r.type = ?
+                   ORDER BY d.grabbed_at DESC LIMIT 1""",
+                (book_id, format_type),
+            )
+        ).fetchone()
+
+        if delete_files:
+            file_result = await delete_format_files(settings, db, book_id, format_type)
+
+        req_ids = [
+            r["id"]
+            for r in await (
+                await db.execute(
+                    "SELECT id FROM requests WHERE book_id = ? AND type = ?",
+                    (book_id, format_type),
+                )
+            ).fetchall()
+        ]
+
+        detail = {
+            "type": format_type,
+            "files_removed": len(file_result["removed"]),
+            "dir": file_result["dir"],
+        }
+        if grabbed:
+            detail["grabbed"] = {k: grabbed[k] for k in grabbed.keys()}
+        await log_request_event(
+            db, req_ids[0] if req_ids else "", "format_deleted", detail, book_id=book_id
+        )
+
+        await db.execute(
+            "DELETE FROM book_formats WHERE book_id = ? AND type = ?", (book_id, format_type)
+        )
+        await db.execute(
+            "DELETE FROM requests WHERE book_id = ? AND type = ?", (book_id, format_type)
+        )
+
+        # A book with no formats and no requests left only existed because of them;
+        # drop it from book_series so it shows up as missing again, matching what
+        # cancelling the last request already does.
+        has_formats = await (
+            await db.execute("SELECT 1 FROM book_formats WHERE book_id = ? LIMIT 1", (book_id,))
+        ).fetchone()
+        has_requests = await (
+            await db.execute("SELECT 1 FROM requests WHERE book_id = ? LIMIT 1", (book_id,))
+        ).fetchone()
+        orphaned = not has_formats and not has_requests
+        if orphaned:
+            await db.execute("DELETE FROM book_series WHERE book_id = ?", (book_id,))
+
+        await db.commit()
+
+    logger.info(
+        "delete_book_format: %s (%s) — %d file(s) removed, %d request(s) deleted%s",
+        book["title"], format_type, len(file_result["removed"]), len(req_ids),
+        ", book orphaned" if orphaned else "",
+    )
+    return {
+        "ok": True,
+        "files_removed": file_result["removed"],
+        "files_failed": file_result["failed"],
+        "dir_removed": file_result["dir_removed"],
+        "requests_deleted": len(req_ids),
+        "book_orphaned": orphaned,
+    }
 
 
 class SeriesPackDownloadBody(BaseModel):
