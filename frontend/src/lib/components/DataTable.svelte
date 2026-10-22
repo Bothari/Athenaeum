@@ -1,0 +1,309 @@
+<script lang="ts" generics="T">
+	import { beforeNavigate } from '$app/navigation';
+	import { page } from '$app/state';
+	import { untrack, type Snippet } from 'svelte';
+	import Icon from './Icon.svelte';
+	import EmptyState from './EmptyState.svelte';
+	import ErrorState from './ErrorState.svelte';
+	import LoadingState from './LoadingState.svelte';
+	import type { Column, PageParams, PageResult } from '$lib/types/table';
+	import { createPager } from '$lib/pager.svelte';
+	import { setSearchParams } from '$lib/url';
+	import { restoreScrollPosition, saveScroll, takeScroll } from '$lib/scroll';
+
+	interface Props {
+		columns: Column[];
+		/** Namespaces this table's URL params so two tables can share a page. */
+		stateKey: string;
+		fetchPage: (params: PageParams) => Promise<PageResult<T>>;
+		/** Cells for one row, without the surrounding <tr>. */
+		row: Snippet<[T]>;
+		emptyMessage?: string;
+		/** Extra toolbar controls rendered beside the filter input. */
+		toolbar?: Snippet;
+		/** Re-fetches from scratch whenever the returned value changes — use for
+		 *  filters owned by the parent route. */
+		extraParams?: () => Record<string, unknown>;
+		/** Client-side filter applied after fetching. For server-side filters use
+		 *  extraParams instead — this one shrinks pages without refetching. */
+		filter?: (item: T) => boolean;
+	}
+
+	let {
+		columns,
+		stateKey,
+		fetchPage,
+		row,
+		emptyMessage = 'No items found.',
+		toolbar,
+		extraParams,
+		filter
+	}: Props = $props();
+
+	const DEBOUNCE_MS = 200;
+
+	// Sort/filter live in the URL so a table survives reload and back-navigation,
+	// as in v1. Offset deliberately does not: it is rebuilt by scrolling.
+	//
+	// Untracked because these seed $state once at construction. columns and
+	// stateKey are fixed for a table instance, so capturing their initial value is
+	// the intent, not a missed dependency.
+	const initial = untrack(() => {
+		const params = page.url.searchParams;
+		const defaultSort = columns.find((c) => c.sortable !== false)?.key ?? columns[0].key;
+		return {
+			sort: params.get(`${stateKey}_sort`) ?? defaultSort,
+			dir: (params.get(`${stateKey}_dir`) === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc',
+			q: params.get(`${stateKey}_q`) ?? ''
+		};
+	});
+
+	let sort = $state(initial.sort);
+	let dir = $state<'asc' | 'desc'>(initial.dir);
+	let query = $state(initial.q);
+
+	// Wrapped rather than passed directly so the current fetchPage prop is read at
+	// call time; passing the reference would pin whichever function was supplied on
+	// first render.
+	const pager = createPager<T>((params) => fetchPage(params));
+
+	/** Client-side filter runs after fetching, so pages can shrink without a
+	 *  refetch. Empty results still show the empty state. */
+	const rows = $derived(filter ? pager.items.filter(filter) : pager.items);
+
+	let sentinel = $state<HTMLElement | null>(null);
+	let debounceTimer: ReturnType<typeof setTimeout>;
+
+	function syncUrl() {
+		setSearchParams({
+			[`${stateKey}_sort`]: sort,
+			[`${stateKey}_dir`]: dir,
+			[`${stateKey}_q`]: query || null
+		});
+	}
+
+	function load(reset: boolean) {
+		return pager.load({ q: query, sort, dir, ...(extraParams?.() ?? {}) }, reset);
+	}
+
+	/**
+	 * Reload from the top whenever sort, filter or parent-owned params change.
+	 *
+	 * The load call is untracked deliberately: the pager reads `loading`
+	 * synchronously as a re-entry guard, so tracking it would make this effect
+	 * depend on state its own call causes to change, re-running per request.
+	 */
+	// Keyed per route and per table, so two tables on one page keep independent
+	// positions.
+	const scrollKey = untrack(() => `${page.url.pathname}:${stateKey}`);
+	let pendingRestore = untrack(() => takeScroll(scrollKey));
+
+	beforeNavigate(() => saveScroll(scrollKey, pager.items.length));
+
+	$effect(() => {
+		const key = [sort, dir, query, JSON.stringify(extraParams?.() ?? {})].join(' ');
+		void key;
+		untrack(async () => {
+			await load(true);
+			await replayScroll();
+		});
+	});
+
+	/**
+	 * Re-fetches pages until the list is at least as long as it was, then returns
+	 * to the saved position. Capped so a stale or corrupt count cannot spin
+	 * forever.
+	 */
+	async function replayScroll() {
+		const target = pendingRestore;
+		if (!target) return;
+		pendingRestore = null;
+
+		let guard = 0;
+		while (pager.items.length < target.count && !pager.allLoaded && guard++ < 40) {
+			await load(false);
+		}
+		restoreScrollPosition(target.y);
+	}
+
+	/** Infinite scroll. Replaces v1's observer-on-last-row, which had to be
+	 *  re-attached after every append; a fixed sentinel does not. */
+	$effect(() => {
+		if (!sentinel || pager.allLoaded) return;
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (entries[0].isIntersecting && !pager.loading && !pager.allLoaded) load(false);
+			},
+			{ rootMargin: '200px' }
+		);
+		observer.observe(sentinel);
+		return () => observer.disconnect();
+	});
+
+	function toggleSort(column: Column) {
+		if (column.sortable === false) return;
+		if (column.key === sort) {
+			dir = dir === 'asc' ? 'desc' : 'asc';
+		} else {
+			sort = column.key;
+			dir = 'asc';
+		}
+		syncUrl();
+	}
+
+	function onFilterInput(event: Event) {
+		const value = (event.currentTarget as HTMLInputElement).value;
+		clearTimeout(debounceTimer);
+		debounceTimer = setTimeout(() => {
+			query = value;
+			syncUrl();
+		}, DEBOUNCE_MS);
+	}
+</script>
+
+<div class="table-toolbar">
+	<input type="text" placeholder="Filter..." value={query} oninput={onFilterInput} />
+	{#if toolbar}{@render toolbar()}{/if}
+</div>
+
+<div class="table-wrap">
+	<table>
+		<thead>
+			<tr>
+				{#each columns as column (column.key)}
+					<th
+						class:sort-active={column.key === sort}
+						class:hide-mobile={column.hideOnMobile}
+						style={column.width ? `width:${column.width}` : undefined}
+						aria-sort={column.key === sort
+							? dir === 'asc'
+								? 'ascending'
+								: 'descending'
+							: undefined}
+					>
+						{#if column.sortable !== false}
+							<!-- A button rather than a click handler on the th: sorting is
+							     reachable by keyboard and announced correctly. -->
+							<button type="button" class="sort-btn" onclick={() => toggleSort(column)}>
+								{column.label}
+								{#if column.key === sort}
+									<Icon name={dir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} />
+								{/if}
+							</button>
+						{:else}
+							{column.label}
+						{/if}
+					</th>
+				{/each}
+			</tr>
+		</thead>
+		<tbody>
+			<!-- Unkeyed: T is generic so there is no id to key on, and the list only
+			     ever grows by appending, where index keys buy nothing. -->
+			{#each rows as item}
+				<tr>{@render row(item)}</tr>
+			{/each}
+		</tbody>
+	</table>
+</div>
+
+{#if !pager.initialised}
+	<LoadingState />
+{:else if pager.failed}
+	<ErrorState onretry={() => load(true)} />
+{:else if rows.length === 0}
+	<EmptyState message={emptyMessage} />
+{:else}
+	<div bind:this={sentinel}></div>
+	{#if pager.loading}<LoadingState compact />{/if}
+{/if}
+
+<style>
+	.table-toolbar {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		flex-wrap: wrap;
+		margin-bottom: 1rem;
+	}
+
+	/* Size via padding — font-size stays at the 16px global to avoid iOS focus
+	   zoom. See CLAUDE.md. */
+	.table-toolbar input[type='text'] {
+		flex: 1;
+		min-width: 180px;
+		max-width: 320px;
+		padding: 0.4rem 0.6rem;
+		background: var(--bg);
+		color: var(--text);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+
+	.table-wrap {
+		overflow-x: auto;
+	}
+
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.875rem;
+	}
+
+	thead th {
+		text-align: left;
+		font-weight: 600;
+		color: var(--text-dim);
+		padding: 0.5rem;
+		border-bottom: 1px solid var(--border);
+		white-space: nowrap;
+	}
+
+	/*
+	 * Cell styling lives here rather than in each route. Row cells come from a
+	 * snippet owned by the parent component, so they carry the parent's scope and
+	 * are unreachable from this component's scoped styles without :global.
+	 *
+	 * vertical-align is explicit because the CSS initial value is `baseline`, which
+	 * looks ragged once a cell wraps to several lines (a long author list beside a
+	 * one-line title). `top` keeps every cell in a row starting level.
+	 *
+	 * Never set `display` on a td. It stops being a table cell, drops out of the
+	 * row's height calculation, and its border-bottom then draws at its own content
+	 * height instead of the row's — visible as a short divider under one column.
+	 */
+	.table-wrap :global(td) {
+		padding: 0.5rem;
+		border-bottom: 1px solid var(--border);
+		vertical-align: top;
+	}
+
+	.sort-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: inherit;
+		cursor: pointer;
+		touch-action: manipulation;
+		user-select: none;
+	}
+
+	.sort-btn:hover {
+		color: var(--text);
+	}
+
+	thead th.sort-active {
+		color: var(--text);
+	}
+
+	/* Paired with the row snippet hiding the same cell — see Column.hideOnMobile. */
+	@media (max-width: 640px) {
+		thead th.hide-mobile {
+			display: none;
+		}
+	}
+</style>
