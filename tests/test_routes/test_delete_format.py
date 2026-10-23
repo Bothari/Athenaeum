@@ -287,3 +287,67 @@ class TestDeleteWholeBook:
     @pytest.mark.asyncio
     async def test_unknown_book_is_404(self, client, library):
         assert (await client.request("DELETE", "/api/books/nope")).status_code == 404
+
+
+class TestRequestOnlyFormats:
+    """A format can exist as a request with no book_formats row.
+
+    Seen in production: 'Wayward Pines' had 0 formats and one ebook request still
+    at in_library after the file had gone from ABS. Deriving "everything" from held
+    formats alone meant deleting the book removed nothing, the request kept
+    _book_is_bare false, so the entry survived — and the detail page went on showing
+    an ebook, because a request at in_library renders as held.
+    """
+
+    @pytest.mark.asyncio
+    async def test_deleting_the_book_clears_a_request_only_format(self, client, library):
+        from app.database import get_db
+        async with get_db() as db:
+            await db.execute("DELETE FROM book_formats WHERE book_id='b1'")
+            await db.execute(
+                "INSERT INTO requests (id,book_id,type,status,created_at,updated_at)"
+                " VALUES ('r-orphan','b1','ebook','in_library',?,?)", (NOW, NOW))
+            await db.commit()
+
+        body = (await client.request("DELETE", "/api/books/b1")).json()
+        assert body["formats_deleted"] == ["ebook"], body
+        assert body["requests_deleted"] == 1
+        assert body["entry_deleted"] is True
+
+        async with get_db() as db:
+            assert await (await db.execute("SELECT 1 FROM books WHERE id='b1'")).fetchone() is None
+            assert await (await db.execute(
+                "SELECT 1 FROM requests WHERE book_id='b1'")).fetchone() is None
+
+    @pytest.mark.asyncio
+    async def test_a_request_alongside_held_formats_does_not_block_removal(self, client, library):
+        """The same trap with formats present: the request type must be swept in, or
+        the entry outlives the formats."""
+        from app.database import get_db
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO requests (id,book_id,type,status,created_at,updated_at)"
+                " VALUES ('r-eb','b1','ebook','in_library',?,?)", (NOW, NOW))
+            await db.commit()
+
+        body = (await client.request("DELETE", "/api/books/b1")).json()
+        assert body["entry_deleted"] is True
+        async with get_db() as db:
+            assert await (await db.execute("SELECT 1 FROM books WHERE id='b1'")).fetchone() is None
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_subset_still_narrows(self, client, library):
+        """Deriving everything must not override a caller asking for one format."""
+        from app.database import get_db
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO requests (id,book_id,type,status,created_at,updated_at)"
+                " VALUES ('r-eb','b1','ebook','in_library',?,?)", (NOW, NOW))
+            await db.commit()
+
+        body = (await client.request("DELETE", "/api/books/b1?formats=audiobook")).json()
+        assert body["formats_deleted"] == ["audiobook"]
+        assert body["entry_deleted"] is False
+        async with get_db() as db:
+            left = await (await db.execute("SELECT type FROM book_formats WHERE book_id='b1'")).fetchall()
+        assert [r["type"] for r in left] == ["ebook"]
