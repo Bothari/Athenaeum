@@ -1080,6 +1080,40 @@ async def _remove_format(db, settings, book_id: str, format_type: str, delete_fi
     return {"files": file_result, "requests_deleted": len(req_ids)}
 
 
+async def _ask_abs_to_rescan(settings: dict, why: str) -> None:
+    """Tell ABS to look at its library again after we removed files from it.
+
+    Athenaeum deletes its own rows and the organized files, but never touched ABS,
+    so ABS kept listing a book whose files were gone — and because ABS is the
+    source of truth for library_sync, the next sync recreated the book. A delete
+    therefore undid itself within twelve hours (ath-b9k.9).
+
+    A scan rather than an ABS delete call: Athenaeum does not reach into another
+    application's records, it just asks ABS to look again and prune on its own
+    terms. Best effort by design — the delete has already happened, so a failure
+    here is logged and nothing more.
+    """
+    abs_settings = settings.get("audiobookshelf", {})
+    if not abs_settings.get("url") and not abs_settings.get("internal_url"):
+        return
+
+    library_ids = abs_settings.get("library_id") or []
+    if isinstance(library_ids, str):
+        library_ids = [lid.strip() for lid in library_ids.split(",") if lid.strip()]
+    if not library_ids:
+        return
+
+    from ..services.audiobookshelf import AudiobookshelfService
+
+    abs_svc = AudiobookshelfService(abs_settings)
+    for lib_id in library_ids:
+        try:
+            await abs_svc.scan_library(lib_id)
+            logger.info("ABS rescan requested for library %s after %s", lib_id, why)
+        except Exception as e:
+            logger.warning("ABS scan_library(%s) after %s failed: %s", lib_id, why, e)
+
+
 async def _book_is_bare(db, book_id: str) -> bool:
     """True when nothing is held or wanted for this book any more."""
     has_formats = await (
@@ -1169,6 +1203,12 @@ async def delete_book(
         book["title"], wanted or "(none)", len(removed_files), requests_deleted,
         ", entry deleted" if entry_deleted else "",
     )
+
+    # Only when something actually left the disk. A rows-only delete changes
+    # nothing ABS can see, so a scan would be pointless load. Detached so the
+    # response does not wait on ABS, which scans asynchronously anyway.
+    if removed_files:
+        asyncio.create_task(_ask_abs_to_rescan(settings, f"deleting {book['title']}"))
     return {
         "ok": True,
         "formats_deleted": wanted,
@@ -1221,6 +1261,11 @@ async def delete_book_format(
         book["title"], format_type, len(result["files"]["removed"]),
         result["requests_deleted"], ", book orphaned" if orphaned else "",
     )
+
+    if result["files"]["removed"]:
+        asyncio.create_task(
+            _ask_abs_to_rescan(settings, f"deleting the {format_type} of {book['title']}")
+        )
     return {
         "ok": True,
         "files_removed": result["files"]["removed"],

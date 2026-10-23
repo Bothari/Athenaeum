@@ -5,6 +5,7 @@ disabled once the request is fulfilled — so a book in the library could not be
 removed at all. These cover the delete pair, and especially the cases where it
 must refuse to delete rather than guess.
 """
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -351,3 +352,85 @@ class TestRequestOnlyFormats:
         async with get_db() as db:
             left = await (await db.execute("SELECT type FROM book_formats WHERE book_id='b1'")).fetchall()
         assert [r["type"] for r in left] == ["ebook"]
+
+
+class TestAbsRescan:
+    """After a delete that removed files, ABS is asked to look again.
+
+    Athenaeum never told ABS anything, so ABS kept listing a book whose files were
+    gone — and since ABS is the source of truth for library_sync, the next sync
+    recreated the book and the delete undid itself (ath-b9k.9).
+    """
+
+    @pytest.fixture
+    def scans(self, monkeypatch):
+        """Record scan_library calls instead of making them."""
+        calls: list[str] = []
+
+        class FakeAbs:
+            def __init__(self, settings):
+                pass
+
+            async def scan_library(self, library_id=None):
+                calls.append(library_id)
+
+        from app.services import audiobookshelf as abs_mod
+        monkeypatch.setattr(abs_mod, "AudiobookshelfService", FakeAbs)
+        return calls
+
+    async def _with_abs_configured(self, tmp_path, monkeypatch):
+        """settings.yaml needs an ABS url and library id for a scan to be attempted."""
+        import yaml
+        from app import settings as settings_module
+
+        path = tmp_path / "settings.yaml"
+        existing = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+        existing.setdefault("general", {})
+        existing["audiobookshelf"] = {"url": "http://abs.test", "library_id": ["lib-1"]}
+        path.write_text(yaml.safe_dump(existing), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "SETTINGS_PATH", str(path))
+
+    @pytest.mark.asyncio
+    async def test_a_scan_is_requested_when_files_were_removed(
+        self, client, library, scans, tmp_path, monkeypatch
+    ):
+        await self._with_abs_configured(tmp_path, monkeypatch)
+        resp = await client.request("DELETE", "/api/books/b1?delete_files=true")
+        assert resp.status_code == 200, resp.text
+        await asyncio.sleep(0)   # let the detached task run
+        assert scans == ["lib-1"], scans
+
+    @pytest.mark.asyncio
+    async def test_no_scan_when_nothing_left_the_disk(
+        self, client, library, scans, tmp_path, monkeypatch
+    ):
+        """A rows-only delete changes nothing ABS can see, so scanning is pointless
+        load on a library of thousands of items."""
+        await self._with_abs_configured(tmp_path, monkeypatch)
+        resp = await client.request("DELETE", "/api/books/b1")
+        assert resp.status_code == 200, resp.text
+        await asyncio.sleep(0)
+        assert scans == [], scans
+
+    @pytest.mark.asyncio
+    async def test_a_failing_scan_does_not_fail_the_delete(
+        self, client, library, tmp_path, monkeypatch
+    ):
+        """The delete has already happened by then — ABS being unreachable must not
+        turn a successful removal into an error."""
+        await self._with_abs_configured(tmp_path, monkeypatch)
+
+        class ExplodingAbs:
+            def __init__(self, settings):
+                pass
+
+            async def scan_library(self, library_id=None):
+                raise RuntimeError("ABS unreachable")
+
+        from app.services import audiobookshelf as abs_mod
+        monkeypatch.setattr(abs_mod, "AudiobookshelfService", ExplodingAbs)
+
+        resp = await client.request("DELETE", "/api/books/b1?delete_files=true")
+        assert resp.status_code == 200, resp.text
+        await asyncio.sleep(0)
+        assert not library["ebook_dir"].exists(), "the delete itself must still have happened"
