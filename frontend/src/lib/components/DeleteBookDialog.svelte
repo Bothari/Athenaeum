@@ -21,19 +21,22 @@
 	interface Props {
 		bookId: string;
 		title: string;
-		heldFormats: FormatType[];
+		/** Everything deletable: formats held, plus any that exist only as a request.
+		 *  A request left behind is enough to keep the book alive, so it has to be
+		 *  offered here or the book cannot be removed at all. */
+		deletableFormats: FormatType[];
 		onclose: () => void;
 		ondeleted: () => void;
 	}
 
-	let { bookId, title, heldFormats, onclose, ondeleted }: Props = $props();
+	let { bookId, title, deletableFormats, onclose, ondeleted }: Props = $props();
 
 	let dialog = $state<HTMLDialogElement | null>(null);
-	let selected = $state<Set<FormatType>>(new Set(untrack(() => heldFormats)));
+	let selected = $state<Set<FormatType>>(new Set(untrack(() => deletableFormats)));
 	let previews = $state<Partial<Record<FormatType, FormatFilesPreview>>>({});
 	let fetched = $state(false);
 	let withFiles = $state(false);
-	const loaded = $derived(heldFormats.length === 0 || fetched);
+	const loaded = $derived(deletableFormats.length === 0 || fetched);
 	let busy = $state(false);
 
 	$effect(() => {
@@ -41,10 +44,10 @@
 	});
 
 	$effect(() => {
-		if (heldFormats.length === 0) return;
+		if (deletableFormats.length === 0) return;
 		let cancelled = false;
 		Promise.all(
-			heldFormats.map((t) =>
+			deletableFormats.map((t) =>
 				previewFormatFiles(bookId, t)
 					.then((p) => [t, p] as const)
 					// Fail soft per format: the rows can still be deleted without
@@ -66,14 +69,14 @@
 	/** Deleting everything the book holds also removes the entry. So does deleting
 	 *  from a book that already holds nothing. */
 	const entryGoes = $derived(
-		heldFormats.length === 0 || heldFormats.every((t) => selected.has(t))
+		deletableFormats.length === 0 || deletableFormats.every((t) => selected.has(t))
 	);
-	const selectedList = $derived(heldFormats.filter((t) => selected.has(t)));
+	const selectedList = $derived(deletableFormats.filter((t) => selected.has(t)));
 	const filesForSelection = $derived(
 		selectedList.flatMap((t) => previews[t]?.files.filter((f) => f.kind !== 'other') ?? [])
 	);
 	const anyLocatable = $derived(selectedList.some((t) => previews[t]?.locatable === true));
-	const nothingSelected = $derived(heldFormats.length > 0 && selectedList.length === 0);
+	const nothingSelected = $derived(deletableFormats.length > 0 && selectedList.length === 0);
 
 	function toggle(t: FormatType) {
 		const next = new Set(selected);
@@ -120,7 +123,7 @@
 <dialog bind:this={dialog} onclose={onclose}>
 	<h2>Delete {title}?</h2>
 
-	{#if heldFormats.length === 0}
+	{#if deletableFormats.length === 0}
 		<p class="what">
 			This book holds nothing and nothing is requested for it, so only the entry itself
 			is left to remove.
@@ -132,7 +135,7 @@
 			<p class="dim">Looking for the files…</p>
 		{:else}
 			<ul class="formats">
-				{#each heldFormats as t (t)}
+				{#each deletableFormats as t (t)}
 					<li>
 						<label>
 							<input type="checkbox" checked={selected.has(t)} onchange={() => toggle(t)} />
@@ -169,7 +172,7 @@
 		{/if}
 	{/if}
 
-	{#if entryGoes && heldFormats.length > 0}
+	{#if entryGoes && deletableFormats.length > 0}
 		<p class="dim strong">The book entry will be removed as well.</p>
 	{/if}
 

@@ -25,12 +25,19 @@
 	let failed = $state(false);
 	let deleting = $state(false);
 
-	const heldFormats = $derived<FormatType[]>((book?.formats ?? []).map((f) => f.type));
+	/** Held formats plus any that exist only as a request. A leftover request keeps
+	 *  the book alive on its own, so it has to be deletable from here. */
+	const deletableFormats = $derived<FormatType[]>([
+		...new Set([
+			...(book?.formats ?? []).map((f) => f.type),
+			...(book?.requests ?? []).map((r) => r.type)
+		])
+	]);
 
 	/** Deleting the last format removes the book itself, so there is no page left to
 	 *  show — go back to the library rather than reload into a 404. */
 	async function afterDelete() {
-		if (heldFormats.length === 0) {
+		if (deletableFormats.length === 0) {
 			await goto('/library/books');
 			return;
 		}
@@ -154,7 +161,7 @@
 		<DeleteBookDialog
 			{bookId}
 			title={book.title}
-			{heldFormats}
+			{deletableFormats}
 			onclose={() => (deleting = false)}
 			ondeleted={afterDelete}
 		/>

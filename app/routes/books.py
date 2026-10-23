@@ -1122,7 +1122,21 @@ async def delete_book(
                 await db.execute("SELECT type FROM book_formats WHERE book_id = ?", (book_id,))
             ).fetchall()
         ]
-        wanted = [f.strip() for f in formats.split(",") if f.strip()] if formats else list(held)
+        # A format can exist as a request without a book_formats row — a request left
+        # at in_library after the file vanished from ABS, for instance. Deriving
+        # "everything" from held formats alone missed those, so the request survived,
+        # _book_is_bare stayed false, and deleting the book did nothing at all while
+        # the detail page went on advertising a format that was not there.
+        requested = [
+            r["type"]
+            for r in await (
+                await db.execute(
+                    "SELECT DISTINCT type FROM requests WHERE book_id = ?", (book_id,)
+                )
+            ).fetchall()
+        ]
+        everything = list(dict.fromkeys(held + requested))
+        wanted = [f.strip() for f in formats.split(",") if f.strip()] if formats else everything
         unknown = [f for f in wanted if f not in ("ebook", "audiobook")]
         if unknown:
             raise HTTPException(status_code=400, detail=f"Unknown format(s): {', '.join(unknown)}")
