@@ -24,7 +24,7 @@ EXPECTED_TABLES = {
 async def test_migrations_set_user_version(db_path):
     async with aiosqlite.connect(db_path) as db:
         row = await (await db.execute("PRAGMA user_version")).fetchone()
-        assert row[0] == 16
+        assert row[0] == 17
 
 
 async def test_all_tables_created(db_path):
@@ -63,7 +63,7 @@ async def test_migrations_are_idempotent(tmp_path, monkeypatch):
     await init_db()
     async with aiosqlite.connect(path) as db:
         row = await (await db.execute("PRAGMA user_version")).fetchone()
-        assert row[0] == 16
+        assert row[0] == 17
 
 
 @pytest.mark.asyncio
@@ -103,6 +103,16 @@ async def test_migration_16_keeps_the_two_meanings_of_completed_apart(tmp_path, 
         await db.execute(
             "INSERT INTO downloads (id, request_id, guid, status, grabbed_at)"
             " VALUES ('d1','r1','guid-d1','completed','t')")
+        # A real v15 database has these from SCHEMA_V1. The fixture only builds
+        # what migration 16 touches, so later migrations that reach other tables
+        # need them present too — migration 17 rewrites book_series positions.
+        await db.execute("""CREATE TABLE book_series (
+            id TEXT PRIMARY KEY, book_id TEXT NOT NULL, series_id TEXT NOT NULL,
+            position TEXT, created_at TEXT NOT NULL, UNIQUE(book_id, series_id))""")
+        await db.execute(
+            "INSERT INTO book_series (id, book_id, series_id, position, created_at)"
+            " VALUES ('bs-whole','b1','s1','1.0','t'), ('bs-frac','b2','s1','3.5','t'),"
+            "        ('bs-text','b3','s1','1-2','t')")
         await db.execute("PRAGMA user_version = 15")
         await db.commit()
 
@@ -110,7 +120,7 @@ async def test_migration_16_keeps_the_two_meanings_of_completed_apart(tmp_path, 
 
     async with aiosqlite.connect(db_file) as db:
         cur = await db.execute("PRAGMA user_version")
-        assert (await cur.fetchone())[0] == 16
+        assert (await cur.fetchone())[0] == 17
 
         cur = await db.execute("SELECT id, status, kind FROM downloads ORDER BY id")
         rows = {r[0]: (r[1], r[2]) for r in await cur.fetchall()}
@@ -132,3 +142,8 @@ async def test_migration_16_keeps_the_two_meanings_of_completed_apart(tmp_path, 
 
         cur = await db.execute("SELECT name FROM sqlite_master WHERE name='series_downloads'")
         assert await cur.fetchone() is None
+
+        # migration 17: whole numbers lose the decimal, fractions and text survive
+        cur = await db.execute("SELECT id, position FROM book_series ORDER BY id")
+        positions = {r[0]: r[1] for r in await cur.fetchall()}
+        assert positions == {"bs-frac": "3.5", "bs-text": "1-2", "bs-whole": "1"}, positions

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 import uuid
@@ -21,6 +22,16 @@ def _now() -> str:
 
 
 def _norm_pos(pos) -> str | None:
+    """Canonical form of a series position, for storing.
+
+    ABS reports whole numbers as floats — sequence '1.0' for the first book — and
+    storing that verbatim meant a shelf showed '1' for most books and '1.0' for the
+    few that came through that way, with the decimal written back out to ABS and
+    the opf sidecar too (ath-099).
+
+    Parses rather than coerces: a real fraction is a novella and must survive, and
+    ABS also emits non-numeric sequences like '1-2', which pass through untouched.
+    """
     if not pos:
         return pos
     try:
@@ -253,6 +264,20 @@ from .hardcover import (  # noqa: E402
 # Budget for the metadata top-up at the end of library_sync. Small on purpose:
 # the bulk of that work belongs to cache_refresh, which has its own hour.
 SYNC_META_BUDGET = 300.0
+
+# Cache entries written in one pass used to share an expiry to the second, so a
+# batch populated together expired together and the herd re-formed every cycle.
+# The live cache had 223 of 245 series rows falling due on a single day, making
+# that fortnightly cache_refresh cost roughly four times a normal one. A spread
+# keeps them fanning out rather than re-clustering (ath-cbq).
+METADATA_CACHE_DAYS = 14
+METADATA_CACHE_JITTER_HOURS = 72
+
+
+def metadata_cache_expiry(now_dt: datetime) -> str:
+    """When an entry written now should fall due, spread over a few days."""
+    spread = timedelta(hours=random.uniform(0, METADATA_CACHE_JITTER_HOURS))
+    return (now_dt + timedelta(days=METADATA_CACHE_DAYS) + spread).isoformat()
 
 
 async def _hc_book_search(title: str, api_key: str, author: str = "", pages: int = 3) -> list:
@@ -1007,7 +1032,7 @@ async def _hc_refresh_series_cache(settings: dict, deadline: float) -> dict:
 
     now_dt = datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
-    expires_iso = (now_dt + timedelta(days=14)).isoformat()
+    expires_iso = metadata_cache_expiry(now_dt)
 
     async with get_db() as db:
         series_rows = await (

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ..auth import require_admin, require_auth
 from ..database import get_db
 from ..services import book_search as _book_search
+from ..services.library_sync import _norm_pos, metadata_cache_expiry
 from ..services.request_events import log_request_event
 from ..settings import get_settings
 
@@ -317,7 +318,7 @@ async def get_author_also_by(author_id: str):
                 # "this series has no books".
                 logger.warning("get_hc_author_books(%s): %s — not caching", hc_author_id, hc_error)
                 return {"items": [], "error": hc_error}
-            expires_iso = (now_dt + timedelta(days=14)).isoformat()
+            expires_iso = metadata_cache_expiry(now_dt)
             await db.execute(
                 """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
                    VALUES (?, ?, ?, ?, ?, ?)
@@ -692,7 +693,7 @@ async def get_series_missing(series_id: str):
                 # "this series has no books".
                 logger.warning("get_hc_series_books(%s): %s — not caching", hc_series_id, hc_error)
                 return {"items": [], "error": hc_error}
-            expires_iso = (now_dt + timedelta(days=14)).isoformat()
+            expires_iso = metadata_cache_expiry(now_dt)
             await db.execute(
                 """INSERT INTO metadata_cache (id, query, source, results_json, created_at, expires_at)
                    VALUES (?, ?, ?, ?, ?, ?)
@@ -793,7 +794,7 @@ async def link_library_book_to_series(
             """INSERT INTO book_series (id, book_id, series_id, position, created_at)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(book_id, series_id) DO NOTHING""",
-            (str(uuid.uuid4()), body.book_id, series_id, body.position or "", now),
+            (str(uuid.uuid4()), body.book_id, series_id, _norm_pos(body.position) or "", now),
         )
         await db.commit()
 
@@ -1710,7 +1711,7 @@ async def create_book(body: CreateBookBody, auth: dict = Depends(require_auth)):
                 series_id = await _get_or_create_series(db, s.name.strip(), hc_series_id=hc_sid)
                 await db.execute(
                     "INSERT OR IGNORE INTO book_series (id, book_id, series_id, position, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), book_id, series_id, s.position or None, now),
+                    (str(uuid.uuid4()), book_id, series_id, _norm_pos(s.position), now),
                 )
                 if hc_sid:
                     await _set_hc_series_id(db, series_id, hc_sid)
