@@ -27,6 +27,10 @@ class AudiobookshelfService:
 
     def _normalize_item(self, item: dict) -> dict:
         item_id = item.get("id", "")
+        # ABS marks an item whose files have gone rather than deleting it, so that a
+        # temporarily unmounted drive does not lose metadata and progress. Carried
+        # through so sync can tell a real book from a headstone.
+        is_missing = bool(item.get("isMissing"))
         media = item.get("media", {})
         meta = media.get("metadata", {})
 
@@ -102,6 +106,7 @@ class AudiobookshelfService:
             "cover_url": cover_url,
             "narrator": narrator,
             "formats": formats,
+            "is_missing": is_missing,
         }
 
     async def test_connection(self) -> dict:

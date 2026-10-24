@@ -302,3 +302,78 @@ class TestSyncLibrary:
         types = {r["type"] for r in rows}
         assert "audiobook" in types
         assert "ebook" in types
+
+
+# ── Items ABS reports as missing ───────────────────────────────────────────────
+
+MISSING_ITEM = {
+    "abs_id": "abs-gone",
+    "abs_url": "http://abs.local/item/abs-gone",
+    "title": "A Deleted Book",
+    "author": "Ann Author",
+    "series_items": [],
+    "cover_url": None,
+    "formats": [{"type": "ebook", "narrator": ""}],
+    "is_missing": True,
+}
+
+
+class TestMissingAbsItems:
+    """ABS flags an item whose files have gone rather than deleting it, so a book
+    deleted in Athenaeum stayed in ABS's item list forever and sync kept bringing
+    it back with a new id (ath-b9k.9). Observed twice with the same title.
+    """
+
+    async def _sync_with(self, sync_client, monkeypatch, items):
+        from app.services import library_sync
+
+        async def mock_list_all_items(self):
+            return items
+        monkeypatch.setattr(
+            "app.services.audiobookshelf.AudiobookshelfService.list_all_items",
+            mock_list_all_items,
+        )
+        async def no_hc_link(*a, **kw): return False
+        monkeypatch.setattr(library_sync, "_link_to_hardcover", no_hc_link)
+        await sync_client.put("/api/settings", json={
+            "audiobookshelf": {"url": "http://abs.local", "api_key": "key", "library_id": []}
+        })
+        return await sync_library()
+
+    async def test_a_missing_item_is_not_created(self, sync_client, monkeypatch):
+        result = await self._sync_with(sync_client, monkeypatch, [MISSING_ITEM])
+        assert result["created"] == 0, result
+        from app.database import get_db
+        async with get_db() as db:
+            row = await (await db.execute(
+                "SELECT 1 FROM books WHERE title='A Deleted Book'")).fetchone()
+        assert row is None, "sync recreated a book ABS says is missing"
+
+    async def test_a_missing_item_does_not_block_the_rest(self, sync_client, monkeypatch):
+        result = await self._sync_with(sync_client, monkeypatch, [MISSING_ITEM] + ABS_ITEMS)
+        assert result["created"] == 2, result
+
+    async def test_an_already_linked_item_is_still_synced_when_missing(
+        self, sync_client, monkeypatch
+    ):
+        """A temporarily unmounted drive also reports missing, so an item we already
+        hold must not be treated as deleted."""
+        from app.database import get_db
+
+        # first sync while present, so the book and its link exist
+        present = dict(MISSING_ITEM, is_missing=False)
+        await self._sync_with(sync_client, monkeypatch, [present])
+        async with get_db() as db:
+            before = await (await db.execute(
+                "SELECT book_id FROM book_links WHERE abs_id='abs-gone'")).fetchone()
+        assert before is not None
+
+        # now it reports missing; the existing book must survive untouched
+        await self._sync_with(sync_client, monkeypatch, [MISSING_ITEM])
+        async with get_db() as db:
+            after = await (await db.execute(
+                "SELECT book_id FROM book_links WHERE abs_id='abs-gone'")).fetchone()
+            book = await (await db.execute(
+                "SELECT 1 FROM books WHERE title='A Deleted Book'")).fetchone()
+        assert after is not None and after["book_id"] == before["book_id"]
+        assert book is not None, "an unmounted drive must not look like a deletion"

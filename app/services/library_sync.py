@@ -1771,6 +1771,18 @@ async def _sync_item(item: dict) -> str:
             )
         ).fetchone()
 
+        # ABS flags an item whose files have gone rather than deleting it, so a
+        # deleted book stays in its item list forever and sync kept resurrecting it:
+        # delete the book here, ABS marks it missing on the next scan, and the sync
+        # after that recreated it with a new id (ath-b9k.9).
+        #
+        # Only refuse to CREATE from a missing item. An item already linked is left
+        # alone, because a temporarily unmounted drive also reports missing and must
+        # not look like a deletion.
+        if item.get("is_missing") and not link_row:
+            logger.debug("sync: skipping missing ABS item %s (%r)", abs_id, title)
+            return "unchanged"
+
         if link_row is None:
             # Check if we organised this book ourselves: a completed/downloaded request
             # for a book with no abs_id yet is an authoritative link.
