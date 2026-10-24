@@ -48,6 +48,21 @@
 				return `Grabbed via ${d.indexer ?? '?'}${d.size ? ` ${(d.size / 1024 / 1024).toFixed(0)} MB` : ''}`;
 			case 'cancelled':
 				return 'Request cancelled';
+			// Auto-search giving up has two quite different causes, and they used to
+			// render as the raw event name. 'nothing matched' is a dead end; 'matched
+			// but your settings excluded it' is something you can act on.
+			case 'auto_search_unusable':
+				return `Auto-search ${d.reason ?? 'found nothing it could use'}`;
+			case 'auto_search_no_results':
+				return d.best_title
+					? `Auto-search found nothing close enough — best was "${d.best_title}" at ${d.best_score ?? '?'}`
+					: 'Auto-search found no results';
+			case 'auto_search_snatched':
+				return `Auto-search grabbed ${d.title ?? 'a release'} via ${d.indexer ?? '?'}`;
+			case 'auto_search_failed':
+				return `Auto-search failed — ${d.reason ?? 'unknown error'}`;
+			case 'format_deleted':
+				return `Deleted ${d.type ?? 'format'}${d.files_removed ? ` and ${d.files_removed} file(s)` : ''}`;
 			default:
 				return ev.event_type;
 		}

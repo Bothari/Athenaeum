@@ -10,8 +10,10 @@ import pytest
 
 from app.services.auto_search import (
     DEFAULT_MIN_RELEVANCE,
+    explain_rejections,
     is_series_pack,
     rank_results,
+    rejection_reason,
 )
 from app.services.download_clients import _score_result
 
@@ -135,3 +137,97 @@ class TestManualSearchOrdering:
         assert "large" in order[0][1]["title"], (
             "within equal relevance, the ranking stack (size prefer larger) should lead"
         )
+
+
+class TestRejectionReasons:
+    """Auto-search reported "no results" when every relevant release had been
+    removed by a hard filter, which reads as "this book does not exist" when the
+    truth is "your settings excluded everything that matched" (ath-b9k.7).
+
+    rejection_reason is the single source of truth for those filters, so nothing
+    can be excluded for a reason the user is not told about.
+    """
+
+    def test_a_disallowed_format_says_so(self):
+        r = _r("Some Book by An Author (mobi)")
+        why = rejection_reason(r, ["epub", "azw3"], min_seeders=0)
+        assert why and "mobi" in why and "allowed formats" in why
+
+    def test_a_series_pack_says_so(self):
+        r = _r("Some Series 1-3 by An Author [epub]")
+        why = rejection_reason(r, ["epub"], min_seeders=0)
+        assert why and "series pack" in why
+
+    def test_too_few_seeders_names_the_threshold(self):
+        r = _r("Some Book by An Author [epub]", seeders=2, protocol="torrent")
+        why = rejection_reason(r, ["epub"], min_seeders=5)
+        assert why and "2 seeder" in why and "minimum of 5" in why
+
+    def test_a_usable_release_has_no_reason(self):
+        r = _r("Some Book by An Author [epub]", seeders=10, protocol="torrent")
+        assert rejection_reason(r, ["epub"], min_seeders=1) is None
+
+    def test_usenet_is_not_judged_on_seeders(self):
+        r = _r("Some Book by An Author [epub]", seeders=None, protocol="usenet")
+        assert rejection_reason(r, ["epub"], min_seeders=5) is None
+
+    def test_no_configured_formats_rejects_nothing_on_format(self):
+        """With an empty allowed list the old predicate rejected every release whose
+        format it could detect, so auto-search could never grab anything."""
+        r = _r("Some Book by An Author (mobi)")
+        assert rejection_reason(r, [], min_seeders=0) is None
+
+    def test_an_undetectable_format_is_not_rejected(self):
+        r = _r("Some Book by An Author")
+        assert rejection_reason(r, ["epub"], min_seeders=0) is None
+
+
+class TestExplainRejections:
+    def test_it_groups_and_counts_the_reasons(self):
+        results = [
+            _r("A Book by An Author (mobi)"),
+            _r("A Book by An Author (mobi)"),
+            _r("A Series 1-3 by An Author [epub]"),
+        ]
+        out = explain_rejections(results, ["epub"], min_seeders=0)
+        assert sum(out["counts"].values()) == 3
+        assert any("mobi" in k for k in out["counts"])
+        assert any("series pack" in k for k in out["counts"])
+        assert "3 matching release" in out["summary"]
+
+    def test_usable_releases_are_not_counted(self):
+        results = [
+            _r("A Book by An Author [epub]"),
+            _r("A Book by An Author (mobi)"),
+        ]
+        out = explain_rejections(results, ["epub"], min_seeders=0)
+        assert sum(out["counts"].values()) == 1
+
+    def test_nothing_rejected_gives_an_empty_summary(self):
+        out = explain_rejections([_r("A Book by An Author [epub]")], ["epub"], min_seeders=0)
+        assert out["counts"] == {} and out["summary"] == ""
+
+    def test_examples_are_capped(self):
+        results = [_r(f"Book {i} by An Author (mobi)") for i in range(10)]
+        out = explain_rejections(results, ["epub"], min_seeders=0)
+        assert len(out["examples"]) == 3
+
+
+class TestRankResultsStillFiltersTheSame:
+    """The predicate moved out of rank_results; its behaviour must not have."""
+
+    def test_the_filters_still_apply(self):
+        results = [
+            _r("Good Book by An Author [epub]", seeders=10),
+            _r("Good Book by An Author (mobi)", seeders=10),
+            _r("Good Series 1-3 by An Author [epub]", seeders=10),
+            _r("Good Book by An Author [epub]", seeders=0, protocol="torrent"),
+        ]
+        kept = rank_results(results, RANKING, ["epub"], min_seeders=1)
+        assert len(kept) == 1
+        assert "mobi" not in kept[0]["title"] and "1-3" not in kept[0]["title"]
+
+    def test_filter_series_packs_false_keeps_packs(self):
+        results = [_r("Good Series 1-3 by An Author [epub]", seeders=10)]
+        assert rank_results(results, RANKING, ["epub"], 1, filter_series_packs=False)
+        assert rank_results(results, RANKING, ["epub"], 1) == []
