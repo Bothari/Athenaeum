@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { seriesPosition } from '$lib/format';
 	import Badge from '../Badge.svelte';
 	import type { BadgeVariant } from '../Badge.svelte';
 	import BookCard from '../BookCard.svelte';
@@ -33,7 +34,7 @@
 			<tbody>
 				{#each books as b (b.id)}
 					<tr>
-						<td class="dim">{b.series_position ?? '—'}</td>
+						<td class="dim">{seriesPosition(b.series_position) || '—'}</td>
 						<td><a href="/library/book/{b.id}">{b.title}</a></td>
 						<td>
 							{#if (b.formats?.length ?? 0) + pendingRequests(b).length === 0}
@@ -66,8 +67,8 @@
 		{#each books as b (b.id)}
 			<div class="cell">
 				<BookCard book={b} />
-				{#if b.series_position != null}
-					<span class="pos">#{b.series_position}</span>
+				{#if seriesPosition(b.series_position)}
+					<span class="pos">#{seriesPosition(b.series_position)}</span>
 				{/if}
 			</div>
 		{/each}

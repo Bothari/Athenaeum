@@ -1,5 +1,25 @@
 /** Display formatting, ported verbatim from v1's helpers so output is identical. */
 
+/**
+ * A series position as it should read.
+ *
+ * ABS reports whole numbers as floats, so a stored position can be '1.0'. The
+ * data is normalised on write and by migration 17, but display must not depend
+ * on that: the book page had its own copy of this and the series page had none,
+ * so the same book read "#1" on one page and "#1.0" on the other. A real
+ * fraction (3.5, a novella) and a non-numeric sequence ('1-2') pass through.
+ */
+export function seriesPosition(pos?: string | number | null): string {
+	if (pos === null || pos === undefined || pos === '') return '';
+	const text = String(pos).trim();
+	// Number(), not parseFloat(): parseFloat('1-2') is 1, so a two-book sequence
+	// would be silently rewritten to '1'. Number() rejects anything that is not
+	// wholly numeric, matching the backend's float() which throws on the same input.
+	const n = Number(text);
+	if (Number.isNaN(n)) return text;
+	return n % 1 === 0 ? String(Math.trunc(n)) : text;
+}
+
 export function formatDate(iso?: string | null): string {
 	if (!iso) return '—';
 	return new Date(iso).toLocaleDateString(undefined, {
