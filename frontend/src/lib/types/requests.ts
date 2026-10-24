@@ -87,5 +87,12 @@ export interface HistoryEvent {
 		indexer?: string;
 		size?: number;
 		info_url?: string;
+		/** auto_search_no_results: the closest thing found, and how close. */
+		best_title?: string;
+		best_score?: number;
+		/** auto_search_unusable: how many were rejected, keyed by the reason. */
+		rejected_by?: Record<string, number>;
+		/** format_deleted: how many files went with the format. */
+		files_removed?: number;
 	} | null;
 }

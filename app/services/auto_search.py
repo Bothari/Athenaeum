@@ -52,6 +52,69 @@ def is_series_pack(title: str) -> bool:
 
 # ── Result ranking ─────────────────────────────────────────────────────────────
 
+def rejection_reason(
+    result: dict,
+    allowed_formats: list[str],
+    min_seeders: int,
+    filter_series_packs: bool = True,
+) -> str | None:
+    """Why this release cannot be used, phrased for a person, or None if it can.
+
+    The single source of truth for the hard filters. It returns a reason rather
+    than a boolean so the same logic that rejects a release also explains it —
+    auto-search used to report "no results" when every relevant match had been
+    filtered out, which reads as "this book does not exist" when the truth was
+    "your settings excluded everything that matched" (ath-b9k.7).
+    """
+    allowed_lower = {f.lower() for f in allowed_formats}
+    fmt = _detect_format(result.get("title", ""))
+    if fmt is not None and allowed_lower and fmt not in allowed_lower:
+        return f"format {fmt} is not in your allowed formats"
+    if filter_series_packs and is_series_pack(result.get("title", "")):
+        return "it is a series pack rather than this book on its own"
+    if result.get("protocol") == "torrent" and min_seeders > 0:
+        seeders = result.get("seeders") or 0
+        if seeders < min_seeders:
+            return f"{seeders} seeder(s), below your minimum of {min_seeders}"
+    return None
+
+
+def explain_rejections(
+    results: list[dict],
+    allowed_formats: list[str],
+    min_seeders: int,
+    filter_series_packs: bool = True,
+) -> dict:
+    """Tally why a set of releases was rejected, for reporting back to the user.
+
+    Returns {"counts": {reason: n}, "summary": str, "examples": [...]}. Reasons are
+    grouped by their leading phrase so "format mobi" and "format azw3" collapse
+    into one line rather than listing every release.
+    """
+    counts: dict[str, int] = {}
+    examples: list[dict] = []
+    for r in results:
+        why = rejection_reason(r, allowed_formats, min_seeders, filter_series_packs)
+        if why is None:
+            continue
+        counts[why] = counts.get(why, 0) + 1
+        if len(examples) < 3:
+            examples.append({"title": r.get("title"), "reason": why})
+
+    if not counts:
+        return {"counts": {}, "summary": "", "examples": []}
+
+    parts = [
+        f"{n} because {reason}" for reason, n in
+        sorted(counts.items(), key=lambda kv: -kv[1])
+    ]
+    total = sum(counts.values())
+    summary = (
+        f"found {total} matching release(s) but none are usable: " + "; ".join(parts)
+    )
+    return {"counts": counts, "summary": summary, "examples": examples}
+
+
 def rank_results(
     results: list[dict],
     ranking: list[dict],
@@ -61,25 +124,13 @@ def rank_results(
 ) -> list[dict]:
     """Filter results by hard constraints then sort by user-configured ranking stack.
 
-    Hard filters (applied before ranking):
-    - Format not in allowed_formats (if format is detectable)
-    - Looks like a series pack (skipped when filter_series_packs=False)
-    - Below minimum seeder count (torrent only)
+    The hard filters live in rejection_reason, so whatever is excluded here can be
+    explained to the user in the same terms.
     """
-    allowed_lower = {f.lower() for f in allowed_formats}
-
-    def passes(r: dict) -> bool:
-        fmt = _detect_format(r.get("title", ""))
-        if fmt is not None and fmt not in allowed_lower:
-            return False
-        if filter_series_packs and is_series_pack(r.get("title", "")):
-            return False
-        if r.get("protocol") == "torrent" and min_seeders > 0:
-            if (r.get("seeders") or 0) < min_seeders:
-                return False
-        return True
-
-    filtered = [r for r in results if passes(r)]
+    filtered = [
+        r for r in results
+        if rejection_reason(r, allowed_formats, min_seeders, filter_series_packs) is None
+    ]
     if not filtered or not ranking:
         return filtered
 
@@ -240,16 +291,20 @@ async def auto_search_request(request_id: str) -> bool:
     ranked = rank_results(relevant, ranking, allowed_formats, min_seeders)
 
     if not ranked:
-        logger.info(
-            "auto_search: %d relevant result(s) for %s but none survived the format "
-            "and seeder filters", len(relevant), request_id,
-        )
+        # "nothing matched" and "everything that matched was excluded by your
+        # settings" are different answers, and only the second is actionable.
+        rejected = explain_rejections(relevant, allowed_formats, min_seeders)
+        logger.info("auto_search: %s — %s", request_id, rejected["summary"])
         async with get_db() as db:
-            await log_request_event(db, request_id, "auto_search_no_results",
-                                    {"query": query, "total_results": len(results),
-                                     "relevant": len(relevant), "filtered": 0,
-                                     "reason": "no relevant result passed the format and seeder filters"},
-                                    book_id=book_id)
+            await log_request_event(
+                db, request_id, "auto_search_unusable",
+                {"query": query, "total_results": len(results),
+                 "relevant": len(relevant), "filtered": 0,
+                 "reason": rejected["summary"],
+                 "rejected_by": rejected["counts"],
+                 "examples": rejected["examples"]},
+                book_id=book_id,
+            )
             await db.commit()
         return False
 
