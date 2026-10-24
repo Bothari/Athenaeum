@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { seriesPosition } from '$lib/format';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import Badge from '$lib/components/Badge.svelte';
@@ -63,13 +64,6 @@
 	const hcUrl = $derived(hardcoverUrl('book', book?.link?.hardcover_slug));
 
 	/** Trims a trailing ".0" so "1.0" shows as "1" but "1.5" survives. */
-	function position(s: BookSeriesRef): string {
-		if (!s.position) return '';
-		const n = parseFloat(s.position);
-		if (isNaN(n)) return s.position;
-		return n % 1 === 0 ? String(Math.floor(n)) : String(n);
-	}
-
 	/**
 	 * A date of Jan 1 in the current year or later is Hardcover's placeholder for
 	 * "year known, day unknown", so it counts as unreleased and displays as just
@@ -201,10 +195,10 @@
 								     since an empty series page is a dead end. -->
 								{#if s.id && (s.library_count ?? 0) > 0}
 									<a href="/library/series/{s.id}">
-										{s.name}{position(s) ? ` #${position(s)}` : ''}
+										{s.name}{seriesPosition(s.position) ? ` #${seriesPosition(s.position)}` : ''}
 									</a>
 								{:else}
-									{s.name}{position(s) ? ` #${position(s)}` : ''}
+									{s.name}{seriesPosition(s.position) ? ` #${seriesPosition(s.position)}` : ''}
 								{/if}
 							</div>
 						{/each}

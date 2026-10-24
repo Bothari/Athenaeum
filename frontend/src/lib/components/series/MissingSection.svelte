@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { seriesPosition } from '$lib/format';
 	import LoadingState from '../LoadingState.svelte';
 	import SearchCard from '../SearchCard.svelte';
 	import { getMissing, linkLibraryBook, setShowSecondaryWorks } from '$lib/api/series';
@@ -97,8 +98,8 @@
 	</div>
 	{#each list as item (item.book_id ?? item.metadata_id ?? item.title)}
 		<div class="item">
-			{#if item.series_position != null}
-				<span class="pos">#{item.series_position}</span>
+			{#if seriesPosition(item.series_position)}
+				<span class="pos">#{seriesPosition(item.series_position)}</span>
 			{/if}
 			<SearchCard result={item} />
 			{#if item.in_library && item.book_id}
