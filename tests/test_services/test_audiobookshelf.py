@@ -46,7 +46,9 @@ ITEM_NORMALIZED = {
             "abs_id": "li_abc123",
             "abs_url": "http://abs.local:13378/item/li_abc123",
         }
-    ],
+    ],    # ABS flags an item whose files have gone instead of deleting it; sync refuses
+    # to create a book from one (ath-b9k.9).
+    "is_missing": False,
 }
 
 
