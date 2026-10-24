@@ -8,6 +8,7 @@ is invisible to one of them is how a rate limit reads as "no results".
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 
 import httpx
 
@@ -93,6 +94,43 @@ _hc_daily_remaining: int | None = None
 # free (ath-kcl).
 _hc_daily_reset: float | None = None
 
+# Hardcover's published daily allowance, learned from x-ratelimit-daily-limit when
+# a response carries it. The default matches the free plan.
+HC_DAILY_LIMIT = 5000
+_hc_daily_limit: int = HC_DAILY_LIMIT
+
+# Requests this process has made, keyed by UTC date. The header figure is only
+# known AFTER a call, so at the start of a day — or in a fresh process — there is
+# nothing to go on and the reserve cannot fire. Counting locally gives a floor
+# estimate from the very first request, and it resets with the day on its own. The
+# header still wins when present, since it accounts for other clients sharing the
+# key, which this count cannot see.
+_hc_day: str | None = None
+_hc_used_today: int = 0
+
+
+def _hc_note_request() -> None:
+    """Count one request against today's local tally."""
+    global _hc_day, _hc_used_today
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _hc_day != today:
+        _hc_day, _hc_used_today = today, 0
+    _hc_used_today += 1
+
+
+def hc_daily_estimate() -> int:
+    """Best available view of what is left today.
+
+    The smaller of the header figure (when it still describes this window) and what
+    local counting implies, so neither source alone can leave the reserve blind.
+    """
+    local = max(0, _hc_daily_limit - _hc_used_today)
+    if _hc_day != datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+        local = _hc_daily_limit
+    if _hc_daily_count_is_current():
+        return min(local, _hc_daily_remaining)
+    return local
+
 # The token bucket, shared by every caller in this process.
 _hc_pace_lock: asyncio.Lock | None = None
 _hc_tokens: float = HC_INITIAL_TOKENS
@@ -157,7 +195,7 @@ def hc_daily_remaining() -> int | None:
     return _hc_daily_remaining
 
 
-def _hc_daily_count_is_current() -> bool:
+def _hc_daily_count_is_current() -> bool:  # noqa: E302
     """Whether the recorded daily figure still describes the window we are in.
 
     Unknown reset time means we cannot tell, so the figure is taken at face value:
@@ -192,6 +230,14 @@ def _hc_note_headers(resp: httpx.Response) -> None:
         except (TypeError, ValueError):
             pass
 
+    global _hc_daily_limit
+    raw_limit = resp.headers.get("x-ratelimit-daily-limit")
+    if raw_limit is not None:
+        try:
+            _hc_daily_limit = int(raw_limit)
+        except (TypeError, ValueError):
+            pass
+
     raw_reset = resp.headers.get("x-ratelimit-daily-reset")
     if raw_reset is not None:
         try:
@@ -205,6 +251,21 @@ def _hc_note_headers(resp: httpx.Response) -> None:
             _hc_tokens = min(_hc_tokens, float(raw_burst))
         except (TypeError, ValueError):
             pass
+
+
+def hc_auth_header(api_key: str) -> str:
+    """Build the Authorization value from a stored key.
+
+    Hardcover's settings page hands out the token already prefixed with "Bearer ",
+    so a verbatim paste used to be double-prefixed and every request was rejected
+    as unauthorised (GH #3). Accept it either way, and tolerate stray whitespace
+    from the copy.
+    """
+    token = (api_key or "").strip()
+    if token.lower().startswith("bearer "):
+        # Re-emit the canonical casing rather than whatever was pasted.
+        token = token[len("bearer "):].strip()
+    return f"Bearer {token}"
 
 
 def _hc_retry_after(resp: httpx.Response) -> float:
@@ -230,23 +291,37 @@ async def hc_post(
     background stages must let that exception propagate so the cycle ends;
     swallowing it reinstates the retry storm this exists to prevent.
     """
-    # Only refuse on a figure that still describes the current window. A stale one
-    # would latch the gate shut forever, because refusing means never sending, and
-    # never sending means never learning the window has turned over.
-    if background and _hc_daily_count_is_current() and _hc_daily_remaining <= HC_DAILY_RESERVE:
-        raise HardcoverRateLimited(
-            f"daily quota down to {_hc_daily_remaining}, holding the last "
-            f"{HC_DAILY_RESERVE} for interactive search"
-        )
+    # Refuse on the best available estimate, which combines the header figure (only
+    # while it still describes this window — a stale one would latch the gate shut
+    # forever, since refusing means never sending and never sending means never
+    # learning the window turned over) with what local counting implies.
+    if background:
+        left = hc_daily_estimate()
+        if left <= HC_DAILY_RESERVE:
+            raise HardcoverRateLimited(
+                f"daily quota down to {left}, holding the last "
+                f"{HC_DAILY_RESERVE} for interactive search"
+            )
 
     async def _send(c: httpx.AsyncClient) -> dict:
         await _hc_pace()
+        _hc_note_request()
         resp = await c.post(
             HC_API_URL,
             json={"query": gql, "variables": variables},
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": hc_auth_header(api_key), "Content-Type": "application/json"},
         )
         _hc_note_headers(resp)
+        if resp.status_code in (401, 403):
+            # Distinguish a bad key from an outage: one is fixable in settings, the
+            # other is waiting. Raised as HardcoverUnavailable's sibling via a plain
+            # error so callers surface the message rather than retrying.
+            raise httpx.HTTPStatusError(
+                f"Hardcover rejected the API key (HTTP {resp.status_code}) — "
+                "it may be wrong or expired",
+                request=resp.request,
+                response=resp,
+            )
         if resp.status_code == 429:
             raise HardcoverRateLimited(
                 f"Hardcover rate limit reached ({resp.headers.get('ratelimit', 'no policy header')})",

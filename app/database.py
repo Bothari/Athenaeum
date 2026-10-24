@@ -498,6 +498,27 @@ async def _run_migrations(db):
         await db.execute("CREATE INDEX idx_downloads_status  ON downloads(status)")
         await db.execute("PRAGMA user_version = 16")
 
+    if current < 17:
+        # ABS reports whole-number sequences as floats, so positions arrived as
+        # '1.0' and were stored verbatim: a shelf showed '1' for most books and
+        # '1.0' for the ones that happened to come through that way, and the decimal
+        # was written back out to ABS and the opf sidecar. The write paths normalise
+        # now; this is the backlog (ath-099).
+        #
+        # Only values whose fractional part is zero. A real fraction is a novella
+        # (3.5) and must survive, and non-numeric sequences like '1-2' are left
+        # alone — hence the GLOB guard rather than a blanket CAST, which would
+        # silently rewrite anything unparseable to '0'.
+        await db.execute("""
+            UPDATE book_series
+               SET position = CAST(CAST(position AS INTEGER) AS TEXT)
+             WHERE position IS NOT NULL
+               AND position != ''
+               AND position GLOB '[0-9]*.[0]*'
+               AND CAST(position AS REAL) = CAST(position AS INTEGER)
+        """)
+        await db.execute("PRAGMA user_version = 17")
+
     await db.commit()
 
 
