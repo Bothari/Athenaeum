@@ -395,3 +395,94 @@ class TestCanonicalIdCollision:
             await db.execute("INSERT INTO book_links (id, book_id, hardcover_id, linked_at) VALUES ('l1','b1','555','2026-01-01')")
             await db.commit()
             assert await ls._adopt_canonical_hc_id(db, "b1", 555) is True
+
+
+class TestReserveDoesNotLatch:
+    """The reserve gate refuses before sending, so a figure it refuses on can never
+    be corrected — once it fell to the reserve, background work was refused for the
+    life of the process, including long after the daily window had reset. A dev
+    instance reported 'daily quota down to 500' against an account with ~5000 free
+    (ath-kcl). The figure now expires with the window it describes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_figure_from_a_finished_window_does_not_refuse(self, monkeypatch):
+        import time as _time
+        monkeypatch.setattr(hc, "_hc_daily_remaining", 0)
+        monkeypatch.setattr(hc, "_hc_daily_reset", _time.time() - 60)   # window closed
+        monkeypatch.setattr(hc, "_hc_tokens", hc.HC_BURST)
+        monkeypatch.setattr(hc, "_hc_refilled", None)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+        sent = []
+
+        async def fake_post(self, url, **kw):
+            sent.append(url)
+            return _resp(200, daily_remaining=5000)
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+        await hc.hc_post("q", {}, "k")          # must not raise
+        assert sent, "the gate stayed latched on a figure from a window that had ended"
+
+    @pytest.mark.asyncio
+    async def test_a_figure_from_the_current_window_still_refuses(self, monkeypatch):
+        import time as _time
+        monkeypatch.setattr(hc, "_hc_daily_remaining", hc.HC_DAILY_RESERVE)
+        monkeypatch.setattr(hc, "_hc_daily_reset", _time.time() + 3600)   # still open
+
+        sent = []
+
+        async def fake_post(self, url, **kw):
+            sent.append(url)
+            return _resp(200, daily_remaining=5000)
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+        with pytest.raises(hc.HardcoverRateLimited):
+            await hc.hc_post("q", {}, "k")
+        assert sent == [], "refusal must not reach the network"
+
+    @pytest.mark.asyncio
+    async def test_an_interactive_call_is_unaffected_either_way(self, monkeypatch):
+        import time as _time
+        monkeypatch.setattr(hc, "_hc_daily_remaining", 0)
+        monkeypatch.setattr(hc, "_hc_daily_reset", _time.time() + 3600)
+        monkeypatch.setattr(hc, "_hc_tokens", hc.HC_BURST)
+        monkeypatch.setattr(hc, "_hc_refilled", None)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+        async def fake_post(self, url, **kw):
+            return _resp(200, daily_remaining=0)
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+        await hc.hc_post("q", {}, "k", background=False)   # must not raise
+
+    @pytest.mark.asyncio
+    async def test_the_reset_time_is_recorded_from_the_header(self, monkeypatch):
+        monkeypatch.setattr(hc, "_hc_daily_reset", None)
+        monkeypatch.setattr(hc, "_hc_tokens", hc.HC_BURST)
+        monkeypatch.setattr(hc, "_hc_refilled", None)
+        monkeypatch.setattr(hc, "_hc_pace_lock", None)
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+        async def fake_post(self, url, **kw):
+            r = _resp(200, daily_remaining=4000)
+            r.headers["x-ratelimit-daily-reset"] = "1792713600"
+            return r
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+        await hc.hc_post("q", {}, "k")
+        assert hc._hc_daily_reset == 1792713600.0
+
+    def test_an_unknown_reset_time_takes_the_figure_at_face_value(self, monkeypatch):
+        """Hardcover has always sent the header; assuming staleness would disable the
+        reserve altogether, which is the failure this guards against."""
+        monkeypatch.setattr(hc, "_hc_daily_remaining", 10)
+        monkeypatch.setattr(hc, "_hc_daily_reset", None)
+        assert hc._hc_daily_count_is_current() is True
+
+    def test_no_figure_at_all_is_not_current(self, monkeypatch):
+        monkeypatch.setattr(hc, "_hc_daily_remaining", None)
+        monkeypatch.setattr(hc, "_hc_daily_reset", None)
+        assert hc._hc_daily_count_is_current() is False

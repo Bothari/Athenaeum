@@ -84,6 +84,15 @@ HC_MAX_THROTTLE_RETRIES = 3
 # module. None means nothing has been observed yet this process.
 _hc_daily_remaining: int | None = None
 
+# When the daily window the count above describes runs out, as a unix timestamp
+# from x-ratelimit-daily-reset. Without it the count outlived its window: the
+# reserve gate refuses before sending, so no response arrived to correct the
+# figure, so once it fell to the reserve background work was refused for the life
+# of the process — including after the quota had reset hours earlier. Seen on the
+# dev instance reporting "daily quota down to 500" against an account with ~5000
+# free (ath-kcl).
+_hc_daily_reset: float | None = None
+
 # The token bucket, shared by every caller in this process.
 _hc_pace_lock: asyncio.Lock | None = None
 _hc_tokens: float = HC_INITIAL_TOKENS
@@ -148,6 +157,20 @@ def hc_daily_remaining() -> int | None:
     return _hc_daily_remaining
 
 
+def _hc_daily_count_is_current() -> bool:
+    """Whether the recorded daily figure still describes the window we are in.
+
+    Unknown reset time means we cannot tell, so the figure is taken at face value:
+    Hardcover has always sent the header, and assuming staleness would disable the
+    reserve altogether.
+    """
+    if _hc_daily_remaining is None:
+        return False
+    if _hc_daily_reset is None:
+        return True
+    return time.time() < _hc_daily_reset
+
+
 def _hc_note_headers(resp: httpx.Response) -> None:
     """Correct our local view from what Hardcover just reported.
 
@@ -161,11 +184,18 @@ def _hc_note_headers(resp: httpx.Response) -> None:
     Only ever clamps downward. Raising the count from a header would be unsafe with
     requests in flight, since the header describes the moment that one was served.
     """
-    global _hc_daily_remaining, _hc_tokens
+    global _hc_daily_remaining, _hc_daily_reset, _hc_tokens
     raw = resp.headers.get("x-ratelimit-daily-remaining")
     if raw is not None:
         try:
             _hc_daily_remaining = int(raw)
+        except (TypeError, ValueError):
+            pass
+
+    raw_reset = resp.headers.get("x-ratelimit-daily-reset")
+    if raw_reset is not None:
+        try:
+            _hc_daily_reset = float(raw_reset)
         except (TypeError, ValueError):
             pass
 
@@ -200,7 +230,10 @@ async def hc_post(
     background stages must let that exception propagate so the cycle ends;
     swallowing it reinstates the retry storm this exists to prevent.
     """
-    if background and _hc_daily_remaining is not None and _hc_daily_remaining <= HC_DAILY_RESERVE:
+    # Only refuse on a figure that still describes the current window. A stale one
+    # would latch the gate shut forever, because refusing means never sending, and
+    # never sending means never learning the window has turned over.
+    if background and _hc_daily_count_is_current() and _hc_daily_remaining <= HC_DAILY_RESERVE:
         raise HardcoverRateLimited(
             f"daily quota down to {_hc_daily_remaining}, holding the last "
             f"{HC_DAILY_RESERVE} for interactive search"
