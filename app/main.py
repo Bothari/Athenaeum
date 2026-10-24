@@ -52,19 +52,52 @@ async def _wait_until_next(cron_expr: str):
     await asyncio.sleep((next_run - now).total_seconds())
 
 
+# Paused after an error rather than retrying straight away. The error branch used
+# to loop with no delay, so an unsatisfiable cron — '0 0 30 2 *', a date that never
+# occurs — made croniter raise on every pass and the loop spun as fast as the CPU
+# allowed: roughly 40,000 tracebacks in two minutes, the event loop starved, and
+# the container marked unhealthy.
+_TASK_ERROR_BACKOFF = 60
+
+
 async def _task_loop(task_name: str, cron_key: str, task_fn, fallback_interval: int = 0):
     """Supervised loop for a scheduled task.
 
-    fallback_interval: seconds between runs when no cron expression is configured.
-    If 0, the loop idles (60s sleep) when unconfigured.
+    An empty schedule entry means DISABLED. It used to mean "fall back to
+    fallback_interval", and only library_sync had one, so blanking its entry ran it
+    every thirty minutes instead of stopping it — the opposite of what the setting
+    reads as, and the reason a dev instance believed inert kept pulling from the
+    live ABS and dragging cache_refresh along behind it (ath-m4i). The fallback now
+    applies only when the key is absent entirely, which is a fresh install that has
+    never had a schedule written.
     """
+    schedule_logged = False
     while True:
         try:
             settings = await get_settings()
-            expr = settings.get("schedule", {}).get(cron_key, "")
+            schedule = settings.get("schedule", {})
+            configured = cron_key in schedule
+            expr = (schedule.get(cron_key) or "").strip()
+
             if expr:
+                if not schedule_logged:
+                    logger.info("%s: scheduled '%s'", task_name, expr)
+                    schedule_logged = True
                 await _wait_until_next(expr)
+            elif configured:
+                # Present but empty: the operator turned it off.
+                if not schedule_logged:
+                    logger.info("%s: disabled (schedule.%s is empty)", task_name, cron_key)
+                    schedule_logged = True
+                await asyncio.sleep(60)
+                continue
             elif fallback_interval:
+                if not schedule_logged:
+                    logger.info(
+                        "%s: no schedule.%s configured, falling back to every %ds",
+                        task_name, cron_key, fallback_interval,
+                    )
+                    schedule_logged = True
                 await asyncio.sleep(fallback_interval)
             else:
                 await asyncio.sleep(60)
@@ -74,6 +107,9 @@ async def _task_loop(task_name: str, cron_key: str, task_fn, fallback_interval: 
             raise
         except Exception as e:
             logger.error(f"{task_name} error: {e}", exc_info=True)
+            # Without this the loop retries instantly and an error that recurs every
+            # pass becomes a busy loop.
+            await asyncio.sleep(_TASK_ERROR_BACKOFF)
 
 
 async def _cache_refresh_task():
